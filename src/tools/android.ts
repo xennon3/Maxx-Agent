@@ -18,11 +18,11 @@ const target = {
 };
 const NO_CKPT = { checkpoint: false } as const;
 
-async function observe(note: string, screenshot = true, settleMs = 700): Promise<ToolResult> {
+async function observe(note: string, screenshot = true, settleMs = 700, glance = true): Promise<ToolResult> {
   if (!screenshot) return note;
   await sleep(settleMs);
   const l = await A.look();
-  return { text: `${note}\n\n${l.text}`, images: [l.shot] };
+  return { text: `${note}\n\n${l.text}`, images: [l.shot], glance };
 }
 
 export const androidDevices = defineTool({
@@ -110,7 +110,7 @@ export const androidRun = defineTool({
     const crash = await launch(pkg, a.wait ?? 3);
     log.push(`launched ${pkg}`);
     if (crash) log.push(`THE APP CRASHED:\n${crash}`);
-    return observe(log.join("\n"), true, 0);
+    return observe(log.join("\n"), true, 0, false);
   },
 });
 

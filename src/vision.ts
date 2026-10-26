@@ -5,7 +5,7 @@ import type { Image } from "./image.ts";
 //   native  the main model is a vision model; images are attached to the chat
 //   proxy   a second vision model looks at them and the main model gets its description
 //   off     nobody can see; the main model works from element lists only
-export type Vision = { mode: "native" } | { mode: "proxy"; llm: LLMConfig } | { mode: "off" };
+export type Vision = { mode: "native" } | { mode: "proxy"; llm: LLMConfig; always?: boolean } | { mode: "off" };
 
 export const imagePart = (img: Image): ContentPart => ({ type: "image_url", image_url: { url: `data:${img.mime};base64,${img.base64}` } });
 
@@ -24,8 +24,9 @@ export async function detectVision(llm: LLMConfig): Promise<boolean | null> {
   }
 }
 
+// --vision always: with a separate vision model, describe every screenshot, not only the ones the model asks for.
 export async function pickVision(main: LLMConfig, opts: { flag?: string; visionModel?: string }): Promise<{ vision: Vision; note?: string }> {
-  if (opts.visionModel) return { vision: { mode: "proxy", llm: { ...main, model: opts.visionModel, temperature: 0.2 } } };
+  if (opts.visionModel) return { vision: { mode: "proxy", llm: { ...main, model: opts.visionModel, temperature: 0.2 }, always: opts.flag === "always" } };
   if (opts.flag === "off") return { vision: { mode: "off" } };
   if (opts.flag === "native") return { vision: { mode: "native" } };
   const sees = await detectVision(main);

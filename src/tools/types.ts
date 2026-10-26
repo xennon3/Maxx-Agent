@@ -7,8 +7,10 @@ export type Risk = "read" | "write" | "exec";
 export type ToolContext = { cwd: string };
 
 // Most tools return text. Screen tools also return images, which the loop
-// shows to a vision model (see vision.ts).
-export type ToolResult = string | { text: string; images?: Image[] };
+// shows to a vision model (see vision.ts). A "glance" is the screenshot an
+// action returns on its own; a separate vision model skips those when the
+// element list already says what is on screen.
+export type ToolResult = string | { text: string; images?: Image[]; glance?: boolean };
 
 export type Tool<S extends z.ZodObject = z.ZodObject> = {
   name: string;

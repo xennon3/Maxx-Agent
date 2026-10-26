@@ -56,17 +56,19 @@ async function agent(vision: Vision) {
 
 const imageMessages = (msgs: any[]) => msgs.filter((m) => Array.isArray(m.content) && m.content.some((p: any) => p.type === "image_url"));
 
-test("native vision: screenshots follow the tool results as a user message, only the last two are kept", async () => {
+test("native vision: screenshots follow the tool results as a user message, pruned in batches", async () => {
   const a = await agent({ mode: "native" });
-  calls = 3;
+  calls = 4;
   requests.length = 0;
   expect(await a.send("test the app")).toBe("done");
   const second = requests[1];
   expect(second.messages.at(-2).role).toBe("tool");
   expect(second.messages.at(-2).content).toContain("attached in the next message");
   expect(second.messages.at(-1).content[1].image_url.url).toStartWith("data:image/jpeg;base64,");
+  // Three screenshots stay put (the prompt cache survives); the fourth prunes back to two.
+  expect(imageMessages(requests[3].messages)).toHaveLength(3);
   expect(imageMessages(requests.at(-1).messages)).toHaveLength(2);
-  expect(a.history.some((m) => typeof m.content === "string" && m.content.includes("older screenshot removed"))).toBe(true);
+  expect(a.history.some((m) => Array.isArray(m.content) && JSON.stringify(m.content).includes("older screenshot removed"))).toBe(true);
 });
 
 test("proxy vision: a second model describes the screenshot for a text-only model", async () => {
@@ -133,4 +135,21 @@ test("desktop: PowerShell results are parsed and clicks map back to screen pixel
 
   setRunner(async () => ({ code: 3, stdout: new Uint8Array(), stderr: "failsafe" }));
   await expect(desktopClick.run({ x: 1, y: 1 }, { cwd: "." })).rejects.toThrow(/STOPPED/);
+});
+
+test("proxy vision skips screenshots that actions return on their own when elements are listed", async () => {
+  const glancer = defineTool({
+    name: "look_tool",
+    description: "test",
+    schema: z.object({}),
+    risk: "read",
+    run: async () => ({ text: "tapped\n[1] Button \"OK\" @ 10,10", images: [toShot(png)], glance: true }),
+  });
+  const dir = await mkdtemp(join(tmpdir(), "maxx-vision-"));
+  const a = await new Agent({ llm: llm(), cwd: dir, permissions: new Permissions(dir, "ask"), tools: [glancer], vision: { mode: "proxy", llm: { ...llm(), model: "eyes" } } }, io).init();
+  calls = 1;
+  requests.length = 0;
+  await a.send("tap ok");
+  expect(requests.some((r) => r.model === "eyes")).toBe(false);
+  expect(a.history.find((m) => m.role === "tool")!.content).toContain("screenshot not described");
 });

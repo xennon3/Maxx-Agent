@@ -9,11 +9,11 @@ import * as W from "../devices/windows.ts";
 const shot = z.boolean().optional().describe("Return a new screenshot after the action (default true)");
 const NO_CKPT = { checkpoint: false } as const;
 
-async function observe(note: string, screenshot = true, settleMs = 500): Promise<ToolResult> {
+async function observe(note: string, screenshot = true, settleMs = 500, glance = true): Promise<ToolResult> {
   if (!screenshot) return note;
   await sleep(settleMs);
   const l = await W.look();
-  return { text: `${note}\n\n${l.text}`, images: [l.shot] };
+  return { text: `${note}\n\n${l.text}`, images: [l.shot], glance };
 }
 
 async function ensureScale() {

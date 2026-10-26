@@ -8,8 +8,10 @@ import { doctor, doctorDevices } from "./doctor.ts";
 import type { LLMConfig } from "./llm.ts";
 import { TOOLSETS } from "./tools/index.ts";
 import { pickVision } from "./vision.ts";
+import { textOf } from "./context.ts";
 import { recordTo } from "./devices/run.ts";
 import { replay } from "./replay.ts";
+import { ago, findSession, newSessionId, formatList, listProjects, listSessions, loadSession, saveSession, type Session } from "./sessions.ts";
 
 const C = { dim: "\x1b[2m", cyan: "\x1b[36m", yellow: "\x1b[33m", bold: "\x1b[1m", reset: "\x1b[0m" };
 
@@ -23,6 +25,7 @@ usage:
   maxx doctor desktop         check screenshots and UI Automation on Windows
   maxx doctor vision          check that the model (or --vision-model) can read an image
   maxx replay <file.jsonl>    re-run the phone/desktop actions of an earlier session
+  maxx sessions [--all]       list saved sessions for this project (or every project)
 
 options:
   --base-url <url>   OpenAI-compatible server (default $MAXX_BASE_URL or http://localhost:1234/v1)
@@ -31,11 +34,15 @@ options:
   --context <n>      context window in tokens (default 32768)
   --with <sets>      extra tools: android, desktop (comma-separated; default $MAXX_WITH)
   --vision <v>       auto | native | off: can the model see screenshots? (default auto)
+                     with --vision-model: auto describes screenshots the model asks for, always describes every one
   --vision-model <id>  a second model that looks at screenshots for a text-only main model
   -p, --prompt <s>   one-shot prompt
+  -c, --continue     continue the latest session in this project
+  --resume <ref>     continue a session by number (from \`maxx sessions\`), id, or words from its title
 
 in a session:
   /help  /mode <m>  /with <sets|none>  /checkpoints  /rewind <n>  /clear  /exit
+  /sessions  /resume <ref>  /new  /title <text>   (sessions are saved per project after every turn)
   Ctrl-C stops the current turn; Ctrl-C at an empty prompt exits.`;
 
 const { values, positionals } = parseArgs({
@@ -49,12 +56,24 @@ const { values, positionals } = parseArgs({
     vision: { type: "string", default: "auto" },
     "vision-model": { type: "string" },
     prompt: { type: "string", short: "p" },
+    continue: { type: "boolean", short: "c" },
+    resume: { type: "string" },
+    all: { type: "boolean" },
     help: { type: "boolean", short: "h" },
   },
 });
 
 if (values.help) {
   console.log(HELP);
+  process.exit(0);
+}
+
+if (positionals[0] === "sessions") {
+  if (values.all) {
+    const projects = await listProjects();
+    if (!projects.length) console.log("(no saved sessions yet)");
+    for (const p of projects) console.log(`${C.bold}${p.cwd}${C.reset}\n${formatList(p.sessions.slice(0, 5))}${p.sessions.length > 5 ? `\n     ... ${p.sessions.length - 5} more` : ""}\n`);
+  } else console.log(formatList(await listSessions(process.cwd())));
   process.exit(0);
 }
 
@@ -95,11 +114,47 @@ const io: AgentIO = {
   },
 };
 
-const toolsets = parseSets(values.with ?? process.env.MAXX_WITH ?? "");
+// Resuming brings back the session's turns and its toolsets (unless --with says otherwise).
+let resumed: Session | null = null;
+if (values.continue || values.resume) {
+  const info = values.resume ? await findSession(cwd, values.resume) : (await listSessions(cwd))[0];
+  if (!info) die(values.resume ? `no session matching "${values.resume}" in this project; see \`maxx sessions\`` : "no saved session in this project yet");
+  resumed = await loadSession(cwd, info.id);
+}
+const toolsets = parseSets(values.with ?? (resumed?.toolsets.join(",") || process.env.MAXX_WITH) ?? "");
 const { vision, note: visionNote } = await pickVision(llm, { flag: values.vision, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL });
 const agent = await new Agent({ llm, cwd, permissions, contextWindow: Number(values.context), toolsets, vision }, io).init();
-const replayFile = join(cwd, ".maxx", "replays", `${agent.session}.jsonl`);
-recordTo(replayFile);
+let created = new Date().toISOString();
+let title = "";
+if (resumed) await resumeInto(resumed);
+let replayFile = "";
+// Declared before the -p path below, which runs a turn right away.
+let controller: AbortController | null = null;
+setReplayFile();
+
+function setReplayFile() {
+  replayFile = join(cwd, ".maxx", "replays", `${agent.session}.jsonl`);
+  recordTo(replayFile);
+}
+
+async function resumeInto(s: Session) {
+  await agent.restore(s.id, s.history);
+  created = s.created;
+  title = s.title;
+  const last = [...s.history].reverse().find((m) => m.role === "assistant" && typeof m.content === "string" && m.content.trim());
+  const recap = last ? textOf(last.content).trim().split("\n")[0]!.slice(0, 160) : "";
+  io.note(`(resumed "${s.title}", ${s.turns} turns, ${ago(s.updated)})${recap ? `\nlast reply: ${recap}` : ""}`);
+}
+
+async function save() {
+  if (agent.history.length < 2) return;
+  try {
+    const s = await saveSession({ id: agent.session, cwd, created, model: llm.model, toolsets: agent.toolsets, history: agent.history, title });
+    title ||= s.title;
+  } catch (e) {
+    io.note(`(could not save the session: ${(e as Error).message})`);
+  }
+}
 if (toolsets.length && visionNote) io.note(visionNote);
 
 if (values.prompt) {
@@ -110,7 +165,10 @@ if (values.prompt) {
 
 const extras = toolsets.length ? ` · with ${toolsets.join(",")} · vision ${vision.mode === "proxy" ? vision.llm.model : vision.mode}` : "";
 console.log(`${C.bold}maxx${C.reset} ${C.dim}${llm.model} via ${baseURL} · mode ${permissions.mode}${extras} · /help${C.reset}`);
-let controller: AbortController | null = null;
+if (!resumed) {
+  const prev = (await listSessions(cwd))[0];
+  if (prev) console.log(`${C.dim}last session here: "${prev.title}" (${ago(prev.updated)}) · maxx -c to continue it${C.reset}`);
+}
 rl.on("SIGINT", () => {
   if (controller) controller.abort();
   else (rl.close(), process.exit(0));
@@ -136,6 +194,7 @@ async function turn(text: string) {
     console.log(`\n${C.yellow}${err.name === "AbortError" ? "(stopped)" : "error: " + err.message}${C.reset}`);
   } finally {
     controller = null;
+    await save();
   }
 }
 
@@ -145,6 +204,28 @@ async function command(line: string) {
     case "/help": return console.log(HELP);
     case "/exit": rl.close(); process.exit(0);
     case "/clear": await agent.init(); return console.log("(history cleared)");
+    case "/new":
+      await agent.init();
+      agent.session = newSessionId();
+      created = new Date().toISOString();
+      title = "";
+      setReplayFile();
+      return console.log("(new session; the previous one is saved, /sessions to go back)");
+    case "/sessions": return console.log(formatList(await listSessions(cwd), agent.session));
+    case "/resume": {
+      const info = arg ? await findSession(cwd, line.slice(cmd!.length).trim()) : (await listSessions(cwd)).find((s) => s.id !== agent.session);
+      const s = info && (await loadSession(cwd, info.id));
+      if (!s) return console.log("no such session; /sessions lists them");
+      await save();
+      if (s.toolsets.join() !== agent.toolsets.join()) agent.useToolsets(s.toolsets);
+      await resumeInto(s);
+      setReplayFile();
+      return;
+    }
+    case "/title":
+      title = line.slice(cmd!.length).trim();
+      await save();
+      return console.log(`title: ${title}`);
     case "/mode":
       if (arg && ["ask", "auto-edit", "yolo"].includes(arg)) permissions.mode = arg as Mode;
       return console.log(`mode: ${permissions.mode}`);

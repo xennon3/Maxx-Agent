@@ -6,6 +6,7 @@ import { Checkpoints } from "./checkpoint.ts";
 import { compact, estimateTokens, systemPrompt, truncate } from "./context.ts";
 import { describeImages, imagePart, type Vision } from "./vision.ts";
 import type { Image } from "./image.ts";
+import { newSessionId } from "./sessions.ts";
 
 export type AgentIO = {
   token(t: string): void;
@@ -24,22 +25,27 @@ export type AgentOptions = {
   tools?: Tool<any>[];
   toolsets?: string[];
   vision?: Vision;
+  session?: string;
 };
 
 const MAX_BAD_CALLS = 3;
 // Screenshots are big; only the most recent few stay in the conversation.
+// Removing one rewrites an older message, which costs the server its prompt
+// cache from that point on, so prune in batches: at 4 images, back down to 2.
 const KEEP_IMAGES = 2;
+const PRUNE_AT = 4;
 
 export class Agent {
   history: Message[] = [];
   readonly checkpoints: Checkpoints;
-  readonly session = new Date().toISOString().replace(/[:.]/g, "-");
+  session: string;
   private tools: Tool<any>[];
   private prompts: string[] = [];
   toolsets: string[] = [];
 
   constructor(private opts: AgentOptions, private io: AgentIO) {
     this.tools = opts.tools ?? TOOLS;
+    this.session = opts.session ?? newSessionId();
     this.checkpoints = new Checkpoints(opts.cwd, this.session);
     if (opts.toolsets?.length) this.useToolsets(opts.toolsets);
   }
@@ -69,6 +75,13 @@ export class Agent {
     return this;
   }
 
+  // Continue a saved session: its turns, with today's system prompt.
+  async restore(id: string, history: Message[]) {
+    this.session = id;
+    this.history = history.filter((m) => m.role !== "system");
+    await this.refreshSystemPrompt();
+  }
+
   // One user turn: loop until the model answers without calling tools.
   async send(userText: string, signal?: AbortSignal): Promise<string> {
     this.history.push({ role: "user", content: userText });
@@ -89,9 +102,9 @@ export class Agent {
       this.history.push({ role: "assistant", content: res.rescued ? null : res.content || null, tool_calls: toWire(res.toolCalls) });
       const seen: ContentPart[] = [];
       for (const call of res.toolCalls) {
-        const { result, bad, images } = await this.runTool(call);
+        const { result, bad, images, glance } = await this.runTool(call);
         badCalls = bad ? badCalls + 1 : 0;
-        const content = images?.length ? await this.deliverImages(call.name, result, images, seen, signal) : result;
+        const content = images?.length ? await this.deliverImages(call.name, result, images, seen, signal, glance) : result;
         this.history.push({ role: "tool", tool_call_id: call.id, content });
       }
       // Tool messages can't carry images on most servers, so they follow as one user message.
@@ -108,13 +121,15 @@ export class Agent {
     return "Stopped: reached the step limit for one turn.";
   }
 
-  private async deliverImages(tool: string, result: string, images: Image[], seen: ContentPart[], signal?: AbortSignal): Promise<string> {
+  private async deliverImages(tool: string, result: string, images: Image[], seen: ContentPart[], signal?: AbortSignal, glance = false): Promise<string> {
     const v = this.vision;
     if (v.mode === "native") {
       seen.push({ type: "text", text: `Screenshot from ${tool}:` }, ...images.map(imagePart));
       return `${result}\n(the screenshot is attached in the next message)`;
     }
     if (v.mode === "off") return `${result}\n(a screenshot was taken, but this model cannot see images; use the element list)`;
+    // A second model is slow to ask; after an action, the element list is usually enough.
+    if (glance && !v.always && /^\[\d+\] /m.test(result)) return `${result}\n(screenshot not described; take a screenshot to have the vision model look at it)`;
     try {
       this.io.note(`(asking ${v.llm.model} to look at the screenshot)`);
       return `${result}\n\nWhat the screenshot shows, according to the vision model:\n${await describeImages(v.llm, images, result, signal)}`;
@@ -124,17 +139,20 @@ export class Agent {
   }
 
   private pruneImages() {
+    const withImages = this.history.filter((m) => m.role === "user" && Array.isArray(m.content) && m.content.some((p) => p.type === "image_url")).length;
+    if (withImages < PRUNE_AT) return;
     let kept = 0;
     for (let i = this.history.length - 1; i >= 0; i--) {
       const m = this.history[i]!;
       if (m.role !== "user" || !Array.isArray(m.content) || !m.content.some((p) => p.type === "image_url")) continue;
       if (++kept <= KEEP_IMAGES) continue;
       const text = m.content.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join(" ");
-      this.history[i] = { role: "user", content: `${text} [older screenshot removed to save context]` };
+      // Stays a parts array, so it still reads as tool output rather than a new request from the user.
+      this.history[i] = { role: "user", content: [{ type: "text", text: `${text} [older screenshot removed to save context]` }] };
     }
   }
 
-  private async runTool(call: ToolCall): Promise<{ result: string; bad: boolean; images?: Image[] }> {
+  private async runTool(call: ToolCall): Promise<{ result: string; bad: boolean; images?: Image[]; glance?: boolean }> {
     const tool = findTool(call.name, this.tools);
     if (!tool) return { result: `error: unknown tool "${call.name}". Available: ${this.tools.map((t) => t.name).join(", ")}`, bad: true };
 
@@ -172,15 +190,16 @@ export class Agent {
     if (tool.risk !== "read" && tool.checkpoint !== false) await this.checkpoints.snapshot(`before ${tool.name} ${tool.ruleKey?.(args) ?? ""}`.trim());
     let result: string;
     let images: Image[] | undefined;
+    let glance: boolean | undefined;
     try {
       const out = await tool.run(args, ctx);
       result = truncate(typeof out === "string" ? out : out.text);
-      if (typeof out !== "string") images = out.images;
+      if (typeof out !== "string") ({ images, glance } = out);
     } catch (e) {
       result = `error: ${(e as Error).message}`;
     }
     this.io.toolEnd(tool.name, result);
-    return { result, bad: false, images };
+    return { result, bad: false, images, glance };
   }
 
   private async maybeCompact() {

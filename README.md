@@ -88,7 +88,9 @@ native vision-language model and one of the strongest local computer-use models 
 
 If the GGUF you load comes with its vision projector (`mmproj`), LM Studio marks it as a vision
 model and Maxx sends screenshots to it directly. Otherwise Maxx says so at startup; then pass
-`--vision-model`, and that model describes each screenshot for the main one. `maxx doctor vision`
+`--vision-model`, and that model describes screenshots for the main one: the ones the model takes
+with `android_screen`/`desktop_screenshot` or `android_run`, while the screenshots that actions return
+on their own are left to the element list (`--vision always` describes every one). `maxx doctor vision`
 draws a numbered box and checks the model can read the number back.
 
 ### How the model sees a screen
@@ -144,6 +146,32 @@ Every device action of a session is saved in device pixels to `.maxx/replays/<se
 and typing), saves a screenshot per step next to the file and fails on a crash. Let the agent find
 its way through your app once, then replay it after every change.
 
+## Sessions per project
+
+Every turn is saved under `~/.maxx/projects/<folder>-<hash>/sessions/` (screenshots are left out),
+so each project keeps its own history:
+
+```sh
+maxx -c                    # continue the latest session in this folder
+maxx --resume 2            # or by number, id, or words from its title
+maxx sessions              # this project's sessions
+maxx sessions --all        # every project, most recent first
+```
+
+A resumed session brings back its toolsets (`--with android` stays on for the app project) and
+shows the last reply. In a session: `/sessions`, `/resume <ref>`, `/new`, `/title <text>`.
+Starting `maxx` in a folder with history shows a one-line hint to continue it. `MAXX_HOME` moves
+the store.
+
+## A simulated EVO-X2
+
+`bun sim/run.ts` runs the real Maxx CLI against a simulated EVO-X2: a fake LM Studio that charges
+each request the prefill and decode time of a Strix Halo (scaled from published llama.cpp results),
+a fake Pixel 9 behind adb, and a fake Gradle. A scripted model builds a tip calculator, hits a launch
+crash, reads logcat, fixes it, rebuilds and tests the app, then a second session resumes it and a
+third works in another project. It compares model setups and writes [sim/REPORT.md](sim/REPORT.md).
+It tests the plumbing and timing, not the model's intelligence.
+
 ## Options
 
 | Flag | Default | |
@@ -153,11 +181,12 @@ its way through your app once, then replay it after every change.
 | `--mode` | `ask` | `ask`, `auto-edit` (file writes allowed), `yolo` (nothing asks) |
 | `--context` | `32768` | Context window in tokens; compaction starts at 70% |
 | `--with` | `$MAXX_WITH` | Extra toolsets: `android`, `desktop` |
-| `--vision` | `auto` | `auto` asks LM Studio whether the model sees images; `native`, `off` |
+| `--vision` | `auto` | `auto` asks LM Studio whether the model sees images; `native`, `off`; `always` (with `--vision-model`) describes every screenshot |
 | `--vision-model` | `$MAXX_VISION_MODEL` | A second model that describes screenshots for a text-only main model |
 | `-p` | | Run one prompt and exit |
+| `-c`, `--resume <ref>` | | Continue the latest, or a chosen, session in this project |
 
-In a session: `/help`, `/mode <m>`, `/with <sets|none>`, `/checkpoints`, `/rewind <n>`, `/clear`, `/exit`.
+In a session: `/help`, `/mode <m>`, `/with <sets|none>`, `/sessions`, `/resume <ref>`, `/new`, `/title`, `/checkpoints`, `/rewind <n>`, `/clear`, `/exit`.
 Ctrl-C stops the current turn.
 
 ## How it works
@@ -176,6 +205,8 @@ src/
   image.ts         PNG → downscaled JPEG, numbered element boxes, crops
   vision.ts        native / proxy / off delivery of screenshots to a model
   replay.ts        maxx replay
+  sessions.ts      saved sessions per project
+sim/               the simulated EVO-X2 (bun sim/run.ts)
   devices/         adb, the Windows PowerShell helper, screen coordinates, the command runner
   tools/           read_file, list_files, grep, edit_file, write_file, bash, android_*, desktop_*
 ```
