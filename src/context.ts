@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import type { Message } from "./llm.ts";
+import { describeShell } from "./shell.ts";
 
 // Rough but dependency-free: ~4 characters per token for code and English.
 export const estimateTokens = (msgs: Message[]) =>
@@ -17,6 +18,7 @@ export async function systemPrompt(cwd: string): Promise<string> {
   return [
     "You are Maxx, a coding agent working in the user's terminal on the project in " + cwd + ".",
     "You can read, search and edit files and run shell commands through tools.",
+    `Environment: ${describeShell()}.`,
     "",
     "How to work:",
     "- Look before you change: list or grep, then read the relevant files.",

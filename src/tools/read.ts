@@ -15,7 +15,7 @@ export const readFile = defineTool({
   async run({ path, offset = 1, limit = 400 }, { cwd }) {
     const file = Bun.file(inside(cwd, path));
     if (!(await file.exists())) return `error: ${path} does not exist`;
-    const lines = (await file.text()).split("\n");
+    const lines = (await file.text()).split(/\r?\n/);
     const slice = lines.slice(offset - 1, offset - 1 + limit);
     const body = slice.map((l, i) => `${String(offset + i).padStart(5)}  ${l}`).join("\n");
     const more = offset - 1 + limit < lines.length ? `\n... ${lines.length} lines total` : "";

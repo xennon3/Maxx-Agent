@@ -6,7 +6,42 @@ LM Studio (or any OpenAI-compatible server) on your own hardware.
 This is milestone 1, the walking skeleton: a streaming agent loop, six tools, permission prompts,
 tool-call rescue for local models, and git checkpoints you can rewind.
 
-## Quick start
+Maxx runs natively on Windows 11 (the GMKtec EVO-X2's default OS), macOS and Linux.
+
+## Quick start on Windows
+
+In PowerShell:
+
+```powershell
+# 1. Tools: Bun, Git (includes Git Bash), and optionally ripgrep for faster search
+powershell -c "irm bun.sh/install.ps1 | iex"
+winget install --id Git.Git -e
+winget install --id BurntSushi.ripgrep.MSVC -e   # optional
+
+# 2. Get Maxx (open a new terminal first so PATH picks up the installs)
+git clone https://github.com/xennon3/Maxx-Agent.git $HOME\code\maxx
+cd $HOME\code\maxx
+bun install
+
+# 3. With LM Studio's server running (Developer tab, a model loaded):
+bun src/cli.ts doctor
+
+# 4. Build maxx.exe and put it on your PATH
+bun run build
+[Environment]::SetEnvironmentVariable("Path", $env:Path + ";$HOME\code\maxx\dist", "User")
+```
+
+Then open a new terminal, `cd` into any project and run `maxx`.
+
+- **Shell:** the `bash` tool uses Git Bash when it is installed, since models write bash much more
+  reliably than PowerShell. Without Git it falls back to PowerShell 7 (`pwsh`) or Windows
+  PowerShell, and tells the model which syntax to use. Set `MAXX_SHELL` to force a specific shell.
+- **ripgrep is optional:** without `rg` on PATH, `grep` uses a built-in (slower) search.
+- **Line endings:** files with CRLF line endings keep them when Maxx edits or rewrites them.
+- **Terminal:** use Windows Terminal for colors and Ctrl-C handling; the old console host works but
+  looks plainer.
+
+## Quick start on macOS or Linux
 
 1. Install [Bun](https://bun.sh) and [ripgrep](https://github.com/BurntSushi/ripgrep).
 2. In LM Studio, load a model (recommended: Qwen AgentWorld 35B-A3B Q6_K) and start the server
@@ -52,6 +87,7 @@ src/
   checkpoint.ts    shadow commits under refs/maxx/<session>, used by /rewind
   doctor.ts        canned tool-call probes for a model
   diff.ts          colored line diffs for approval prompts
+  shell.ts         picks bash / Git Bash / PowerShell per platform
   tools/           read_file, list_files, grep, edit_file, write_file, bash
 ```
 

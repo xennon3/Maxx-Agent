@@ -18,7 +18,10 @@ export const writeFile = defineTool({
     return before ? lineDiff(before, content) : `new file, ${content.split("\n").length} lines:\n${lineDiff("", content)}`;
   },
   async run({ path, content }, { cwd }) {
-    await Bun.write(inside(cwd, path), content);
+    // Keep Windows line endings when overwriting a CRLF file.
+    const file = Bun.file(inside(cwd, path));
+    if ((await file.exists()) && (await file.text()).includes("\r\n")) content = content.replace(/\r?\n/g, "\r\n");
+    await Bun.write(file, content);
     return `wrote ${path} (${content.split("\n").length} lines)`;
   },
 });

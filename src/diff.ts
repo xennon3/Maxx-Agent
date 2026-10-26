@@ -2,7 +2,7 @@
 const RED = "\x1b[31m", GREEN = "\x1b[32m", DIM = "\x1b[2m", RESET = "\x1b[0m";
 
 export function lineDiff(before: string, after: string, context = 3): string {
-  const a = before.split("\n"), b = after.split("\n");
+  const a = before.split(/\r?\n/), b = after.split(/\r?\n/);
   const n = a.length, m = b.length;
   if (n * m > 4_000_000) return `${DIM}(diff too large to show: ${n} -> ${m} lines)${RESET}`;
   const dp: Uint32Array[] = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));

@@ -6,7 +6,15 @@ import { lineDiff } from "../diff.ts";
 export type EditResult = { ok: true; text: string; how: "exact" | "whitespace" } | { ok: false; error: string };
 
 // Apply a search/replace edit, forgiving the indentation slips local models make.
+// Files with Windows (CRLF) line endings keep them; the model always works in LF.
 export function applyEdit(source: string, oldStr: string, newStr: string, replaceAll = false): EditResult {
+  const crlf = source.includes("\r\n");
+  const lf = (s: string) => s.replace(/\r\n/g, "\n");
+  const r = applyEditLF(crlf ? lf(source) : source, lf(oldStr), lf(newStr), replaceAll);
+  return r.ok && crlf ? { ...r, text: r.text.replace(/\n/g, "\r\n") } : r;
+}
+
+function applyEditLF(source: string, oldStr: string, newStr: string, replaceAll: boolean): EditResult {
   if (oldStr === "") return { ok: false, error: "old_string is empty; use write_file to create a file" };
 
   const count = source.split(oldStr).length - 1;

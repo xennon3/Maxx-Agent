@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { defineTool } from "./types.ts";
 
-const IGNORE = /(^|\/)(node_modules|\.git|dist|build|\.next|target|__pycache__|\.venv)\//;
+export const IGNORE = /(^|\/)(node_modules|\.git|dist|build|\.next|target|__pycache__|\.venv)\//;
+export const toPosix = (p: string) => p.replaceAll("\\", "/");
 
 export const listFiles = defineTool({
   name: "list_files",
@@ -12,9 +13,10 @@ export const listFiles = defineTool({
   risk: "read",
   async run({ pattern }, { cwd }) {
     const files: string[] = [];
-    for await (const f of new Bun.Glob(pattern).scan({ cwd, dot: false })) {
-      if (IGNORE.test(f)) continue;
-      files.push(f);
+    for await (const f of new Bun.Glob(toPosix(pattern)).scan({ cwd, dot: false })) {
+      const rel = toPosix(f);
+      if (IGNORE.test(rel)) continue;
+      files.push(rel);
       if (files.length >= 500) break;
     }
     files.sort();
