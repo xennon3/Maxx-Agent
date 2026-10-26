@@ -5,3 +5,5 @@
   Register new tools in `src/tools/index.ts`.
 - Keep tool arguments flat (strings, numbers, booleans) so small local models can call them.
 - Everything a tool returns goes back to the model, so error messages should say how to fix the call.
+- Device commands (adb, PowerShell) go through `run()` in `src/devices/run.ts`; tests swap it with `setRunner`.
+- Screen tools speak screenshot pixels and element numbers; `Screen` in `src/devices/screen.ts` converts.

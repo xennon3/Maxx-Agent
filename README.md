@@ -62,6 +62,88 @@ Then open a new terminal, `cd` into any project and run `maxx`.
 
    Or build a single binary with `bun run build` and put `dist/maxx` on your PATH.
 
+## Phone and desktop: `--with android,desktop`
+
+Maxx can build an Android app, put it on your phone, look at it and poke it, and it can see and
+drive your Windows desktop. These tools are opt-in so small models aren't handed twenty tools
+while they only edit code:
+
+```powershell
+maxx --with android                 # phone tools
+maxx --with android,desktop         # both
+```
+
+Or switch inside a session with `/with android`, `/with none`.
+
+### Which model looks at the screenshots
+
+Screenshots need a vision model. The good news: **Qwen3.8-27B** (the plan's "careful" model) is a
+native vision-language model and one of the strongest local computer-use models available
+(OSWorld-Verified 84.3, AndroidWorld 81.9 on its model card). Two setups on the 64 GB EVO-X2:
+
+| Setup | LM Studio | Run |
+| --- | --- | --- |
+| One model that codes and sees | Qwen3.8-27B Q6_K (~22 GB) | `maxx --model qwen3.8-27b --with android` |
+| Fast coder + separate eyes | Qwen AgentWorld 35B-A3B Q4_K_M + Qwen3.8-27B Q4_K_M (~38 GB together) | `maxx --model <agentworld> --vision-model qwen3.8-27b --with android` |
+
+If the GGUF you load comes with its vision projector (`mmproj`), LM Studio marks it as a vision
+model and Maxx sends screenshots to it directly. Otherwise Maxx says so at startup; then pass
+`--vision-model`, and that model describes each screenshot for the main one. `maxx doctor vision`
+draws a numbered box and checks the model can read the number back.
+
+### How the model sees a screen
+
+- **Numbered boxes ("set-of-marks").** Every screenshot comes with numbered boxes on the buttons,
+  fields and text Maxx found in the Android UI tree or Windows UI Automation, plus a matching list.
+  The model says "tap 3" instead of guessing pixels, which is far more reliable for local models.
+- **Small images.** Screenshots are downscaled to 1280 px on the long side (`MAXX_SCREEN_MAX`) and
+  sent as JPEG; only the last two stay in the conversation. `zoom: "x1,y1,x2,y2"` shows part of the
+  screen at full resolution for small text.
+- **Look after every action.** Taps, typing, swipes and key presses return a fresh screenshot, so
+  the model checks each step before the next.
+
+### Android setup (once)
+
+1. Install Android Studio (it brings the SDK, `adb` and a JDK), or just platform-tools with
+   `winget install Google.PlatformTools` if you only install prebuilt APKs.
+2. On the phone: Settings > About phone > tap *Build number* 7 times, then Developer options >
+   *USB debugging* (or *Wireless debugging*).
+3. USB: plug in and accept the prompt. Wi-Fi: ask Maxx to connect and give it the pairing IP:port
+   and code from *Wireless debugging > Pair device with pairing code*.
+4. `maxx doctor android` checks adb, the JDK and takes a test screenshot.
+
+| Tool | |
+| --- | --- |
+| `android_run` | Gradle `assembleDebug` → install → launch → crash check → screenshot, in one call. Works for native Kotlin, Capacitor (`project_dir: android`) and Expo prebuild projects, or a prebuilt `apk` |
+| `android_screen` | screenshot + numbered elements; `zoom` for detail |
+| `android_tap` / `android_type` / `android_swipe` / `android_key` | by element number, text, or screenshot pixels |
+| `android_logcat` | crashes, or the app's own log |
+| `android_devices` / `android_connect` | pick a device, pair and connect over Wi-Fi |
+
+### Desktop (Windows)
+
+`desktop_screenshot`, `desktop_click` (also right/double-click and drag), `desktop_type` (any
+language), `desktop_key` (`ctrl+s`, `win+r`, `alt+tab`), `desktop_scroll`, `desktop_open` (apps,
+files, URLs, `ms-settings:`). They run through a small PowerShell helper using UI Automation and
+`SendInput`; nothing to install. Only the primary monitor is captured.
+
+**Failsafe:** move the mouse into the top-left corner of the screen and the next desktop action
+stops with "STOPPED"; the model is told to stop and ask you.
+
+### Permissions
+
+Screen reading on the phone, logcat and device lists never prompt. Everything that acts (tap,
+type, install, desktop screenshots, clicks, keys) goes through the usual prompt; answer
+`a`lways to allow e.g. all taps for this project (`android_tap(tap)` in `.maxx/settings.json`).
+Device actions don't take git checkpoints, since they don't touch the workspace.
+
+### Replays: turn an exploration into a smoke test
+
+Every device action of a session is saved in device pixels to `.maxx/replays/<session>.jsonl`
+(`/with` shows the path). `maxx replay <file>` runs it again (reinstall, relaunch, the same taps
+and typing), saves a screenshot per step next to the file and fails on a crash. Let the agent find
+its way through your app once, then replay it after every change.
+
 ## Options
 
 | Flag | Default | |
@@ -70,9 +152,12 @@ Then open a new terminal, `cd` into any project and run `maxx`.
 | `--model` | `$MAXX_MODEL` or the first loaded model | |
 | `--mode` | `ask` | `ask`, `auto-edit` (file writes allowed), `yolo` (nothing asks) |
 | `--context` | `32768` | Context window in tokens; compaction starts at 70% |
+| `--with` | `$MAXX_WITH` | Extra toolsets: `android`, `desktop` |
+| `--vision` | `auto` | `auto` asks LM Studio whether the model sees images; `native`, `off` |
+| `--vision-model` | `$MAXX_VISION_MODEL` | A second model that describes screenshots for a text-only main model |
 | `-p` | | Run one prompt and exit |
 
-In a session: `/help`, `/mode <m>`, `/checkpoints`, `/rewind <n>`, `/clear`, `/exit`.
+In a session: `/help`, `/mode <m>`, `/with <sets|none>`, `/checkpoints`, `/rewind <n>`, `/clear`, `/exit`.
 Ctrl-C stops the current turn.
 
 ## How it works
@@ -88,7 +173,11 @@ src/
   doctor.ts        canned tool-call probes for a model
   diff.ts          colored line diffs for approval prompts
   shell.ts         picks bash / Git Bash / PowerShell per platform
-  tools/           read_file, list_files, grep, edit_file, write_file, bash
+  image.ts         PNG → downscaled JPEG, numbered element boxes, crops
+  vision.ts        native / proxy / off delivery of screenshots to a model
+  replay.ts        maxx replay
+  devices/         adb, the Windows PowerShell helper, screen coordinates, the command runner
+  tools/           read_file, list_files, grep, edit_file, write_file, bash, android_*, desktop_*
 ```
 
 - **Tool-call rescue.** Local models sometimes write a tool call as text instead of a real

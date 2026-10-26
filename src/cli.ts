@@ -3,8 +3,13 @@ import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { Agent, type AgentIO } from "./loop.ts";
 import { Permissions, type Mode, type Answer } from "./permissions.ts";
-import { doctor } from "./doctor.ts";
+import { join } from "node:path";
+import { doctor, doctorDevices } from "./doctor.ts";
 import type { LLMConfig } from "./llm.ts";
+import { TOOLSETS } from "./tools/index.ts";
+import { pickVision } from "./vision.ts";
+import { recordTo } from "./devices/run.ts";
+import { replay } from "./replay.ts";
 
 const C = { dim: "\x1b[2m", cyan: "\x1b[36m", yellow: "\x1b[33m", bold: "\x1b[1m", reset: "\x1b[0m" };
 
@@ -14,16 +19,23 @@ usage:
   maxx [options]              start an interactive session in the current directory
   maxx -p "fix the tests"     run one prompt and exit
   maxx doctor                 check that the model makes valid tool calls
+  maxx doctor android         check adb, the JDK and the connected phone
+  maxx doctor desktop         check screenshots and UI Automation on Windows
+  maxx doctor vision          check that the model (or --vision-model) can read an image
+  maxx replay <file.jsonl>    re-run the phone/desktop actions of an earlier session
 
 options:
   --base-url <url>   OpenAI-compatible server (default $MAXX_BASE_URL or http://localhost:1234/v1)
   --model <id>       model id (default $MAXX_MODEL or the first model the server lists)
   --mode <mode>      ask | auto-edit | yolo (default ask)
   --context <n>      context window in tokens (default 32768)
+  --with <sets>      extra tools: android, desktop (comma-separated; default $MAXX_WITH)
+  --vision <v>       auto | native | off: can the model see screenshots? (default auto)
+  --vision-model <id>  a second model that looks at screenshots for a text-only main model
   -p, --prompt <s>   one-shot prompt
 
 in a session:
-  /help  /mode <m>  /checkpoints  /rewind <n>  /clear  /exit
+  /help  /mode <m>  /with <sets|none>  /checkpoints  /rewind <n>  /clear  /exit
   Ctrl-C stops the current turn; Ctrl-C at an empty prompt exits.`;
 
 const { values, positionals } = parseArgs({
@@ -33,6 +45,9 @@ const { values, positionals } = parseArgs({
     model: { type: "string" },
     mode: { type: "string", default: "ask" },
     context: { type: "string", default: "32768" },
+    with: { type: "string" },
+    vision: { type: "string", default: "auto" },
+    "vision-model": { type: "string" },
     prompt: { type: "string", short: "p" },
     help: { type: "boolean", short: "h" },
   },
@@ -46,7 +61,14 @@ if (values.help) {
 const baseURL = values["base-url"] ?? process.env.MAXX_BASE_URL ?? "http://localhost:1234/v1";
 const llm: LLMConfig = { baseURL, model: values.model ?? process.env.MAXX_MODEL ?? (await firstModel(baseURL)) };
 
-if (positionals[0] === "doctor") process.exit((await doctor(llm)) ? 0 : 1);
+if (positionals[0] === "doctor") {
+  const what = positionals[1];
+  process.exit((what ? await doctorDevices(what, llm, values["vision-model"] ?? process.env.MAXX_VISION_MODEL) : await doctor(llm)) ? 0 : 1);
+}
+if (positionals[0] === "replay") {
+  if (!positionals[1]) die("usage: maxx replay <file.jsonl>");
+  process.exit((await replay(positionals[1])) ? 0 : 1);
+}
 
 const mode = values.mode as Mode;
 if (!["ask", "auto-edit", "yolo"].includes(mode)) die(`unknown mode ${mode}`);
@@ -73,7 +95,12 @@ const io: AgentIO = {
   },
 };
 
-const agent = await new Agent({ llm, cwd, permissions, contextWindow: Number(values.context) }, io).init();
+const toolsets = parseSets(values.with ?? process.env.MAXX_WITH ?? "");
+const { vision, note: visionNote } = await pickVision(llm, { flag: values.vision, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL });
+const agent = await new Agent({ llm, cwd, permissions, contextWindow: Number(values.context), toolsets, vision }, io).init();
+const replayFile = join(cwd, ".maxx", "replays", `${agent.session}.jsonl`);
+recordTo(replayFile);
+if (toolsets.length && visionNote) io.note(visionNote);
 
 if (values.prompt) {
   await turn(values.prompt);
@@ -81,7 +108,8 @@ if (values.prompt) {
   process.exit(0);
 }
 
-console.log(`${C.bold}maxx${C.reset} ${C.dim}${llm.model} via ${baseURL} · mode ${permissions.mode} · /help${C.reset}`);
+const extras = toolsets.length ? ` · with ${toolsets.join(",")} · vision ${vision.mode === "proxy" ? vision.llm.model : vision.mode}` : "";
+console.log(`${C.bold}maxx${C.reset} ${C.dim}${llm.model} via ${baseURL} · mode ${permissions.mode}${extras} · /help${C.reset}`);
 let controller: AbortController | null = null;
 rl.on("SIGINT", () => {
   if (controller) controller.abort();
@@ -120,6 +148,18 @@ async function command(line: string) {
     case "/mode":
       if (arg && ["ask", "auto-edit", "yolo"].includes(arg)) permissions.mode = arg as Mode;
       return console.log(`mode: ${permissions.mode}`);
+    case "/with": {
+      if (arg) {
+        try {
+          agent.useToolsets(arg === "none" ? [] : arg.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean));
+          await agent.refreshSystemPrompt();
+        } catch (e) {
+          return console.log((e as Error).message);
+        }
+      }
+      const sets = Object.entries(TOOLSETS).map(([n, t]) => `  ${agent.toolsets.includes(n) ? "*" : " "} ${n.padEnd(8)} ${t.about}`);
+      return console.log(`toolsets (* = on; /with android,desktop or /with none):\n${sets.join("\n")}\nreplay of this session: ${replayFile}`);
+    }
     case "/checkpoints": {
       const list = agent.checkpoints.list();
       return console.log(list.length ? list.join("\n") : "(no checkpoints yet; one is taken before every write or command)");
@@ -137,6 +177,13 @@ async function firstModel(url: string): Promise<string> {
     if (id) return id;
   } catch {}
   die(`no model found at ${url}. Start LM Studio's server (Developer tab) and load a model, or pass --model.`);
+}
+
+function parseSets(s: string): string[] {
+  const sets = s.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
+  const bad = sets.filter((x) => !TOOLSETS[x]);
+  if (bad.length) die(`unknown toolset ${bad.join(", ")}; available: ${Object.keys(TOOLSETS).join(", ")}`);
+  return sets;
 }
 
 function die(msg: string): never {
