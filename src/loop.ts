@@ -8,7 +8,7 @@ import { describeImages, imagePart, type Vision } from "./vision.ts";
 import type { Image } from "./image.ts";
 import { newSessionId } from "./sessions.ts";
 import type { StreamProgress } from "./progress.ts";
-import { coach, coachNote, failed } from "./coach.ts";
+import { coach, coachNote, failed, missingTool, type Missing } from "./coach.ts";
 import { planFromHistory, planTool, PLAN_PROMPT, formatPlan, type Step } from "./plan.ts";
 import { addLesson, rememberTool, swapLesson, MEMORY_PROMPT } from "./memory.ts";
 import { detectCheck, excerpt, quickCheck, type CheckResult } from "./fixit.ts";
@@ -53,6 +53,9 @@ const MAX_BAD_CALLS = 3;
 // the result carries a nudge, and the fifth ends the turn.
 const WARN_REPEATS = 3;
 const STOP_REPEATS = 5;
+// Once a tool turns out to be missing (no Java, no Android SDK), the model gets
+// this many more steps to tell the user before Maxx tells them instead.
+const BLOCKED_STEPS = 2;
 // Screenshots are big; only the most recent few stay in the conversation.
 // Removing one rewrites an older message, which costs the server its prompt
 // cache from that point on, so prune in batches: at 4 images, back down to 2.
@@ -135,6 +138,8 @@ export class Agent {
     let fixes = 0;
     let nudged = false;
     let lastFail = "";
+    let blocked: Missing | undefined;
+    let blockedSteps = 0;
 
     for (let step = 0; step < (this.opts.maxSteps ?? 50); step++) {
       await this.maybeCompact();
@@ -144,7 +149,8 @@ export class Agent {
 
       if (!res.toolCalls.length) {
         this.history.push({ role: "assistant", content: res.content });
-        const more = await this.beforeFinish(changed, fixes, nudged, signal);
+        // A missing tool fails every check, so the fix-it loop would only go in circles.
+        const more = blocked ? null : await this.beforeFinish(changed, fixes, nudged, signal);
         if (more === "fix") fixes++;
         if (more === "plan") nudged = true;
         if (more) continue;
@@ -158,6 +164,7 @@ export class Agent {
         let { result, bad, images, glance, args } = await this.runTool(call);
         badCalls = bad ? badCalls + 1 : 0;
         if (args) await this.learn(call.name, args, result, changed, lastFail).then((f) => (lastFail = f));
+        blocked ??= missingTool(result);
         const key = `${call.name}|${canonicalArgs(call.arguments)}|${result}`;
         const n = (repeats.get(key) ?? 0) + 1;
         repeats.set(key, n);
@@ -173,6 +180,11 @@ export class Agent {
       if (seen.length) {
         this.history.push({ role: "user", content: seen });
         this.pruneImages();
+      }
+      if (blocked && ++blockedSteps > BLOCKED_STEPS) {
+        const msg = `Stopped: this computer does not have ${blocked.what}, so I can't finish this here. ${blocked.install}`;
+        this.history.push({ role: "assistant", content: msg });
+        return msg;
       }
       if (stuck >= STOP_REPEATS) {
         const msg = "Stopped: the model kept repeating the same tool call without making progress. Try a more specific request, or a stronger model (run `maxx doctor` to check this one).";
