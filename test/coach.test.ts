@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { coach, coachNote, firstError } from "../src/coach.ts";
+import { coach, coachNote, firstError, missingTool } from "../src/coach.ts";
 
 const run = (out: string, command = "x", win = false) => coach("bash", { command }, out, win ? "win32" : "linux");
 
@@ -43,4 +43,12 @@ test("an existing hint is not doubled; unknown failures still show the first err
 
 test("firstError skips banners and success counts", () => {
   expect(firstError("Compiling...\n0 errors so far\nwarning: x\nerror: expected ;")).toBe("error: expected ;");
+});
+
+test("missing Java or adb is a job for the user, not for retries", () => {
+  const java = run("exit code: 127\nstderr:\n./gradlew: line 5: exec: java: not found");
+  expect(java.hint).toStartWith("This computer does not have Java");
+  expect(missingTool("exit code: 127\nstderr:\n./gradlew: line 5: exec: java: not found")?.install).toContain("Android Studio");
+  expect(missingTool("exit code: 127\nstderr:\nbash: adb: command not found")?.what).toStartWith("adb");
+  expect(missingTool("exit code: 0\nstdout:\njava: not found is just text here")).toBeUndefined();
 });

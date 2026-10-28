@@ -131,3 +131,17 @@ test("plan and memory can be switched off", async () => {
   expect(names).not.toContain("remember");
   expect(requests.at(-1).messages[0].content).not.toContain("call plan");
 });
+
+test("a missing program ends the turn with what to install instead of wandering", async () => {
+  const { agent } = await setup();
+  const noJava = { tool: { name: "bash", args: { command: `echo "./gradlew: line 5: exec: java: not found" >&2; exit 127` } } };
+  const look = { tool: { name: "list_files", args: { pattern: "app/**" } } };
+  script = [noJava, look, look, look, { text: "should not get here" }];
+  const answer = await agent.send("build the app");
+
+  expect(answer).toStartWith("Stopped: this computer does not have Java");
+  expect(answer).toContain("Install Android Studio");
+  const first = agent.history.find((m) => m.role === "tool")!.content as string;
+  expect(first).toContain("Stop calling tools and tell the user: Install Android Studio");
+  script = [];
+});

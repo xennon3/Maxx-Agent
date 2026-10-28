@@ -2,14 +2,49 @@
 // one plain sentence. When a tool call fails, Maxx finds the first real error
 // line and, when it recognizes the problem, adds a hint that says what to do.
 
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 export type Coaching = { first?: string; hint?: string };
 
-type Rule = { test: RegExp; hint: (m: RegExpMatchArray, ctx: { tool: string; command: string; win: boolean }) => string };
+// Programs only the user can install. Retrying never helps, and a small model
+// will otherwise wander (look for gradle, list folders...) until it is stopped.
+export type Missing = { what: string; install: string };
+
+const ANDROID_STUDIO = "Install Android Studio (developer.android.com/studio), open it once so it finishes setting up, then restart Maxx.";
+
+function hasAndroidSdk(env = process.env): boolean {
+  const dirs = [env.ANDROID_HOME, env.ANDROID_SDK_ROOT, env.LOCALAPPDATA && join(env.LOCALAPPDATA, "Android", "Sdk"), join(homedir(), "Library", "Android", "sdk"), join(homedir(), "Android", "Sdk")];
+  return dirs.some((d) => !!d && existsSync(d));
+}
+
+const MISSING: { test: RegExp; when?: () => boolean; missing: Missing }[] = [
+  {
+    test: /JAVA_HOME is not set|no java(?:\.exe)? (?:could be )?found|Unable to locate a Java Runtime|(?:^|[\s:])java: (?:command )?not found|'java' is not recognized/im,
+    missing: { what: "Java (a JDK), which Gradle needs to build Android apps", install: `${ANDROID_STUDIO} It includes a JDK.` },
+  },
+  { test: /SDK location not found|ANDROID_HOME|sdk\.dir/, when: () => !hasAndroidSdk(), missing: { what: "the Android SDK", install: ANDROID_STUDIO } },
+  { test: /(?:^|[\s:])adb: (?:command )?not found|'adb' is not recognized|adb(?:\.exe)? (?:was )?not found/im, missing: { what: "adb (Android platform-tools)", install: ANDROID_STUDIO } },
+];
+
+export function missingTool(result: string): Missing | undefined {
+  if (!failed(result)) return undefined;
+  return MISSING.find((m) => m.test.test(result) && (m.when?.() ?? true))?.missing;
+}
+
+type Rule = { test: RegExp; when?: () => boolean; hint: (m: RegExpMatchArray, ctx: { tool: string; command: string; win: boolean }) => string };
 
 const fixAt = (file: string, line: string, msg: string) => `Fix line ${line} of ${file}: ${msg.trim().replace(/\.$/, "")}.`;
 
 // Order matters: the first rule that matches wins, so specific rules go first.
 const RULES: Rule[] = [
+  // Something only the user can install: say so plainly, before any other advice.
+  ...MISSING.map((m): Rule => ({
+    test: m.test,
+    when: m.when,
+    hint: () => `This computer does not have ${m.missing.what}, and you cannot install it. Stop calling tools and tell the user: ${m.missing.install}`,
+  })),
   // Missing programs. On Windows `python` is often the Store stub and `py` works.
   {
     test: /(?:^|[\s'"])([\w.\-]+)'? is not recognized as (?:the name of a cmdlet|an internal or external command)|(?:bash: |^|: )([\w.\-]+): command not found/m,
@@ -75,7 +110,7 @@ export function coach(tool: string, args: Record<string, unknown>, result: strin
   const first = firstError(result.replace(/^exit code: .*$/m, ""));
   for (const r of RULES) {
     const m = result.match(r.test);
-    if (m) return { first, hint: r.hint(m, ctx) };
+    if (m && (r.when?.() ?? true)) return { first, hint: r.hint(m, ctx) };
   }
   return { first };
 }

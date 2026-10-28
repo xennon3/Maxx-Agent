@@ -8,7 +8,7 @@ import { describeImages, imagePart, type Vision } from "./vision.ts";
 import type { Image } from "./image.ts";
 import { newSessionId } from "./sessions.ts";
 import type { StreamProgress } from "./progress.ts";
-import { coach, coachNote, failed } from "./coach.ts";
+import { coach, coachNote, failed, missingTool, type Missing } from "./coach.ts";
 import { planFromHistory, planTool, PLAN_PROMPT, formatPlan, type Step } from "./plan.ts";
 import { addLesson, rememberTool, swapLesson, MEMORY_PROMPT } from "./memory.ts";
 import { detectCheck, excerpt, quickCheck, type CheckResult } from "./fixit.ts";
@@ -61,6 +61,9 @@ const MAX_BAD_CALLS = 3;
 // the result carries a nudge, and the fifth ends the turn.
 const WARN_REPEATS = 3;
 const STOP_REPEATS = 5;
+// Once a tool turns out to be missing (no Java, no Android SDK), the model gets
+// this many more steps to tell the user before Maxx tells them instead.
+const BLOCKED_STEPS = 2;
 // Screenshots are big; only the most recent few stay in the conversation.
 // Removing one rewrites an older message, which costs the server its prompt
 // cache from that point on, so prune in batches: at 4 images, back down to 2.
@@ -169,6 +172,8 @@ export class Agent {
       failures = badCalls = stuck = 0;
       this.mark(e, `Back to ${this.opts.llm.model}: ${why}${spent(e)}`);
     };
+    let blocked: Missing | undefined;
+    let blockedSteps = 0;
 
     for (let step = 0; step < (this.opts.maxSteps ?? 50); step++) {
       await this.maybeCompact();
@@ -198,7 +203,8 @@ export class Agent {
       if (!res.toolCalls.length) {
         this.history.push({ role: "assistant", content: res.content });
         if (helping) handBack("it answered");
-        const more = await this.beforeFinish(changed, fixes, nudged, signal);
+        // A missing tool fails every check, so the fix-it loop would only go in circles.
+        const more = blocked ? null : await this.beforeFinish(changed, fixes, nudged, signal);
         if (more === "fix") fixes++;
         if (more === "plan") nudged = true;
         if (more) continue;
@@ -217,6 +223,7 @@ export class Agent {
         const fail = bad || failed(result);
         failures = fail ? failures + 1 : 0;
         stepFailed ||= fail;
+        blocked ??= missingTool(result);
         // Sending the same edit or write again is never progress, whatever it returned
         // (applied, then "not found", then applied...), so those count by the call alone.
         const writes = findTool(call.name, this.tools)?.risk === "write";
@@ -239,6 +246,13 @@ export class Agent {
         this.pruneImages();
       }
 
+      // A missing program (Java, the Android SDK, adb) can't be fixed from here, not even by the helper.
+      if (blocked && ++blockedSteps > BLOCKED_STEPS) {
+        if (helping) handBack("a program it needs is not installed");
+        const msg = `Stopped: this computer does not have ${blocked.what}, so I can't finish this here. ${blocked.install}`;
+        this.history.push({ role: "assistant", content: msg });
+        return msg;
+      }
       if (helping) {
         helping.steps++;
         const max = this.helper?.maxSteps ?? HELPER_DEFAULTS.maxSteps;
@@ -254,7 +268,7 @@ export class Agent {
       } else {
         const h = this.helper;
         trigger ||= failures >= (h?.afterFailures ?? HELPER_DEFAULTS.afterFailures) ? `${failures} failed tool calls in a row` : badCalls >= MAX_BAD_CALLS ? "it kept writing invalid tool calls" : "";
-        if (trigger && h && escalations < (h.maxPerTurn ?? HELPER_DEFAULTS.maxPerTurn)) {
+        if (trigger && h && !blocked && escalations < (h.maxPerTurn ?? HELPER_DEFAULTS.maxPerTurn)) {
           escalations++;
           helping = { reason: trigger, steps: 0, usage: { input: 0, output: 0 } };
           this.mark({ active: true, model: h.model, reason: trigger }, `Stuck: ${trigger}. Handing this step to ${describeHelper(h)}`);
