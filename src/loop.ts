@@ -14,6 +14,8 @@ export type AgentIO = {
   toolEnd(name: string, result: string): void;
   ask(question: string, preview: string): Promise<Answer>;
   note(text: string): void;
+  // Screenshots as they arrive, for UIs that can show them.
+  image?(tool: string, images: Image[]): void;
 };
 
 export type AgentOptions = {
@@ -104,6 +106,7 @@ export class Agent {
       for (const call of res.toolCalls) {
         const { result, bad, images, glance } = await this.runTool(call);
         badCalls = bad ? badCalls + 1 : 0;
+        if (images?.length) this.io.image?.(call.name, images);
         const content = images?.length ? await this.deliverImages(call.name, result, images, seen, signal, glance) : result;
         this.history.push({ role: "tool", tool_call_id: call.id, content });
       }

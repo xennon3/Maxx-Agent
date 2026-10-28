@@ -11,6 +11,8 @@ import { pickVision } from "./vision.ts";
 import { textOf } from "./context.ts";
 import { recordTo } from "./devices/run.ts";
 import { replay } from "./replay.ts";
+import { startUI } from "./ui/server.ts";
+import { launchedFromExplorer } from "./ui/launch.ts";
 import { ago, findSession, newSessionId, formatList, listProjects, listSessions, loadSession, saveSession, type Session } from "./sessions.ts";
 
 const C = { dim: "\x1b[2m", cyan: "\x1b[36m", yellow: "\x1b[33m", bold: "\x1b[1m", reset: "\x1b[0m" };
@@ -19,6 +21,7 @@ const HELP = `maxx: a local coding agent
 
 usage:
   maxx [options]              start an interactive session in the current directory
+  maxx ui [--port n]          open the app window (also what double-clicking maxx.exe does)
   maxx -p "fix the tests"     run one prompt and exit
   maxx doctor                 check that the model makes valid tool calls
   maxx doctor android         check adb, the JDK and the connected phone
@@ -59,6 +62,7 @@ const { values, positionals } = parseArgs({
     continue: { type: "boolean", short: "c" },
     resume: { type: "string" },
     all: { type: "boolean" },
+    port: { type: "string" },
     help: { type: "boolean", short: "h" },
   },
 });
@@ -78,6 +82,20 @@ if (positionals[0] === "sessions") {
 }
 
 const baseURL = values["base-url"] ?? process.env.MAXX_BASE_URL ?? "http://localhost:1234/v1";
+
+// `maxx ui`, or double-clicking maxx.exe: the app window instead of the terminal.
+const fromExplorer = launchedFromExplorer();
+if (positionals[0] === "ui" || (fromExplorer && !positionals.length && !values.prompt)) {
+  const port = values.port ? Number(values.port) : 4317;
+  let ui;
+  try {
+    ui = await startUI({ baseURL, port, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context) });
+  } catch {
+    ui = await startUI({ baseURL, port: 0, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context) });
+  }
+  console.log(`${C.bold}maxx${C.reset} is running at ${ui.link}\n${C.dim}The window opened on its own; if not, open that link. Close this window (or Ctrl-C) to quit.${C.reset}`);
+  await new Promise(() => {});
+}
 const llm: LLMConfig = { baseURL, model: values.model ?? process.env.MAXX_MODEL ?? (await firstModel(baseURL)) };
 
 if (positionals[0] === "doctor") {
@@ -269,5 +287,10 @@ function parseSets(s: string): string[] {
 
 function die(msg: string): never {
   console.error(msg);
+  // Double-clicked maxx.exe: keep the window open long enough to read why.
+  if (launchedFromExplorer()) {
+    console.error("\nPress Enter to close.");
+    Bun.spawnSync(["cmd.exe", "/c", "pause >nul"], { stdin: "inherit", stdout: "inherit" });
+  }
   process.exit(1);
 }

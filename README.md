@@ -31,7 +31,8 @@ bun run build
 [Environment]::SetEnvironmentVariable("Path", $env:Path + ";$HOME\code\maxx\dist", "User")
 ```
 
-Then open a new terminal, `cd` into any project and run `maxx`.
+Then open a new terminal, `cd` into any project and run `maxx`, or double-click `maxx.exe` for the
+app window.
 
 - **Shell:** the `bash` tool uses Git Bash when it is installed, since models write bash much more
   reliably than PowerShell. Without Git it falls back to PowerShell 7 (`pwsh`) or Windows
@@ -146,6 +147,26 @@ Every device action of a session is saved in device pixels to `.maxx/replays/<se
 and typing), saves a screenshot per step next to the file and fails on a crash. Let the agent find
 its way through your app once, then replay it after every change.
 
+## The app window: `maxx ui`
+
+Double-click `maxx.exe` (or run `maxx ui`) and Maxx opens as its own window, laid out like the
+Claude Code app:
+
+- **Sidebar:** your projects and their sessions; click one to pick up where you left off, or
+  *Choose folder…* to open a new project.
+- **Chat:** streamed replies, collapsible tool cards ("Edit src/App.kt", "Tap Calculate"), and
+  permission prompts with the diff inline and **Allow / Always allow / Deny** buttons. **Stop**
+  ends the current turn.
+- **Header:** model picker (from LM Studio), permission mode, 📱 Android / 🖥 Desktop toolset
+  toggles, *New* session.
+- **Screen panel:** the latest phone or desktop screenshot with its numbered boxes, live while
+  Maxx tests; click to enlarge.
+
+It runs in Edge's app mode (no tabs or address bar) on `127.0.0.1` only, behind a random token
+in the link, so other sites and other machines can't drive it. Closing the console window quits.
+`bun sim/ui-demo.ts` drives the UI in a headless browser against the simulated EVO-X2 and saves
+screenshots to `sim/out/ui/`.
+
 ## Sessions per project
 
 Every turn is saved under `~/.maxx/projects/<folder>-<hash>/sessions/` (screenshots are left out),
@@ -206,6 +227,7 @@ src/
   vision.ts        native / proxy / off delivery of screenshots to a model
   replay.ts        maxx replay
   sessions.ts      saved sessions per project
+  ui/              maxx ui: local server, the page, Windows launch helpers
 sim/               the simulated EVO-X2 (bun sim/run.ts)
   devices/         adb, the Windows PowerShell helper, screen coordinates, the command runner
   tools/           read_file, list_files, grep, edit_file, write_file, bash, android_*, desktop_*
