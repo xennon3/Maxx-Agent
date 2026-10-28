@@ -5,7 +5,7 @@ import { lineDiff } from "../diff.ts";
 
 export const writeFile = defineTool({
   name: "write_file",
-  description: "Create a file or overwrite it completely. Prefer edit_file for changes to existing files.",
+  description: "Create a file or overwrite it completely; missing parent folders are created. Prefer edit_file for changes to existing files.",
   schema: z.object({
     path: z.string().describe("File path relative to the workspace"),
     content: z.string().describe("Full file contents"),

@@ -100,3 +100,18 @@ test("tool calls written as text are rescued", async () => {
   expect(log.some((l) => l.startsWith("note (recovered 1 tool call"))).toBe(true);
   expect(log).toContain("start read_file");
 });
+
+test("the same call with the same result gets a nudge, then ends the turn", async () => {
+  const dir = await workspace();
+  const same = { tool: { name: "list_files", args: { pattern: "*.ts" } } };
+  script = [same, same, same, same, same, { text: "should not get here" }];
+  const { agent } = await agentIn(dir);
+  const answer = await agent.send("make a game");
+
+  expect(answer).toStartWith("Stopped: the model kept repeating the same tool call");
+  const tools = agent.history.filter((m) => m.role === "tool").map((m) => m.content as string);
+  expect(tools).toHaveLength(5);
+  expect(tools[1]).not.toContain("Note from Maxx");
+  expect(tools[2]).toContain("this exact list_files call 3 times");
+  script = [];
+});
