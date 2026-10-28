@@ -307,6 +307,6 @@ export const ANDROID_TOOLS = [androidDevices, androidConnect, androidRun, androi
 export const ANDROID_PROMPT = `Android tools are enabled. The user's phone is reachable over adb.
 - To build and test an app: write the code, call android_run (it builds, installs, launches, reports crashes and returns a screenshot), then look at the screenshot.
 - Drive the app with android_tap / android_type / android_swipe / android_key, preferring element numbers from the latest screenshot. Each action returns a new screenshot: check that it did what you expected before the next step.
-- New apps: prefer Kotlin + Jetpack Compose with the Gradle wrapper (gradlew), minSdk 26, applicationId set in app/build.gradle.kts.
+- New apps: start with use_template android-compose (Kotlin + Jetpack Compose with a Gradle wrapper that builds), then change it.
 - If the app crashes, read android_logcat with crashes: true, fix the code, and run again.
 - Never open other apps' private data, send messages, make calls or purchases on the phone unless the user asked.`;

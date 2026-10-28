@@ -92,6 +92,14 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
 #drop.on { display: flex; }
 .empty { margin: auto; text-align: center; color: var(--mute); max-width: 420px; }
 .empty h2 { color: var(--ink); margin: 0 0 6px; }
+.starters { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 18px 0 0; text-align: left; }
+.empty:has(.starters) { max-width: 760px; }
+.starter { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; text-align: left; padding: 12px; border-radius: var(--radius); background: var(--panel); }
+.starter .icon { font-size: 22px; }
+.starter b { color: var(--ink); }
+.starter span { color: var(--mute); font-size: 12.5px; line-height: 1.35; }
+.starter:disabled { opacity: .5; cursor: wait; }
+.ideas { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 12px; }
 #zoom { position: fixed; inset: 0; background: rgba(0,0,0,.85); display: none; align-items: center; justify-content: center; cursor: zoom-out; z-index: 9; }
 #zoom img { max-width: 95vw; max-height: 95vh; }
 .status { font-size: 12px; color: var(--mute); }
@@ -199,10 +207,10 @@ const VERBS = { read_file: "Read", write_file: "Write", edit_file: "Edit", list_
   android_run: "Build & run on phone", android_screen: "Look at phone", android_tap: "Tap", android_type: "Type", android_swipe: "Swipe",
   android_key: "Press", android_logcat: "Read phone log", android_devices: "List devices", android_connect: "Connect phone",
   desktop_screenshot: "Look at desktop", desktop_click: "Click", desktop_type: "Type", desktop_key: "Press", desktop_scroll: "Scroll", desktop_open: "Open",
-  preview: "Preview", start_server: "Start" };
+  preview: "Preview", start_server: "Start", use_template: "Start from template" };
 function label(name, args) {
   let a = {}; try { a = JSON.parse(args || "{}"); } catch {}
-  const main = a.path ?? a.url ?? a.command ?? a.pattern ?? a.keys ?? a.key ?? a.target ?? a.direction ?? (a.text !== undefined ? JSON.stringify(a.text) : undefined) ??
+  const main = a.template ?? a.path ?? a.url ?? a.command ?? a.pattern ?? a.keys ?? a.key ?? a.target ?? a.direction ?? (a.text !== undefined ? JSON.stringify(a.text) : undefined) ??
     (a.element !== undefined ? "element " + a.element : a.x !== undefined ? a.x + "," + a.y : a.crashes ? "crashes" : a.project_dir ?? a.apk ?? "");
   return [VERBS[name] || name, String(main)];
 }
@@ -327,6 +335,7 @@ function on(m) {
       activity(busy ? { title: "Starting" } : null);
       return;
     case "done": streaming = null; return;
+    case "templated": return templated(m);
     case "error": return note(m.text, "msg err");
     case "deleted":
       return toast("Deleted “" + (m.title || "session") + "”", "Undo", () => send({ type: "undelete", cwd: m.cwd, session: m.session, reopen: m.wasOpen }));
@@ -507,6 +516,7 @@ function render(s) {
     const log = $("log"); log.innerHTML = ""; live = null; streaming = null; writing = []; thinkCard = null;
     if (!cur) { log.innerHTML = '<div class="empty"><h2>Pick a project</h2>Open a folder on the left, or choose one of your recent sessions.</div>'; return; }
     if (!cur.history.length) log.innerHTML = '<div class="empty"><h2>' + esc(cur.cwd.split(/[\\\\/]/).filter(Boolean).pop() || "") + '</h2>Ask for something: "make a tip calculator app and test it on my phone", "why does the build fail?"</div>';
+    if (!cur.history.length && s.templates) $("log").querySelector(".empty").appendChild(starters(s.templates));
     const results = cur.history.filter((h) => h.role === "tool").map((h) => h.text);
     let ri = 0;
     for (const h of cur.history) {
@@ -518,6 +528,34 @@ function render(s) {
     }
     $("log").scrollTop = $("log").scrollHeight;
   }
+}
+
+// New sessions offer starter projects: a small model does far better changing
+// a project that already builds than writing one from nothing.
+function starters(list) {
+  const box = div("starters");
+  box.prepend(div("status", "Or start from a template that already works:"));
+  box.firstChild.style.gridColumn = "1 / -1";
+  for (const t of list) {
+    const b = document.createElement("button");
+    b.className = "starter";
+    b.innerHTML = '<span class="icon">' + esc(t.icon) + "</span><b>" + esc(t.name) + "</b><span>" + esc(t.about) + "</span>";
+    b.onclick = () => { box.querySelectorAll("button").forEach((x) => x.disabled = true); send({ type: "template", id: t.id }); };
+    box.appendChild(b);
+  }
+  return box;
+}
+function templated(m) {
+  const e = document.querySelector("#log .empty") || add(div("empty"));
+  e.innerHTML = "<h2>✓ " + esc(m.name) + " is ready</h2>" + esc(m.files.length + " files in " + m.cwd) + ". It builds as it is, so ask Maxx to change it:";
+  const ideas = div("ideas");
+  for (const idea of m.try) {
+    const c = div("chip", idea);
+    c.onclick = () => { $("input").value = idea; $("input").focus(); };
+    ideas.appendChild(c);
+  }
+  e.appendChild(ideas);
+  $("input").focus();
 }
 
 async function submit() {
