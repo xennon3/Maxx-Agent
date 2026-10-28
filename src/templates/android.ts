@@ -2,9 +2,10 @@ import type { Template } from "./index.ts";
 import { GRADLE_WRAPPER_JAR } from "./gradle-wrapper-jar.ts";
 
 // Kotlin + Jetpack Compose, one screen. Versions are a known-good set:
-// Gradle 8.10.2, AGP 8.7.2 (needs Gradle 8.9+), Kotlin 2.0.21 with its Compose
-// compiler plugin, Compose BOM 2024.10.01. A JDK 17+ runs it (Android Studio's
-// bundled JBR works; gradlew.bat finds it on its own).
+// Gradle 9.1.0, AGP 8.13.0, Kotlin 2.2.20 with its Compose compiler plugin,
+// Compose BOM 2024.10.01. Gradle 9.1 is the first that runs on Java 25, which
+// current Android Studio bundles as its JBR (gradlew.bat finds it on its own);
+// JDK 17 to 25 all work. Checked with a real assembleDebug on Windows.
 
 const GRADLEW_BAT = `@rem Gradle wrapper launcher for Windows.
 @if "%DEBUG%"=="" @echo off
@@ -102,9 +103,9 @@ rootProject.name = "${slug}"
 include(":app")
 `,
       "build.gradle.kts": `plugins {
-    id("com.android.application") version "8.7.2" apply false
-    id("org.jetbrains.kotlin.android") version "2.0.21" apply false
-    id("org.jetbrains.kotlin.plugin.compose") version "2.0.21" apply false
+    id("com.android.application") version "8.13.0" apply false
+    id("org.jetbrains.kotlin.android") version "2.2.20" apply false
+    id("org.jetbrains.kotlin.plugin.compose") version "2.2.20" apply false
 }
 `,
       "gradle.properties": `org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
@@ -114,7 +115,7 @@ kotlin.code.style=official
 `,
       "gradle/wrapper/gradle-wrapper.properties": `distributionBase=GRADLE_USER_HOME
 distributionPath=wrapper/dists
-distributionUrl=https\\://services.gradle.org/distributions/gradle-8.10.2-bin.zip
+distributionUrl=https\\://services.gradle.org/distributions/gradle-9.1.0-bin.zip
 networkTimeout=10000
 validateDistributionUrl=true
 zipStoreBase=GRADLE_USER_HOME
@@ -150,11 +151,14 @@ android {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
-    kotlinOptions {
-        jvmTarget = "11"
-    }
     buildFeatures {
         compose = true
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
     }
 }
 
