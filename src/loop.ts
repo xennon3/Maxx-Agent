@@ -217,14 +217,17 @@ export class Agent {
         const fail = bad || failed(result);
         failures = fail ? failures + 1 : 0;
         stepFailed ||= fail;
-        const key = `${call.name}|${canonicalArgs(call.arguments)}|${result}`;
+        // Sending the same edit or write again is never progress, whatever it returned
+        // (applied, then "not found", then applied...), so those count by the call alone.
+        const writes = findTool(call.name, this.tools)?.risk === "write";
+        const key = `${call.name}|${canonicalArgs(call.arguments)}${writes ? "" : `|${result}`}`;
         const n = (repeats.get(key) ?? 0) + 1;
         repeats.set(key, n);
         if (n >= WARN_REPEATS) {
           stuck = Math.max(stuck, n);
           stepFailed = true;
-          trigger ||= `it ran the same ${call.name} call ${n} times with the same result`;
-          result += `\n\nNote from Maxx: you have made this exact ${call.name} call ${n} times in this turn and got the same result each time. Repeating it will not change anything. Do the next step of the task instead, or reply to the user if you are stuck.`;
+          trigger ||= `it ran the same ${call.name} call ${n} times${writes ? "" : " with the same result"}`;
+          result += `\n\nNote from Maxx: you have made this exact ${call.name} call ${n} times in this turn and ${writes ? "already made that change" : "got the same result each time"}. Repeating it will not change anything. Do the next step of the task instead, or reply to the user if you are stuck.`;
         }
         if (images?.length) this.io.image?.(call.name, images);
         const content = images?.length ? await this.deliverImages(call.name, result, images, seen, signal, glance) : result;

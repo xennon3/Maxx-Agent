@@ -3,7 +3,8 @@ import { defineTool } from "./types.ts";
 import { inside } from "./paths.ts";
 import { lineDiff } from "../diff.ts";
 
-export type EditResult = { ok: true; text: string; how: "exact" | "whitespace" } | { ok: false; error: string };
+// "already": old_string is gone but new_string is there, so the edit was made before.
+export type EditResult = { ok: true; text: string; how: "exact" | "whitespace" | "already" } | { ok: false; error: string };
 
 // Apply a search/replace edit, forgiving the indentation slips local models make.
 // Files with Windows (CRLF) line endings keep them; the model always works in LF.
@@ -47,7 +48,29 @@ function applyEditLF(source: string, oldStr: string, newStr: string, replaceAll:
   }
   if (hits.length > 1) return { ok: false, error: `old_string matches ${hits.length} places (ignoring whitespace); include more context` };
 
+  // Small models resend an edit that already worked; failing it sends them back
+  // to re-read and re-apply in a loop. Say it is done instead.
+  if (newStr.trim() && contains(src, newStr)) return { ok: true, text: source, how: "already" };
+
   return { ok: false, error: `old_string not found.${closest(src, want[0]!)} Re-read the file and copy the text exactly.` };
+}
+
+function contains(src: string[], text: string): boolean {
+  const want = text.replace(/\n$/, "").split("\n").map((l) => l.trim());
+  for (let i = 0; i + want.length <= src.length; i++) if (want.every((w, k) => src[i + k]!.trim() === w)) return true;
+  return false;
+}
+
+// The changed lines with a little context, so the model sees the edit landed.
+export function changedLines(before: string, after: string, context = 2, max = 20): string {
+  const a = before.split(/\r?\n/), b = after.split(/\r?\n/);
+  let top = 0;
+  while (top < a.length && top < b.length && a[top] === b[top]) top++;
+  let tail = 0;
+  while (tail < a.length - top && tail < b.length - top && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+  const from = Math.max(0, top - context), to = Math.min(b.length, b.length - tail + context);
+  const shown = b.slice(from, Math.min(to, from + max)).map((l, i) => `${String(from + i + 1).padStart(5)}  ${l}`);
+  return shown.join("\n") + (to - from > max ? `\n... ${to - from - max} more changed lines` : "");
 }
 
 function closest(lines: string[], first: string): string {
@@ -93,12 +116,16 @@ export const editFile = defineTool({
   ruleKey: (a) => a.path,
   async preview(args, { cwd }) {
     const { before, result } = await plan(args, cwd);
-    return result.ok ? lineDiff(before, result.text) : `(this edit will fail: ${result.error})`;
+    if (!result.ok) return `(this edit will fail: ${result.error})`;
+    return result.text === before ? "(no change: the file already has this text)" : lineDiff(before, result.text);
   },
   async run(args, { cwd }) {
-    const { result } = await plan(args, cwd);
+    const { before, result } = await plan(args, cwd);
     if (!result.ok) return `error: ${result.error}`;
+    const done = `Do not repeat this edit; go on with the next step.`;
+    if (result.how === "already") return `no change: ${args.path} already contains new_string, so this edit was made earlier. ${done}`;
+    if (result.text === before) return `no change: new_string is the same as the text it replaces in ${args.path}. ${done}`;
     await Bun.write(inside(cwd, args.path), result.text);
-    return `edited ${args.path}${result.how === "whitespace" ? " (matched ignoring whitespace)" : ""}`;
+    return `edited ${args.path}${result.how === "whitespace" ? " (matched ignoring whitespace)" : ""}. It now reads:\n${changedLines(before, result.text)}`;
   },
 });
