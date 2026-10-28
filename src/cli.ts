@@ -12,6 +12,7 @@ import { textOf } from "./context.ts";
 import { recordTo } from "./devices/run.ts";
 import { replay } from "./replay.ts";
 import { startUI } from "./ui/server.ts";
+import { doctorVoice } from "./ui/voice.ts";
 import { describe, SPINNER, statusLine, type StreamProgress } from "./progress.ts";
 import { launchedFromExplorer } from "./ui/launch.ts";
 import { ago, findSession, newSessionId, formatList, listProjects, listSessions, loadSession, saveSession, type Session } from "./sessions.ts";
@@ -28,6 +29,7 @@ usage:
   maxx doctor android         check adb, the JDK and the connected phone
   maxx doctor desktop         check screenshots and UI Automation on Windows
   maxx doctor vision          check that the model (or --vision-model) can read an image
+  maxx doctor voice           check the local Whisper used by the mic button in maxx ui
   maxx replay <file.jsonl>    re-run the phone/desktop actions of an earlier session
   maxx sessions [--all]       list saved sessions for this project (or every project)
 
@@ -40,6 +42,10 @@ options:
   --vision <v>       auto | native | off: can the model see screenshots? (default auto)
                      with --vision-model: auto describes screenshots the model asks for, always describes every one
   --vision-model <id>  a second model that looks at screenshots for a text-only main model
+  --whisper <x>      offline speech-to-text for the mic button: a Whisper server URL
+                     (whisper.cpp's whisper-server) or the path to whisper-cli (default $MAXX_WHISPER,
+                     else whisper-cli on PATH with a model in ~/.maxx/whisper)
+  --whisper-model <f>  ggml model file for whisper-cli (default $MAXX_WHISPER_MODEL)
   -p, --prompt <s>   one-shot prompt
   -c, --continue     continue the latest session in this project
   --resume <ref>     continue a session by number (from \`maxx sessions\`), id, or words from its title
@@ -64,6 +70,8 @@ const { values, positionals } = parseArgs({
     resume: { type: "string" },
     all: { type: "boolean" },
     port: { type: "string" },
+    whisper: { type: "string" },
+    "whisper-model": { type: "string" },
     help: { type: "boolean", short: "h" },
   },
 });
@@ -86,13 +94,17 @@ const baseURL = values["base-url"] ?? process.env.MAXX_BASE_URL ?? "http://local
 
 // `maxx ui`, or double-clicking maxx.exe: the app window instead of the terminal.
 const fromExplorer = launchedFromExplorer();
+const voice = { whisper: values.whisper ?? process.env.MAXX_WHISPER, whisperModel: values["whisper-model"] ?? process.env.MAXX_WHISPER_MODEL };
+
+if (positionals[0] === "doctor" && positionals[1] === "voice") process.exit((await doctorVoice({ whisper: voice.whisper, model: voice.whisperModel })) ? 0 : 1);
+
 if (positionals[0] === "ui" || (fromExplorer && !positionals.length && !values.prompt)) {
   const port = values.port ? Number(values.port) : 4317;
   let ui;
   try {
-    ui = await startUI({ baseURL, port, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context) });
+    ui = await startUI({ baseURL, port, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), ...voice });
   } catch {
-    ui = await startUI({ baseURL, port: 0, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context) });
+    ui = await startUI({ baseURL, port: 0, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), ...voice });
   }
   // Dev servers started from the Run panel go down with Maxx.
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(sig, () => (ui.stop(), process.exit(0)));

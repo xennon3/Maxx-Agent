@@ -1,4 +1,5 @@
 import { STAGE_CSS, STAGE_HTML, STAGE_JS } from "./stage-page.ts";
+import { VOICE_CSS, VOICE_HINT, VOICE_HTML, VOICE_JS } from "./voice-page.ts";
 
 // The whole web UI in one string, so the compiled maxx.exe carries it.
 export const PAGE = /* html */ `<!doctype html>
@@ -90,6 +91,7 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
   header .where { max-width: 100%; }
 }
 ${STAGE_CSS}
+${VOICE_CSS}
 </style>
 </head>
 <body>
@@ -116,7 +118,8 @@ ${STAGE_CSS}
   </header>
   <div id="log"><div class="empty"><h2>Pick a project</h2>Open a folder on the left, or choose one of your recent sessions. Everything runs on this machine against LM Studio.</div></div>
   <div class="activity" id="activity"><span class="spin" id="actSpin">⠋</span><span class="what" id="actWhat"></span><span class="meta" id="actMeta"></span><span class="tail" id="actTail"></span></div>
-  <div class="composer">
+  ${VOICE_HINT}
+  <div class="composer">${VOICE_HTML}
     <textarea id="input" placeholder="Ask Maxx to build, fix or test something…  (Enter to send, Shift+Enter for a new line)"></textarea>
     <div style="display:flex;flex-direction:column;gap:6px">
       <button class="primary" id="sendBtn">Send</button>
@@ -251,6 +254,7 @@ function abandonWriting() {
 
 function on(m) {
   stage.on(m);
+  voice.on(m);
   switch (m.type) {
     case "state": return render(m);
     case "progress": return progress(m);
@@ -313,6 +317,7 @@ function askCard(m) {
 }
 
 ${STAGE_JS}
+${VOICE_JS}
 
 function render(s) {
   state = s;
@@ -376,7 +381,7 @@ function submit() {
   if (!state || !state.current) return note("Open a project folder first.", "msg err");
   add(div("msg user", text));
   $("input").value = "";
-  send({ type: "send", text });
+  send(Object.assign({ type: "send", text }, voice.flags()));
   if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
 }
 
