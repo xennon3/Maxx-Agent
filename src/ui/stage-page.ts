@@ -320,6 +320,9 @@ const stage = (() => {
 
   const tools = {};
   return {
+    // After a spoken change: the app on the live phone, or the page at phone size.
+    phone() { show("screen"); if (!mirror) setMirror(true); },
+    phoneView() { if (!mobile) $("pvSize").onclick(); show("preview"); },
     shot(src, tool) {
       shot(src, tool);
       if (!shown) show("screen"); else badge("screen");

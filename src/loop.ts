@@ -355,6 +355,17 @@ export class Agent {
     if (tool && tool.role === "tool" && (last === tool || last?.role === "user")) tool.content += `\n\n(Maxx: ${text})`;
   }
 
+  // Maxx calling a tool on its own (the rebuild after a spoken request): the
+  // same permission gate, and kept in the history as if the model had called
+  // it, so the model knows what happened on the next turn.
+  async runDirect(name: string, args: Record<string, unknown>): Promise<string> {
+    const call: ToolCall = { id: `maxx_${Date.now().toString(36)}`, name, arguments: JSON.stringify(args) };
+    const { result, images } = await this.runTool(call);
+    if (images?.length) this.io.image?.(name, images);
+    this.history.push({ role: "assistant", content: null, tool_calls: toWire([call]) }, { role: "tool", tool_call_id: call.id, content: result });
+    return result;
+  }
+
   private async deliverImages(tool: string, result: string, images: Image[], seen: ContentPart[], signal?: AbortSignal, glance = false): Promise<string> {
     const v = this.vision;
     if (v.mode === "native") {

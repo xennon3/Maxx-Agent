@@ -17,6 +17,9 @@ import { Stage } from "./stage.ts";
 import { TOOLS, TOOLSETS } from "../tools/index.ts";
 import { TEMPLATES, findTemplate, freeFolder, isEmptyFolder, scaffold } from "../templates/index.ts";
 import { CLAUDE_MODELS, HELPER_DEFAULTS, loadHelper, resolveHelper, saveHelper, type Helper } from "../escalate.ts";
+import { htmlFiles } from "./preview.ts";
+import * as A from "../devices/adb.ts";
+import { FIX_ROUNDS, describeWhisper, failed, findWhisper, fixPrompt, planRebuild, speakable, transcribe, type TurnCall } from "./voice.ts";
 
 // `maxx ui`: the agent behind a local web page. One WebSocket carries
 // everything: streamed tokens, tool cards, permission questions, screenshots.
@@ -26,7 +29,7 @@ import { CLAUDE_MODELS, HELPER_DEFAULTS, loadHelper, resolveHelper, saveHelper, 
 type Client = ServerWebSocket<unknown>;
 type Out = Record<string, unknown> & { type: string };
 
-export type UIOptions = { baseURL: string; port?: number; previewPort?: number; open?: boolean; visionModel?: string; context?: number };
+export type UIOptions = { baseURL: string; port?: number; previewPort?: number; open?: boolean; visionModel?: string; context?: number; whisper?: string; whisperModel?: string };
 
 export async function startUI(opts: UIOptions) {
   const token = crypto.randomUUID().replace(/-/g, "");
@@ -51,14 +54,21 @@ export async function startUI(opts: UIOptions) {
   // Files posted to /upload wait here until the message they belong to is sent.
   const uploads = new Map<string, Upload>();
   const contextWindow = opts.context ?? 32_768;
+  const whisper = findWhisper({ whisper: opts.whisper, model: opts.whisperModel });
+  // The tool calls of the current turn, for the rebuild after a spoken request.
+  let turn: TurnCall[] = [];
 
   const progress = throttle((p: StreamProgress) => send(progressMessage(p)), 120);
   const io: AgentIO = {
     token: (t) => send({ type: "token", text: t }),
     progress,
     plan: (steps) => send({ type: "plan", steps }),
-    toolStart: (name, args) => send({ type: "toolStart", name, args }),
-    toolEnd: (name, result) => send({ type: "toolEnd", name, result }),
+    toolStart: (name, args) => (turn.push({ name, args, result: "" }), send({ type: "toolStart", name, args })),
+    toolEnd: (name, result) => {
+      const c = turn.findLast((t) => t.name === name && !t.result);
+      if (c) c.result = result || " ";
+      send({ type: "toolEnd", name, result });
+    },
     note: (text) => send({ type: "note", text }),
     escalation: (e) => send({ type: "escalation", ...e }),
     image: (tool, images) => send({ type: "image", tool, images: images.map((i) => `data:${i.mime};base64,${i.base64}`) }),
@@ -124,6 +134,7 @@ export async function startUI(opts: UIOptions) {
       toolsets: Object.entries(TOOLSETS).map(([name, t]) => ({ name, about: t.about })),
       templates: TEMPLATES.map(({ id, name, icon, about, try: ideas }) => ({ id, name, icon, about, try: ideas })),
       projects,
+      voice: { whisper: describeWhisper(whisper) || null },
       current: s && {
         cwd: s.cwd,
         session: s.agent.session,
@@ -279,13 +290,18 @@ export async function startUI(opts: UIOptions) {
           files.push({ ...u, mode: f.mode === "save" ? "save" : "attach" });
         }
         for (const f of m.files ?? []) uploads.delete(String(f.id));
-        s.controller = new AbortController();
+        const controller = (s.controller = new AbortController());
         send({ type: "busy", busy: true });
+        turn = [];
         try {
-          const turn = await buildTurn(String(m.text ?? ""), files, { cwd: s.cwd, contextWindow, vision: s.agent.vision, signal: s.controller.signal });
-          for (const n of turn.notes) io.note(n);
-          const answer = await s.agent.send(turn.content, s.controller.signal);
+          const built = await buildTurn(String(m.text ?? ""), files, { cwd: s.cwd, contextWindow, vision: s.agent.vision, signal: controller.signal });
+          for (const n of built.notes) io.note(n);
+          let answer = await s.agent.send(built.content, controller.signal);
           send({ type: "done", text: answer });
+          if (m.voice) {
+            if (m.rebuild !== false) answer = (await phoneOut(s, controller.signal)) ?? answer;
+            send({ type: "speak", text: speakable(answer) });
+          }
         } catch (e) {
           const err = e as Error;
           send({ type: "error", text: err.name === "AbortError" ? "(stopped)" : err.message });
@@ -300,12 +316,64 @@ export async function startUI(opts: UIOptions) {
     }
   }
 
+  // Voice in, phone out: after a spoken request changed the project, rebuild
+  // it and show it (phone, or preview at phone size). A failure goes back to
+  // the model, which gets FIX_ROUNDS tries. Returns the model's last answer.
+  async function phoneOut(s: NonNullable<typeof state>, signal: AbortSignal): Promise<string | undefined> {
+    let answer: string | undefined;
+    for (let round = 0; !signal.aborted; round++) {
+      const android = s.agent.toolsets.includes("android");
+      const procs = stage!.runner?.list() ?? [];
+      const plan = planRebuild(s.cwd, turn, {
+        android,
+        phone: android && (await A.devices().then((d) => d.some((x) => x.state === "device"), () => false)),
+        html: await htmlFiles(s.cwd),
+        serverUrl: procs.filter((p) => p.status === "running" && p.url).at(-1)?.url,
+      });
+      if (plan.kind === "none") {
+        if (plan.shown) send({ type: "voiceShow", where: plan.shown === "android" ? "phone" : "preview" });
+        else if (plan.why !== "nothing changed") io.note(`🎙 ${plan.why}`);
+        return answer;
+      }
+      io.note(plan.kind === "android" ? "🎙 Rebuilding and running it on your phone…" : "🎙 Opening it in the preview at phone size…");
+      if (plan.kind === "preview") send({ type: "voiceShow", where: "preview" });
+      const result = await s.agent.runDirect(plan.kind === "android" ? "android_run" : "preview", plan.args);
+      if (!failed(plan.kind, result)) {
+        if (plan.kind === "android") send({ type: "voiceShow", where: "phone" });
+        return answer;
+      }
+      if (/^user denied/.test(result)) return answer;
+      if (round >= FIX_ROUNDS) {
+        io.note(`🎙 It still fails after ${FIX_ROUNDS} fixes. Have a look at the last result, or say what to change.`);
+        return answer;
+      }
+      io.note(`🎙 That didn't work; asking Maxx to fix it (try ${round + 1} of ${FIX_ROUNDS})`);
+      turn = [];
+      answer = await s.agent.send(fixPrompt(plan.kind, result), signal);
+      send({ type: "done", text: answer });
+    }
+    return answer;
+  }
+
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: opts.port ?? 4317,
-    fetch(req, srv) {
+    async fetch(req, srv) {
       const url = new URL(req.url);
       if (url.searchParams.get("t") !== token) return new Response("Open the link Maxx printed in the terminal.", { status: 403 });
+      // Recorded speech (16 kHz WAV) in, text out, through the local Whisper.
+      if (url.pathname === "/voice" && req.method === "POST") {
+        const origin = req.headers.get("origin");
+        if (origin && new URL(origin).host !== url.host) return new Response("bad origin", { status: 403 });
+        if (!whisper) return Response.json({ error: "no local Whisper set up (see maxx --help: --whisper)" }, { status: 404 });
+        const wav = new Uint8Array(await req.arrayBuffer());
+        if (wav.length > 8 << 20) return Response.json({ error: "recording too long" }, { status: 413 });
+        try {
+          return Response.json({ text: await transcribe(whisper, wav, url.searchParams.get("lang") || "auto") });
+        } catch (e) {
+          return Response.json({ error: (e as Error).message }, { status: 502 });
+        }
+      }
       if (url.pathname === "/ws") {
         // Only our own page may connect, not some other site in the same browser.
         const origin = req.headers.get("origin");

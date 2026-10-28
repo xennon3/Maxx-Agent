@@ -224,6 +224,31 @@ in the link, so other sites and other machines can't drive it. Closing the conso
 `bun sim/ui-demo.ts` drives the UI in a headless browser against the simulated EVO-X2 and saves
 screenshots to `sim/out/ui/`.
 
+### Voice in, phone out
+
+Click 🎙 in the composer (or press Ctrl+Space, or hold the button and let go) and say what you want: "make the snake faster". The words appear in the box as you speak and are sent when you stop talking (there is a short countdown; Esc or typing cancels it). Short commands act on the window instead: "stop", "send", "cancel", "new session".
+
+After a spoken request changes the project, Maxx rebuilds it by itself and shows the result:
+
+- an Android project (with 📱 Android on and a phone connected): it runs `android_run` (build, install, launch) and turns on the live phone view;
+- a web page: it opens the page, or the running dev server, in the Preview panel at phone size.
+
+If that build or page fails, the error goes back to the model to fix, twice at most. The rebuild asks for permission like any other command unless you allowed it. Each step can be turned off under **▾ voice**, which also has "Read Maxx's reply aloud" (Windows' own voices, offline).
+
+Speech-to-text has two engines:
+
+- **Edge speech recognition**: built into Edge, nothing to install, but Edge sends the audio to Microsoft's online service.
+- **Local Whisper**: fully offline. Either run whisper.cpp's server and point Maxx at it, or let Maxx call `whisper-cli` itself:
+
+  ```powershell
+  whisper-server -m ggml-base.en.bin --port 8178     # then:
+  maxx ui --whisper http://127.0.0.1:8178
+  # or: whisper-cli on PATH and a model in %USERPROFILE%\.maxx\whisper\ (or --whisper <path> --whisper-model <file.bin>)
+  maxx doctor voice                                  # checks it and times a transcription
+  ```
+
+  `base.en` (142 MB) is quick on a laptop CPU; any server with an OpenAI-style `/v1/audio/transcriptions` works too. When a local Whisper is set up, it is used by default.
+
 ## Sessions per project
 
 Every turn is saved under `~/.maxx/projects/<folder>-<hash>/sessions/` (screenshots are left out),
