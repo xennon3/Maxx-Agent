@@ -180,7 +180,7 @@ ${VIS_CSS}
       <option value="yolo">Never ask</option>
     </select>
     <span id="sets" class="projonly"></span>
-    <span class="chip projonly" id="netBtn" title="Let Maxx install packages (pip, npm...) and download files, for data analysis, charts and file processing">🌐 Network: off</span>
+    <span class="chip" id="netBtn" title="Let Maxx look things up on the web (and in the MCP servers in ~/.maxx/mcp.json), install packages (pip, npm...) and download files">🌐 Network: off</span>
     <span class="chip helper projonly" id="helperBtn" title="A bigger model Maxx calls when the local one is stuck">🧠 Helper: off</span>
     <button id="newBtn" title="Start a new session">New</button>
   </header>
@@ -269,12 +269,13 @@ const VERBS = { read_file: "Read", write_file: "Write", edit_file: "Edit", list_
   android_run: "Build & run on phone", android_screen: "Look at phone", android_tap: "Tap", android_type: "Type", android_swipe: "Swipe",
   android_key: "Press", android_logcat: "Read phone log", android_devices: "List devices", android_connect: "Connect phone",
   desktop_screenshot: "Look at desktop", desktop_click: "Click", desktop_type: "Type", desktop_key: "Press", desktop_scroll: "Scroll", desktop_open: "Open",
+  web_search: "Search the web", web_fetch: "Read page",
   preview: "Preview", start_server: "Start", use_template: "Start from template", plan: "Plan", remember: "Remember", check: "Check" };
 function label(name, args) {
   let a = {}; try { a = JSON.parse(args || "{}"); } catch {}
   if (name === "plan") return ["Plan", a.done ? "step " + a.done + " done" : "write the steps"];
   if (name === "remember") return ["Remember", String(a.note ?? "")];
-  const main = a.template ?? a.path ?? a.url ?? a.command ?? a.pattern ?? a.keys ?? a.key ?? a.target ?? a.direction ?? (a.text !== undefined ? JSON.stringify(a.text) : undefined) ??
+  const main = a.template ?? a.path ?? a.query ?? a.url ?? a.libraryName ?? a.question ?? a.command ?? a.pattern ?? a.keys ?? a.key ?? a.target ?? a.direction ?? (a.text !== undefined ? JSON.stringify(a.text) : undefined) ??
     (a.element !== undefined ? "element " + a.element : a.x !== undefined ? a.x + "," + a.y : a.crashes ? "crashes" : a.project_dir ?? a.apk ?? "");
   return [VERBS[name] || name, String(main)];
 }
@@ -581,7 +582,7 @@ function render(s) {
   if (!models.length) sel.innerHTML = "<option>No model: start LM Studio's server</option>";
   for (const id of models) { const o = document.createElement("option"); o.value = o.textContent = id; if (cur && cur.model === id) o.selected = true; sel.appendChild(o); }
   $("where").textContent = cur ? (cur.chat ? "💬 Chat" : cur.cwd) : "No project open";
-  $("where").title = cur ? (cur.chat ? "No project and no tools: just ask. Charts and diagrams are drawn right here." : cur.cwd) : "";
+  $("where").title = cur ? (cur.chat ? "No project: just ask. Charts and diagrams are drawn right here, and with 🌐 Network on Maxx can look things up on the web." : cur.cwd) : "";
   $("input").placeholder = cur && cur.chat ? "Ask anything. Try \u201cchart my monthly budget\u201d or \u201cdraw how a bill becomes a law\u201d  (Enter to send, Shift+Enter for a new line)" : PROJECT_HINT;
   if (cur) $("mode").value = cur.mode;
   const sets = $("sets"); sets.innerHTML = "";
@@ -758,7 +759,7 @@ function helperFields() {
 $("helperBtn").onclick = helperForm;
 $("netBtn").onclick = () => {
   const on = !(state && state.network);
-  if (on && !confirm("Let Maxx install packages (pip, npm...) and download files from the internet?\\n\\nUse it for data analysis, charts and file processing. With 'Ask before acting', every install still asks first.")) return;
+  if (on && !confirm("Let Maxx use the internet?\\n\\nIt can then look up things it isn't sure about (web search, library docs), install packages (pip, npm...) and download files. Searches go to DuckDuckGo and the MCP servers in ~/.maxx/mcp.json. With 'Ask before acting', every install still asks first.")) return;
   send({ type: "network", on });
 };
 $("hKind").onchange = helperFields;

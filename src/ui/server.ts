@@ -183,7 +183,7 @@ export async function startUI(opts: UIOptions) {
     const helper = chat ? null : await resolveHelper({}).catch(() => null);
     const agent = await new Agent(
       chat
-        ? { llm, cwd: dir, permissions, vision, contextWindow: opts.context, chat: true, plan: false, memory: false, fixTries: 0 }
+        ? { llm, cwd: dir, permissions, vision, network, contextWindow: opts.context, chat: true, plan: false, memory: false, fixTries: 0 }
         : { llm, cwd: dir, permissions, toolsets, vision, helper, network, contextWindow: opts.context, tools: [...TOOLS, ...stage!.tools()] },
       io,
     ).init();

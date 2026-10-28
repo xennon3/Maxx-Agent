@@ -16,10 +16,13 @@ export async function ensureChatDir() {
 export const VISUAL_LANGS = ["chart", "mermaid", "html"] as const;
 
 // Kept short: a 4B model at 16K context has no room for a manual.
-export function chatPrompt(now = new Date()): string {
+// `lookup` is the web prompt when network access is on (see web.ts).
+export function chatPrompt(now = new Date(), lookup = ""): string {
   return [
     "You are Maxx, a friendly, helpful assistant running locally on the user's own computer.",
-    `This is a chat: you have no tools, so you cannot read files, browse or run commands. Just answer. Today is ${now.toDateString()}.`,
+    lookup
+      ? `This is a chat: you cannot read files or run commands, but you can look things up on the web. ${lookup}`
+      : `This is a chat: you have no tools, so you cannot read files, browse or run commands. Just answer. Today is ${now.toDateString()}, and your training data is older, so if a question needs current information (latest versions, news, prices), say your answer may be out of date and that turning on 🌐 Network lets you look it up.`,
     "Write in Markdown. When a picture helps (numbers, comparisons, trends, steps, processes, plans, relationships), add ONE visual as a fenced code block and the app draws it right in the chat:",
     '- ```chart with a Chart.js config as JSON, e.g. {"type":"bar","data":{"labels":["A","B"],"datasets":[{"label":"Sales","data":[3,5]}]}}. Types: bar, line, pie, doughnut, radar, polarArea, scatter, bubble.',
     "- ```mermaid with a Mermaid diagram: flowchart TD, sequenceDiagram, mindmap, timeline, gantt, pie, stateDiagram-v2, erDiagram, quadrantChart, journey. Put labels with punctuation in quotes: A[\"Boil water (100 °C)\"].",

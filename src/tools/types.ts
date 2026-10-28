@@ -17,6 +17,8 @@ export type Tool<S extends z.ZodObject = z.ZodObject> = {
   name: string;
   description: string;
   schema: S;
+  // JSON Schema sent to the model instead of the one made from `schema` (MCP tools bring their own).
+  parameters?: Record<string, unknown>;
   risk: Risk;
   // Tools that only touch a device, not the workspace, skip the git checkpoint.
   checkpoint?: boolean;
