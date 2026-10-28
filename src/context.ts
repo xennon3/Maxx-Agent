@@ -14,6 +14,19 @@ export const estimateTokens = (msgs: Message[]) =>
 export const textOf = (content: string | ContentPart[] | null): string =>
   !content ? "" : typeof content === "string" ? content : content.map((p) => (p.type === "text" ? p.text : "[image]")).join(" ");
 
+// Marks a user turn that carries images the user attached, so it reads as
+// something the user said rather than a screenshot a tool took.
+export const ATTACHED_IMAGE = "[attached image: ";
+
+// What the user typed in a turn (attachments included), or null when the
+// message is not a typed turn (screenshots that follow tool results).
+export function typedText(m: Message): string | null {
+  if (m.role !== "user") return null;
+  if (typeof m.content === "string") return m.content;
+  const first = m.content[0];
+  return first?.type === "text" && first.text.includes(ATTACHED_IMAGE) ? first.text : null;
+}
+
 // Big tool outputs are cut when they are produced, so they never bloat history.
 export function truncate(text: string, head = 100, tail = 100): string {
   const lines = text.split("\n");

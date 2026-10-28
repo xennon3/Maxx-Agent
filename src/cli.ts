@@ -3,7 +3,7 @@ import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { Agent, type AgentIO } from "./loop.ts";
 import { Permissions, type Mode, type Answer } from "./permissions.ts";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { doctor, doctorDevices } from "./doctor.ts";
 import type { LLMConfig } from "./llm.ts";
 import { TOOLSETS } from "./tools/index.ts";
@@ -14,7 +14,8 @@ import { replay } from "./replay.ts";
 import { startUI } from "./ui/server.ts";
 import { describe, SPINNER, statusLine, type StreamProgress } from "./progress.ts";
 import { launchedFromExplorer } from "./ui/launch.ts";
-import { ago, findSession, newSessionId, formatList, listProjects, listSessions, loadSession, saveSession, type Session } from "./sessions.ts";
+import { ago, deleteSession, findSession, newSessionId, formatList, listProjects, listSessions, loadSession, restoreSession, saveSession, type Session, type SessionInfo } from "./sessions.ts";
+import { buildTurn, type Upload } from "./attach.ts";
 
 const C = { dim: "\x1b[2m", cyan: "\x1b[36m", yellow: "\x1b[33m", bold: "\x1b[1m", reset: "\x1b[0m" };
 
@@ -30,6 +31,8 @@ usage:
   maxx doctor vision          check that the model (or --vision-model) can read an image
   maxx replay <file.jsonl>    re-run the phone/desktop actions of an earlier session
   maxx sessions [--all]       list saved sessions for this project (or every project)
+  maxx sessions rm <ref...>   delete sessions (asks first; -y skips that); they stay in the trash for 7 days
+  maxx sessions undo          bring back the session deleted last
 
 options:
   --base-url <url>   OpenAI-compatible server (default $MAXX_BASE_URL or http://localhost:1234/v1)
@@ -47,6 +50,9 @@ options:
 in a session:
   /help  /mode <m>  /with <sets|none>  /checkpoints  /rewind <n>  /clear  /exit
   /sessions  /resume <ref>  /new  /title <text>   (sessions are saved per project after every turn)
+  /delete <ref>  /undelete     delete a session (this one if no ref), bring it back
+  /attach <file...>            send files with your next message: images to the vision model, text inline
+  /attach save <file...>       copy files into the project and tell Maxx about them;  /attach clear
   Ctrl-C stops the current turn; Ctrl-C at an empty prompt exits.`;
 
 const { values, positionals } = parseArgs({
@@ -65,6 +71,7 @@ const { values, positionals } = parseArgs({
     all: { type: "boolean" },
     port: { type: "string" },
     help: { type: "boolean", short: "h" },
+    yes: { type: "boolean", short: "y" },
   },
 });
 
@@ -73,6 +80,32 @@ if (values.help) {
   process.exit(0);
 }
 
+if (positionals[0] === "sessions" && ["rm", "delete", "del"].includes(positionals[1] ?? "")) {
+  const cwd = process.cwd();
+  const refs = positionals.slice(2);
+  if (!refs.length) die("usage: maxx sessions rm <ref...>   (numbers from `maxx sessions`, ids, or words from a title)");
+  const found: SessionInfo[] = [];
+  for (const ref of refs) {
+    const s = await findSession(cwd, ref);
+    if (!s) die(`no session matching "${ref}" in this project; see \`maxx sessions\``);
+    if (!found.some((f) => f.id === s.id)) found.push(s);
+  }
+  console.log(formatList(found));
+  if (!values.yes) {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const a = (await rl.question(`Delete ${found.length === 1 ? "this session" : `these ${found.length} sessions`}? [y/N] `)).trim().toLowerCase();
+    rl.close();
+    if (a !== "y" && a !== "yes") (console.log("kept"), process.exit(0));
+  }
+  for (const s of found) await deleteSession(cwd, s.id);
+  console.log(`deleted ${found.length}; \`maxx sessions undo\` brings back the last one (kept for 7 days)`);
+  process.exit(0);
+}
+if (positionals[0] === "sessions" && positionals[1] === "undo") {
+  const s = await restoreSession(process.cwd());
+  console.log(s ? `restored "${s.title}" (${s.turns} turns); maxx --resume ${s.id.slice(0, 19)} to continue it` : "nothing to undo in this project");
+  process.exit(s ? 0 : 1);
+}
 if (positionals[0] === "sessions") {
   if (values.all) {
     const projects = await listProjects();
@@ -264,11 +297,18 @@ for (;;) {
   await turn(line);
 }
 
+// Files from /attach, sent with the next message.
+let staged: Upload[] = [];
+
 async function turn(text: string) {
   controller = new AbortController();
   status.bol = true;
   try {
-    await agent.send(text, controller.signal);
+    const files = staged;
+    staged = [];
+    const t = await buildTurn(text, files, { cwd, contextWindow: Number(values.context), vision, signal: controller.signal });
+    for (const n of t.notes) io.note(n);
+    await agent.send(t.content, controller.signal);
     process.stdout.write("\n");
   } catch (e) {
     const err = e as Error;
@@ -303,6 +343,35 @@ async function command(line: string) {
       await resumeInto(s);
       setReplayFile();
       return;
+    }
+    case "/delete": {
+      const ref = line.slice(cmd!.length).trim();
+      const info = ref ? await findSession(cwd, ref) : { id: agent.session, title: title || "this session" };
+      if (!info) return console.log("no such session; /sessions lists them");
+      if (!(await deleteSession(cwd, info.id))) return console.log("that session was never saved; nothing to delete");
+      if (info.id === agent.session) {
+        await agent.init();
+        agent.session = newSessionId();
+        created = new Date().toISOString();
+        title = "";
+        setReplayFile();
+      }
+      return console.log(`(deleted "${info.title}"; /undelete brings it back)`);
+    }
+    case "/undelete": {
+      const s = await restoreSession(cwd);
+      return console.log(s ? `(restored "${s.title}"; /resume ${s.id.slice(0, 19)} to switch to it)` : "nothing to undo");
+    }
+    case "/attach": {
+      const words = line.slice(cmd!.length).trim().match(/"[^"]+"|\S+/g)?.map((w) => w.replace(/^"|"$/g, "")) ?? [];
+      if (words[0] === "clear") return (staged = []), console.log("(attachments cleared)");
+      const mode = words[0] === "save" ? "save" : "attach";
+      for (const p of mode === "save" ? words.slice(1) : words) {
+        const f = Bun.file(resolve(cwd, p));
+        if (!(await f.exists())) return console.log(`no such file: ${p}`);
+        staged.push({ name: basename(p), data: new Uint8Array(await f.arrayBuffer()), mode });
+      }
+      return console.log(staged.length ? `(attached ${staged.map((f) => f.name + (f.mode === "save" ? " [save]" : "")).join(", ")}; they go with your next message)` : "usage: /attach [save] <file...>");
     }
     case "/title":
       title = line.slice(cmd!.length).trim();

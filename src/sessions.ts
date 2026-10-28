@@ -1,8 +1,8 @@
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { mkdir, readdir } from "node:fs/promises";
+import { mkdir, readdir, rename, stat, unlink, utimes } from "node:fs/promises";
 import type { Message } from "./llm.ts";
-import { textOf } from "./context.ts";
+import { textOf, typedText } from "./context.ts";
 
 // Saved sessions, grouped by project directory:
 //   ~/.maxx/projects/<name>-<hash>/sessions/<id>.json
@@ -41,24 +41,26 @@ export function newSessionId(now = new Date()): string {
 }
 
 // Screenshots are not worth keeping on disk; the text around them is.
+// An image the user attached keeps its message a plain user turn.
 function forDisk(history: Message[]): Message[] {
-  return history.map((m) =>
-    m.role === "user" && Array.isArray(m.content) && m.content.some((p) => p.type === "image_url")
-      ? { role: "user", content: [{ type: "text", text: `${textOf(m.content.filter((p) => p.type === "text"))} [screenshot not saved]` }] }
-      : m,
-  );
+  return history.map((m) => {
+    if (m.role !== "user" || !Array.isArray(m.content) || !m.content.some((p) => p.type === "image_url")) return m;
+    const typed = typedText(m);
+    if (typed !== null) return { role: "user", content: `${typed} [image not saved]` };
+    return { role: "user", content: [{ type: "text", text: `${textOf(m.content.filter((p) => p.type === "text"))} [screenshot not saved]` }] };
+  });
 }
 
 export function titleFrom(history: Message[]): string {
-  const first = history.find((m) => m.role === "user" && typeof m.content === "string" && !m.content.startsWith("Summary of the earlier"));
-  const t = first ? textOf(first.content).replace(/\s+/g, " ").trim() : "";
+  const first = history.map(typedText).find((t) => t !== null && !t.startsWith("Summary of the earlier"));
+  const t = first ? stripAttachments(first).text.replace(/\s+/g, " ").trim() : "";
   return t.length > 60 ? t.slice(0, 57) + "..." : t || "(empty)";
 }
 
 export async function saveSession(s: Omit<Session, "updated" | "title" | "turns"> & { title?: string }) {
   const dir = sessionsDir(s.cwd);
   await mkdir(dir, { recursive: true });
-  const turns = s.history.filter((m) => m.role === "user" && typeof m.content === "string").length;
+  const turns = s.history.filter((m) => typedText(m) !== null).length;
   const full: Session = { ...s, title: s.title || titleFrom(s.history), turns, updated: new Date().toISOString(), history: forDisk(s.history) };
   await Bun.write(join(dir, `${s.id}.json`), JSON.stringify(full));
   // Lets `sessions --all` show the real path without reading every session.
@@ -107,6 +109,75 @@ export async function listProjects(): Promise<{ cwd: string; sessions: SessionIn
     out.push({ cwd: sessions[0]!.cwd, sessions });
   }
   return out.sort((a, b) => b.sessions[0]!.updated.localeCompare(a.sessions[0]!.updated));
+}
+
+// Deleting moves the file to ~/.maxx/trash/<project>/, so it can be undone
+// (from the app, or with `maxx sessions undo`) for a week.
+const trashDir = (cwd: string) => join(maxxHome(), "trash", projectKey(cwd));
+const TRASH_DAYS = 7;
+
+export async function deleteSession(cwd: string, id: string): Promise<boolean> {
+  if (!/^[\w.-]+$/.test(id)) return false;
+  const from = join(sessionsDir(cwd), `${id}.json`);
+  if (!(await Bun.file(from).exists())) return false;
+  await mkdir(trashDir(cwd), { recursive: true });
+  const to = join(trashDir(cwd), `${id}.json`);
+  await rename(from, to);
+  // The file's time becomes the deletion time: that orders `undo` and the purge.
+  const now = new Date();
+  await utimes(to, now, now);
+  await purgeTrash(cwd);
+  return true;
+}
+
+// With no id, brings back the session deleted last.
+export async function restoreSession(cwd: string, id?: string): Promise<SessionInfo | null> {
+  const dir = trashDir(cwd);
+  let pick = id;
+  if (!pick) {
+    const trashed = await trashedIn(dir);
+    pick = trashed[0]?.id;
+  }
+  if (!pick || !/^[\w.-]+$/.test(pick)) return null;
+  const from = join(dir, `${pick}.json`);
+  if (!(await Bun.file(from).exists())) return null;
+  await mkdir(sessionsDir(cwd), { recursive: true });
+  const to = join(sessionsDir(cwd), `${pick}.json`);
+  await rename(from, to);
+  const { history: _, ...info } = (await Bun.file(to).json()) as Session;
+  return info;
+}
+
+async function trashedIn(dir: string): Promise<{ id: string; at: number }[]> {
+  let files: string[];
+  try {
+    files = (await readdir(dir)).filter((f) => f.endsWith(".json"));
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const f of files) out.push({ id: f.slice(0, -5), at: (await stat(join(dir, f))).mtimeMs });
+  return out.sort((a, b) => b.at - a.at);
+}
+
+async function purgeTrash(cwd: string, now = Date.now()) {
+  for (const t of await trashedIn(trashDir(cwd))) {
+    if (now - t.at > TRASH_DAYS * 86_400_000) await unlink(join(trashDir(cwd), `${t.id}.json`)).catch(() => {});
+  }
+}
+
+// Attached text files travel inside the user's message as <file> blocks;
+// lists and titles show only what was typed, plus the file names.
+const FILE_BLOCK = /\n*<(file|image) name="([^"]*)"[^>]*>[\s\S]*?<\/\1>/g;
+const IMAGE_NOTE = /\n*\[(?:attached image|image|file added to the project|attached file): ([^\]]*)\][^\n]*/g;
+export function stripAttachments(text: string): { text: string; files: string[] } {
+  const files: string[] = [];
+  const out = text
+    .replace(FILE_BLOCK, (_, _tag, name) => (files.push(name), ""))
+    .replace(IMAGE_NOTE, (_, name) => (files.push(name.replace(/ \(.*$/, "")), ""))
+    .replace(/ \[image (?:not saved|removed to save context)\]$/, "")
+    .trim();
+  return { text: out, files };
 }
 
 // "3", an id, or the start of an id or title.

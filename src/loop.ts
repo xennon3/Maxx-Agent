@@ -3,7 +3,7 @@ import { TOOLS, toolSpecs, findTool, withToolsets } from "./tools/index.ts";
 import type { Tool } from "./tools/types.ts";
 import { Permissions, type Answer } from "./permissions.ts";
 import { Checkpoints } from "./checkpoint.ts";
-import { compact, estimateTokens, systemPrompt, truncate } from "./context.ts";
+import { compact, estimateTokens, systemPrompt, truncate, typedText } from "./context.ts";
 import { describeImages, imagePart, type Vision } from "./vision.ts";
 import type { Image } from "./image.ts";
 import { newSessionId } from "./sessions.ts";
@@ -93,8 +93,10 @@ export class Agent {
   }
 
   // One user turn: loop until the model answers without calling tools.
-  async send(userText: string, signal?: AbortSignal): Promise<string> {
+  // A turn with attached images comes as parts (see attach.ts).
+  async send(userText: string | ContentPart[], signal?: AbortSignal): Promise<string> {
     this.history.push({ role: "user", content: userText });
+    if (Array.isArray(userText)) this.pruneImages();
     const specs = toolSpecs(this.tools);
     let badCalls = 0;
     const repeats = new Map<string, number>();
@@ -172,6 +174,11 @@ export class Agent {
       const m = this.history[i]!;
       if (m.role !== "user" || !Array.isArray(m.content) || !m.content.some((p) => p.type === "image_url")) continue;
       if (++kept <= KEEP_IMAGES) continue;
+      const typed = typedText(m);
+      if (typed !== null) {
+        this.history[i] = { role: "user", content: `${typed} [image removed to save context]` };
+        continue;
+      }
       const text = m.content.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join(" ");
       // Stays a parts array, so it still reads as tool output rather than a new request from the user.
       this.history[i] = { role: "user", content: [{ type: "text", text: `${text} [older screenshot removed to save context]` }] };

@@ -42,6 +42,16 @@ button.danger { color: var(--bad); }
 .sess span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sess .when { color: var(--mute); font-size: 11px; flex: none; }
 .sess.on { background: var(--user); }
+.sess .x { display: none; border: 0; background: none; padding: 0 4px; color: var(--mute); line-height: 1; flex: none; }
+.sess:hover .x { display: inline; }
+.sess:hover .when { display: none; }
+.sess .x:hover { color: var(--bad); }
+.sess.confirm { background: var(--bg); cursor: default; align-items: center; }
+.sess.confirm button { padding: 2px 8px; font-size: 12px; }
+#toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--ink); color: var(--bg); border-radius: 999px; padding: 8px 10px 8px 16px; display: none; gap: 12px; align-items: center; z-index: 10; box-shadow: 0 6px 24px rgba(0,0,0,.25); max-width: calc(100vw - 32px); }
+#toast.on { display: flex; }
+#toast span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#toast button { background: none; border: 0; color: var(--accent); font-weight: 700; padding: 2px 8px; }
 main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
 header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; }
@@ -62,8 +72,24 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
 .ask .btns { display: flex; gap: 8px; padding: 8px 12px; }
 .ask.answered { border-color: var(--line); opacity: .7; }
 .add { color: var(--ok); } .del { color: var(--bad); } .dim { color: var(--mute); }
-.composer { display: flex; gap: 8px; padding: 12px 16px 16px; border-top: 1px solid var(--line); background: var(--panel); }
+.composer { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px 16px; border-top: 1px solid var(--line); background: var(--panel); }
+.composer .row { display: flex; gap: 8px; }
 .composer textarea { flex: 1; resize: none; height: 64px; }
+#clipBtn { padding: 7px 10px; font-size: 16px; line-height: 1; }
+.files { display: flex; flex-wrap: wrap; gap: 6px; }
+.files:empty { display: none; }
+.file { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 8px; padding: 3px 4px 3px 6px; font-size: 12.5px; background: var(--bg); max-width: 100%; }
+.file img { width: 28px; height: 28px; object-fit: cover; border-radius: 4px; }
+.file .nm { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file .sz { color: var(--mute); }
+.file .how { border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; font-size: 11.5px; cursor: pointer; white-space: nowrap; }
+.file .how.fixed { cursor: default; opacity: .8; }
+.file .rm { border: 0; background: none; padding: 0 4px; color: var(--mute); }
+.file.up { opacity: .6; } .file.bad { border-color: var(--bad); color: var(--bad); }
+.msg .att { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.msg .att span { font-size: 12px; border: 1px solid var(--line); border-radius: 6px; padding: 0 6px; background: var(--panel); }
+#drop { position: fixed; inset: 8px; border: 3px dashed var(--accent); border-radius: 16px; background: rgba(217,72,15,.08); display: none; align-items: center; justify-content: center; font-size: 20px; font-weight: 600; color: var(--accent); z-index: 8; pointer-events: none; }
+#drop.on { display: flex; }
 .empty { margin: auto; text-align: center; color: var(--mute); max-width: 420px; }
 .empty h2 { color: var(--ink); margin: 0 0 6px; }
 #zoom { position: fixed; inset: 0; background: rgba(0,0,0,.85); display: none; align-items: center; justify-content: center; cursor: zoom-out; z-index: 9; }
@@ -117,15 +143,22 @@ ${STAGE_CSS}
   <div id="log"><div class="empty"><h2>Pick a project</h2>Open a folder on the left, or choose one of your recent sessions. Everything runs on this machine against LM Studio.</div></div>
   <div class="activity" id="activity"><span class="spin" id="actSpin">⠋</span><span class="what" id="actWhat"></span><span class="meta" id="actMeta"></span><span class="tail" id="actTail"></span></div>
   <div class="composer">
-    <textarea id="input" placeholder="Ask Maxx to build, fix or test something…  (Enter to send, Shift+Enter for a new line)"></textarea>
-    <div style="display:flex;flex-direction:column;gap:6px">
-      <button class="primary" id="sendBtn">Send</button>
-      <button class="danger" id="stopBtn" disabled>Stop</button>
+    <div class="files" id="files"></div>
+    <div class="row">
+      <button id="clipBtn" title="Attach files: images, code, anything. You can also drop or paste them.">📎</button>
+      <input type="file" id="fileInput" multiple hidden>
+      <textarea id="input" placeholder="Ask Maxx to build, fix or test something…  (Enter to send, Shift+Enter for a new line; drop or paste files to attach)"></textarea>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <button class="primary" id="sendBtn">Send</button>
+        <button class="danger" id="stopBtn" disabled>Stop</button>
+      </div>
     </div>
   </div>
 </main>
 ${STAGE_HTML}
 <div id="zoom"><img id="zoomImg" alt=""></div>
+<div id="drop">Drop files to attach them to your message</div>
+<div id="toast"><span id="toastText"></span><button id="toastBtn">Undo</button></div>
 <script>
 const $ = (id) => document.getElementById(id);
 const token = new URLSearchParams(location.search).get("t");
@@ -295,7 +328,121 @@ function on(m) {
       return;
     case "done": streaming = null; return;
     case "error": return note(m.text, "msg err");
+    case "deleted":
+      return toast("Deleted “" + (m.title || "session") + "”", "Undo", () => send({ type: "undelete", cwd: m.cwd, session: m.session, reopen: m.wasOpen }));
   }
+}
+
+let toastTimer = 0;
+function toast(text, action, fn) {
+  $("toastText").textContent = text;
+  $("toastBtn").textContent = action;
+  $("toastBtn").onclick = () => { $("toast").classList.remove("on"); fn(); };
+  $("toast").classList.add("on");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => $("toast").classList.remove("on"), 10000);
+}
+
+// Deleting asks once, right in the row, then offers Undo for ten seconds.
+function confirmDelete(row, cwd, ss) {
+  row.className = "sess confirm";
+  row.onclick = (e) => e.stopPropagation();
+  row.innerHTML = "<span>Delete “" + esc(ss.title) + "”?</span>";
+  const yes = document.createElement("button"); yes.className = "danger"; yes.textContent = "Delete";
+  const no = document.createElement("button"); no.textContent = "Keep";
+  const cancel = () => state && render(state);
+  yes.onclick = () => send({ type: "delete", cwd, session: ss.id, title: ss.title });
+  no.onclick = cancel;
+  const box = document.createElement("span"); box.style.cssText = "display:flex;gap:4px;flex:none"; box.append(yes, no);
+  row.appendChild(box);
+  yes.focus();
+  row.onkeydown = (e) => { if (e.key === "Escape") cancel(); };
+}
+
+// Attachments: dropped, pasted or picked files, uploaded right away and sent with the message.
+// Images are shrunk in the browser first (it can decode webp, gif, bmp...) and arrive as JPEG.
+let files = [];
+const TEXTISH = /\\.(txt|md|markdown|json|jsonc|ya?ml|toml|ini|cfg|conf|env|csv|tsv|log|xml|html?|css|scss|less|svg|js|mjs|cjs|jsx|ts|tsx|py|rb|go|rs|java|kt|kts|gradle|swift|c|h|cc|cpp|hpp|cs|php|lua|sh|bash|zsh|ps1|bat|cmd|sql|vue|svelte|dart|r|pl|ex|exs|hs|ml|clj|scala|groovy|properties|lock|gitignore|dockerfile|makefile)$/i;
+function kindOf(f) {
+  if (/^image\\//.test(f.type) && !/svg/.test(f.type)) return "image";
+  if (/^text\\/|json|xml|javascript|typescript|yaml|toml|x-sh/.test(f.type) || TEXTISH.test(f.name) || /^(Dockerfile|Makefile|README|LICENSE)$/i.test(f.name)) return "text";
+  return "other";
+}
+const fsize = (n) => n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(0) + " KB" : (n / 1048576).toFixed(1) + " MB";
+async function toJpeg(f, side) {
+  try {
+    const bmp = await createImageBitmap(f);
+    const k = Math.min(1, side / Math.max(bmp.width, bmp.height));
+    const c = document.createElement("canvas"); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+    const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); g.drawImage(bmp, 0, 0, c.width, c.height);
+    return await new Promise((res) => c.toBlob(res, "image/jpeg", 0.88));
+  } catch { return null; }
+}
+function attach(list) {
+  if (!state || !state.current) return note("Open a project folder first, then attach files.", "msg err");
+  for (const f of list) {
+    if (f.size > state.maxUpload) { note(f.name + " is too big to attach (" + fsize(f.size) + "; the limit is " + fsize(state.maxUpload) + ").", "msg err"); continue; }
+    // Pasted screenshots have no useful name.
+    const name = f.name && f.name !== "image.png" ? f.name : "pasted-" + new Date().toTimeString().slice(0, 8).replace(/:/g, "") + ".png";
+    const it = { raw: f, name, size: f.size, kind: kindOf(f) };
+    it.mode = it.kind === "other" ? "save" : "attach";
+    files.push(it);
+    it.p = (async () => {
+      if (it.kind === "image") {
+        it.small = await toJpeg(f, state.imageSide || 1024);
+        if (it.small) it.thumb = URL.createObjectURL(it.small);
+        else it.kind = "other", it.mode = "save";
+      }
+      await upload(it);
+    })();
+  }
+  drawFiles();
+}
+// Images go to the model as a small JPEG; saved into the project, they keep the original file.
+async function upload(it) {
+  if (it.id) send({ type: "discard", ids: [it.id] });
+  const small = it.kind === "image" && it.mode === "attach" && it.small;
+  const body = small || it.raw, name = small ? it.name.replace(/\\.[^.]+$/, "") + ".jpg" : it.name;
+  it.id = null; it.status = "up"; it.size = body.size; drawFiles();
+  try {
+    const r = await fetch("/upload?t=" + token + "&name=" + encodeURIComponent(name), { method: "POST", body, headers: { "content-type": body.type || "application/octet-stream" } });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    it.id = j.id; it.status = "ok";
+  } catch (e) { it.status = "bad"; it.err = e.message; }
+  drawFiles();
+}
+const HOW = { attach: { image: "👁 Show to Maxx", text: "📄 Add to context" }, save: "💾 Save to project" };
+function drawFiles() {
+  const box = $("files"); box.innerHTML = "";
+  for (const it of files) {
+    const d = div("file" + (it.status === "up" ? " up" : it.status === "bad" ? " bad" : ""));
+    d.title = it.status === "bad" ? "Upload failed: " + it.err : it.name;
+    d.innerHTML = (it.thumb ? '<img alt="" src="' + it.thumb + '">' : "<span>" + (it.kind === "text" ? "📄" : it.kind === "image" ? "🖼" : "📦") + "</span>") +
+      '<span class="nm">' + esc(it.name) + '</span><span class="sz">' + fsize(it.size) + "</span>";
+    const how = div("how" + (it.kind === "other" ? " fixed" : ""), it.mode === "save" ? HOW.save : HOW.attach[it.kind]);
+    how.title = it.kind === "other" ? "Maxx can't read this kind of file, so it is copied into the project folder" : "Click to switch between giving it to Maxx and saving it into the project folder";
+    if (it.kind !== "other") how.onclick = () => {
+      it.mode = it.mode === "save" ? "attach" : "save";
+      if (it.kind === "image") it.p = it.p.then(() => upload(it));
+      drawFiles();
+    };
+    const rm = document.createElement("button"); rm.className = "rm"; rm.textContent = "×"; rm.title = "Remove";
+    rm.onclick = () => { files = files.filter((x) => x !== it); it.p.then(() => it.id && send({ type: "discard", ids: [it.id] })); drawFiles(); };
+    d.append(how, rm);
+    box.appendChild(d);
+  }
+}
+function attachedNames(names) {
+  if (!names || !names.length) return null;
+  const a = div("att");
+  for (const n of names) { const s = document.createElement("span"); s.textContent = "📎 " + n; a.appendChild(s); }
+  return a;
+}
+function userMsg(text, names) {
+  const d = add(div("msg user", text));
+  const a = attachedNames(names); if (a) d.appendChild(a);
+  return d;
 }
 
 function askCard(m) {
@@ -331,6 +478,9 @@ function render(s) {
       r.innerHTML = "<span>" + esc(ss.title) + "</span><span class=when>" + ago(ss.updated) + "</span>";
       r.title = ss.turns + " turns" + (ss.toolsets.length ? " · " + ss.toolsets.join(", ") : "");
       r.onclick = () => send({ type: "open", cwd: proj.cwd, session: ss.id });
+      const x = document.createElement("button"); x.className = "x"; x.textContent = "×"; x.title = "Delete this session";
+      x.onclick = (e) => { e.stopPropagation(); confirmDelete(r, proj.cwd, ss); };
+      r.appendChild(x);
       box.appendChild(r);
     }
     p.appendChild(box);
@@ -360,7 +510,7 @@ function render(s) {
     const results = cur.history.filter((h) => h.role === "tool").map((h) => h.text);
     let ri = 0;
     for (const h of cur.history) {
-      if (h.role === "user") add(div("msg user", h.text));
+      if (h.role === "user") userMsg(h.text, h.files);
       else if (h.role === "assistant") {
         if (h.text) add(div("msg")).innerHTML = md(h.text);
         for (const t of h.tools || []) toolCard(t.name, t.args, results[ri++] ?? "");
@@ -370,13 +520,20 @@ function render(s) {
   }
 }
 
-function submit() {
+async function submit() {
   const text = $("input").value.trim();
-  if (!text || busy) return;
+  if ((!text && !files.length) || busy) return;
   if (!state || !state.current) return note("Open a project folder first.", "msg err");
-  add(div("msg user", text));
+  const sending = files;
+  $("sendBtn").disabled = true;
+  await Promise.all(sending.map((f) => f.p));
+  $("sendBtn").disabled = busy;
+  const failed = sending.filter((f) => f.status !== "ok");
+  if (failed.length) return note("Could not upload " + failed.map((f) => f.name).join(", ") + ". Remove it or attach it again.", "msg err");
+  files = []; drawFiles();
+  userMsg(text, sending.map((f) => f.name));
   $("input").value = "";
-  send({ type: "send", text });
+  send({ type: "send", text, files: sending.map((f) => ({ id: f.id, mode: f.mode })) });
   if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
 }
 
@@ -390,6 +547,15 @@ $("newBtn").onclick = () => send({ type: "new" });
 $("model").onchange = (e) => state && state.current && send({ type: "settings", model: e.target.value });
 $("mode").onchange = (e) => send({ type: "settings", mode: e.target.value });
 $("zoom").onclick = () => $("zoom").style.display = "none";
+$("clipBtn").onclick = () => $("fileInput").click();
+$("fileInput").onchange = (e) => { attach([...e.target.files]); e.target.value = ""; };
+$("input").onpaste = (e) => { const fs = [...(e.clipboardData && e.clipboardData.files || [])]; if (fs.length) { e.preventDefault(); attach(fs); } };
+let dragDepth = 0;
+const hasFiles = (e) => e.dataTransfer && [...e.dataTransfer.types].includes("Files");
+addEventListener("dragenter", (e) => { if (hasFiles(e)) { dragDepth++; $("drop").classList.add("on"); } });
+addEventListener("dragleave", () => { if (--dragDepth <= 0) dragDepth = 0, $("drop").classList.remove("on"); });
+addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
+addEventListener("drop", (e) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; $("drop").classList.remove("on"); attach([...e.dataTransfer.files]); });
 connect();
 </script>
 </body>

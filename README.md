@@ -153,7 +153,19 @@ Double-click `maxx.exe` (or run `maxx ui`) and Maxx opens as its own window, lai
 Claude Code app:
 
 - **Sidebar:** your projects and their sessions; click one to pick up where you left off, or
-  *Choose folder…* to open a new project.
+  *Choose folder…* to open a new project. Hover a session and click **×** to delete it: the row
+  asks *Delete / Keep*, and an **Undo** toast stays up for ten seconds after.
+- **Attachments:** drop files on the window, paste a screenshot, or click 📎. Each file shows as a
+  chip with what will happen to it, and a click switches it between the two:
+  - *👁 Show to Maxx* (images): shrunk in the browser to a JPEG (1024 px on a 16K context, 1280 px
+    otherwise, at most 2 or 4 per message) and sent to a vision model. A `--vision-model` describes
+    it instead; a model that can't see gets it saved to `.maxx/uploads/` and you get a note.
+  - *📄 Add to context* (code and text): inlined in the message. All attached text together may use
+    30% of the context window; a bigger file (a long build log) is saved to `.maxx/uploads/` and
+    only its start is inlined, with a pointer so Maxx can `read_file` or `grep` the rest.
+  - *💾 Save to project*: copied into the project folder (never over an existing file; `logo.png`
+    becomes `logo-1.png`) and Maxx is told it is there. Zips, APKs, PDFs and other binaries always
+    go this way.
 - **Chat:** streamed replies, collapsible tool cards ("Edit src/App.kt", "Tap Calculate"), and
   permission prompts with the diff inline and **Allow / Always allow / Deny** buttons. **Stop**
   ends the current turn.
@@ -205,6 +217,16 @@ maxx sessions --all        # every project, most recent first
 
 A resumed session brings back its toolsets (`--with android` stays on for the app project) and
 shows the last reply. In a session: `/sessions`, `/resume <ref>`, `/new`, `/title <text>`.
+
+Deleting moves a session to `~/.maxx/trash/` for 7 days, so it can be undone:
+
+```sh
+maxx sessions rm 3 "dark mode"   # by number, id or title words; asks first (-y skips that)
+maxx sessions undo               # bring back the one deleted last
+```
+
+In a session, `/delete [ref]` (no ref: this one) and `/undelete` do the same, and
+`/attach [save] <file...>` sends files with your next message the way the app's 📎 does.
 Starting `maxx` in a folder with history shows a one-line hint to continue it. `MAXX_HOME` moves
 the store.
 
