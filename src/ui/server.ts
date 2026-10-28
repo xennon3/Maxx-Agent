@@ -5,13 +5,15 @@ import type { ServerWebSocket } from "bun";
 import { Agent, type AgentIO } from "../loop.ts";
 import { Permissions, type Answer, type Mode } from "../permissions.ts";
 import type { LLMConfig } from "../llm.ts";
-import { TOOLSETS } from "../tools/index.ts";
 import { pickVision } from "../vision.ts";
 import { recordTo } from "../devices/run.ts";
 import { textOf } from "../context.ts";
 import { listProjects, listSessions, loadSession, newSessionId, saveSession } from "../sessions.ts";
 import { PAGE } from "./page.ts";
+import { describe, statusLine, throttle, type StreamProgress } from "../progress.ts";
 import { openWindow, pickFolder } from "./launch.ts";
+import { Stage } from "./stage.ts";
+import { TOOLS, TOOLSETS } from "../tools/index.ts";
 
 // `maxx ui`: the agent behind a local web page. One WebSocket carries
 // everything: streamed tokens, tool cards, permission questions, screenshots.
@@ -21,7 +23,7 @@ import { openWindow, pickFolder } from "./launch.ts";
 type Client = ServerWebSocket<unknown>;
 type Out = Record<string, unknown> & { type: string };
 
-export type UIOptions = { baseURL: string; port?: number; open?: boolean; visionModel?: string; context?: number };
+export type UIOptions = { baseURL: string; port?: number; previewPort?: number; open?: boolean; visionModel?: string; context?: number };
 
 export async function startUI(opts: UIOptions) {
   const token = crypto.randomUUID().replace(/-/g, "");
@@ -42,9 +44,12 @@ export async function startUI(opts: UIOptions) {
     controller: AbortController | null;
   } | null = null;
   const pending = new Map<string, (a: Answer) => void>();
+  let stage: Stage | null = null;
 
+  const progress = throttle((p: StreamProgress) => send(progressMessage(p)), 120);
   const io: AgentIO = {
     token: (t) => send({ type: "token", text: t }),
+    progress,
     toolStart: (name, args) => send({ type: "toolStart", name, args }),
     toolEnd: (name, result) => send({ type: "toolEnd", name, result }),
     note: (text) => send({ type: "note", text }),
@@ -109,25 +114,30 @@ export async function startUI(opts: UIOptions) {
     const permissions = await new Permissions(dir, o.mode ?? state?.permissions.mode ?? "ask").load();
     const { vision, note } = await pickVision(llm, { visionModel: opts.visionModel });
     const toolsets = o.toolsets ?? saved?.toolsets ?? [];
-    const agent = await new Agent({ llm, cwd: dir, permissions, toolsets, vision, contextWindow: opts.context }, io).init();
+    const agent = await new Agent({ llm, cwd: dir, permissions, toolsets, vision, contextWindow: opts.context, tools: [...TOOLS, ...stage!.tools()] }, io).init();
     if (saved) await agent.restore(saved.id, saved.history);
     state = { cwd: dir, agent, permissions, llm, created: saved?.created ?? new Date().toISOString(), title: saved?.title ?? "", controller: null };
     recordTo(resolve(dir, ".maxx", "replays", `${agent.session}.jsonl`));
+    if (stage!.runner?.cwd !== dir) await stage!.use(dir);
     if (toolsets.length && note) io.note(note);
   }
 
   async function handle(m: any) {
+    if (await stage!.handle(m)) return;
     switch (m.type) {
       case "hello":
-        return send(await snapshot());
+        send(await snapshot());
+        return send(await stage!.info());
       case "open":
         await open(m.cwd, { session: m.session, model: m.model });
-        return send(await snapshot());
+        send(await snapshot());
+        return send(await stage!.info());
       case "pick": {
         const dir = await pickFolder();
         if (!dir) return;
         await open(dir, {});
-        return send(await snapshot());
+        send(await snapshot());
+        return send(await stage!.info());
       }
       case "new":
         if (!state) return;
@@ -207,7 +217,43 @@ export async function startUI(opts: UIOptions) {
     },
   });
 
+  // Started after the UI's own port is taken, so a failed start leaves nothing behind.
+  stage = new Stage(send, () => clients.size, opts.previewPort ?? 0);
+  const quit = () => stage?.runner?.stopAll();
+  process.once("exit", quit);
+
   const link = `http://127.0.0.1:${server.port}/?t=${token}`;
   if (opts.open !== false) openWindow(link);
-  return { server, link, token, stop: () => server.stop(true) };
+  return {
+    server,
+    link,
+    token,
+    stage,
+    stop: () => {
+      process.off("exit", quit);
+      stage!.stop();
+      server.stop(true);
+    },
+  };
+}
+
+// Only the tail of a long preview goes over the wire each time: the card
+// shows the end of what is being written, the way a terminal would.
+const PREVIEW_TAIL = 4000;
+
+export function progressMessage(p: StreamProgress): Out {
+  const a = describe(p);
+  const cut = a.preview.length > PREVIEW_TAIL;
+  return {
+    type: "progress",
+    phase: p.phase,
+    tokens: p.tokens,
+    elapsedMs: p.elapsedMs,
+    generatingMs: p.generatingMs,
+    title: a.title,
+    status: statusLine(p, a),
+    lines: a.lines,
+    tool: p.tool && { index: p.tool.index, name: p.tool.name },
+    preview: (cut ? "…" : "") + a.preview.slice(-PREVIEW_TAIL),
+  };
 }
