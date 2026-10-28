@@ -334,6 +334,16 @@ the rest of a session.
 It is off until you set a helper, so nothing leaves the machine by default. With a hosted helper,
 the conversation so far (files read, command output) is sent to that API only when Maxx escalates.
 
+## Short answers: the brevity switch
+
+Small models pad answers with background, recaps and "let me know if you need more", which
+burns tokens and context. Maxx is **Brief** by default: one line in the system prompt asks for
+short answers, no preamble and no narration before tool calls. Switch with the ✂ chip in the app
+header (Brief, Normal, Detailed), `/brevity brief|normal|detailed` in the terminal, or
+`--brevity` / `$MAXX_BREVITY`. The choice is saved in `~/.maxx/brevity.json` and applies to chat
+and project mode. Only the prompt changes: there is no token cap, so a file write or tool call is
+never cut off halfway.
+
 ## Looking things up: web search and free MCP servers
 
 A small local model's knowledge stops at its training date, so it will happily describe last

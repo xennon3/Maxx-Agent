@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chatPrompt } from "../src/chat.ts";
 import { PAGE } from "../src/ui/page.ts";
+import { visualKind } from "../src/ui/visuals-page.ts";
 import { startUI } from "../src/ui/server.ts";
 
 test("the chat prompt teaches the three visual blocks and stays small", () => {
@@ -75,4 +76,19 @@ test("chat mode sends no tools, uses the chat prompt and lists its sessions apar
     ui.stop();
     llm.stop();
   }
+});
+
+test("a Chart.js config in a json block, or an unlabelled diagram, still draws", () => {
+  const pie = '{\n  "type": "pie",\n  "data": {\n    "labels": ["CPU", "GPU"],\n    "datasets": [{ "data": [25, 30] }]\n  }\n}';
+  expect(visualKind("json", pie)).toBe("chart");
+  expect(visualKind("", pie)).toBe("chart");
+  expect(visualKind("chart", pie)).toBe("chart");
+  expect(visualKind("json", '{ "name": "maxx", "version": "1.0" }')).toBeUndefined();
+  expect(visualKind("bash", "./main -m model.gguf")).toBeUndefined();
+  expect(visualKind("", "flowchart TD\n  A --> B")).toBe("mermaid");
+  expect(visualKind("Mermaid", "graph LR\n  A --> B")).toBe("mermaid");
+  // The page runs the same function.
+  const js = PAGE.split("<script>")[1]!.split("</script>")[0]!;
+  expect(js).toContain("function visualKind(");
+  expect(js).toContain("visualKind(m[1], m[2])");
 });
