@@ -117,6 +117,19 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
 .think { max-width: 860px; color: var(--mute); }
 .think summary { cursor: pointer; font-size: 13px; font-style: italic; }
 .think pre { margin: 4px 0 0; padding: 6px 10px; border-left: 2px solid var(--line); font: 12px/1.45 var(--mono); white-space: pre-wrap; max-height: 240px; overflow: auto; }
+.plan { display: none; margin: 10px 16px 0; padding: 8px 12px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: var(--radius); background: var(--panel); font-size: 13px; max-width: 860px; }
+.plan.on { display: block; }
+.plan .head { display: flex; justify-content: space-between; font-weight: 600; margin-bottom: 2px; }
+.plan .head span { color: var(--mute); font-weight: 400; }
+.plan .step { display: flex; gap: 8px; padding: 1px 0; }
+.plan .step .box { flex: none; width: 1.2em; color: var(--mute); }
+.plan .step.done { color: var(--mute); }
+.plan .step.done span + span { text-decoration: line-through; }
+.plan .step.done .box { color: var(--ok); }
+.plan .step.next { font-weight: 600; }
+.plan .step.next .box { color: var(--accent); }
+.tool.check summary b { color: var(--ok); }
+.tool.check.bad summary b { color: var(--bad); }
 @keyframes blink { 50% { opacity: 0; } }
 @media (max-width: 860px) {
   body { grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; }
@@ -148,6 +161,7 @@ ${STAGE_CSS}
     <span id="sets"></span>
     <button id="newBtn" title="Start a new session in this project">New</button>
   </header>
+  <div class="plan" id="plan"></div>
   <div id="log"><div class="empty"><h2>Pick a project</h2>Open a folder on the left, or choose one of your recent sessions. Everything runs on this machine against LM Studio.</div></div>
   <div class="activity" id="activity"><span class="spin" id="actSpin">⠋</span><span class="what" id="actWhat"></span><span class="meta" id="actMeta"></span><span class="tail" id="actTail"></span></div>
   <div class="composer">
@@ -207,9 +221,11 @@ const VERBS = { read_file: "Read", write_file: "Write", edit_file: "Edit", list_
   android_run: "Build & run on phone", android_screen: "Look at phone", android_tap: "Tap", android_type: "Type", android_swipe: "Swipe",
   android_key: "Press", android_logcat: "Read phone log", android_devices: "List devices", android_connect: "Connect phone",
   desktop_screenshot: "Look at desktop", desktop_click: "Click", desktop_type: "Type", desktop_key: "Press", desktop_scroll: "Scroll", desktop_open: "Open",
-  preview: "Preview", start_server: "Start", use_template: "Start from template" };
+  preview: "Preview", start_server: "Start", use_template: "Start from template", plan: "Plan", remember: "Remember", check: "Check" };
 function label(name, args) {
   let a = {}; try { a = JSON.parse(args || "{}"); } catch {}
+  if (name === "plan") return ["Plan", a.done ? "step " + a.done + " done" : "write the steps"];
+  if (name === "remember") return ["Remember", String(a.note ?? "")];
   const main = a.template ?? a.path ?? a.url ?? a.command ?? a.pattern ?? a.keys ?? a.key ?? a.target ?? a.direction ?? (a.text !== undefined ? JSON.stringify(a.text) : undefined) ??
     (a.element !== undefined ? "element " + a.element : a.x !== undefined ? a.x + "," + a.y : a.crashes ? "crashes" : a.project_dir ?? a.apk ?? "");
   return [VERBS[name] || name, String(main)];
@@ -219,6 +235,16 @@ function md(text) {
     .replace(/\`\`\`[\\w-]*\\n([\\s\\S]*?)\`\`\`/g, (_, c) => "<pre>" + c + "</pre>")
     .replace(/\`([^\`\\n]+)\`/g, "<code>$1</code>")
     .replace(/\\*\\*([^*\\n]+)\\*\\*/g, "<b>$1</b>");
+}
+// The pinned checklist, Claude Code style: what is done, what is next.
+function drawPlan(steps) {
+  const box = $("plan");
+  steps = steps || [];
+  box.classList.toggle("on", steps.length > 0);
+  if (!steps.length) return box.innerHTML = "";
+  const done = steps.filter((x) => x.done).length, next = steps.findIndex((x) => !x.done);
+  box.innerHTML = '<div class="head">Plan <span>' + done + " of " + steps.length + " done</span></div>" +
+    steps.map((x, i) => '<div class="step' + (x.done ? " done" : i === next ? " next" : "") + '"><span class="box">' + (x.done ? "✓" : i === next ? "▸" : "○") + "</span><span>" + esc(x.text) + "</span></div>").join("");
 }
 function toolCard(name, args, result) {
   const d = document.createElement("details");
@@ -319,6 +345,7 @@ function on(m) {
     case "toolEnd":
       if (live) {
         live.classList.remove("run");
+        if (m.name === "check") live.classList.add("check"), live.classList.toggle("bad", /^error: |^exit code: (?!0\\b)/m.test(m.result));
         const meta = live.querySelector(".meta"); if (meta) meta.textContent = "";
         live.querySelector("pre").innerHTML = ansi(m.result);
         if (live.auto) live.open = false;
@@ -327,6 +354,7 @@ function on(m) {
       activity({ title: "Working" });
       return;
     case "note": return note(m.text);
+    case "plan": return drawPlan(m.steps);
     case "image": return stage.shot(m.images[m.images.length - 1], m.tool);
     case "ask": return askCard(m);
     case "busy":
@@ -509,6 +537,7 @@ function render(s) {
     c.onclick = () => { if (!cur) return; const on = cur.toolsets.includes(t.name) ? cur.toolsets.filter((x) => x !== t.name) : [...cur.toolsets, t.name]; send({ type: "settings", toolsets: on }); };
     sets.appendChild(c);
   }
+  drawPlan(cur && cur.plan);
   busy = !!(cur && cur.busy);
   $("stopBtn").disabled = !busy; $("sendBtn").disabled = busy;
   // Transcript, redrawn from the agent's history whenever a turn ends or a session opens
@@ -521,6 +550,7 @@ function render(s) {
     let ri = 0;
     for (const h of cur.history) {
       if (h.role === "user") userMsg(h.text, h.files);
+      else if (h.role === "note") note(h.text.split("\\n")[0]);
       else if (h.role === "assistant") {
         if (h.text) add(div("msg")).innerHTML = md(h.text);
         for (const t of h.tools || []) toolCard(t.name, t.args, results[ri++] ?? "");

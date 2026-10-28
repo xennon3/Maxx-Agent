@@ -8,6 +8,11 @@ import { describeImages, imagePart, type Vision } from "./vision.ts";
 import type { Image } from "./image.ts";
 import { newSessionId } from "./sessions.ts";
 import type { StreamProgress } from "./progress.ts";
+import { coach, coachNote, failed } from "./coach.ts";
+import { planFromHistory, planTool, PLAN_PROMPT, formatPlan, type Step } from "./plan.ts";
+import { addLesson, rememberTool, swapLesson, MEMORY_PROMPT } from "./memory.ts";
+import { detectCheck, excerpt, quickCheck, type CheckResult } from "./fixit.ts";
+import { bash } from "./tools/bash.ts";
 
 export type AgentIO = {
   token(t: string): void;
@@ -19,6 +24,8 @@ export type AgentIO = {
   image?(tool: string, images: Image[]): void;
   // What the model is doing while it streams (often for minutes on a CPU).
   progress?(p: StreamProgress): void;
+  // The pinned checklist, whenever the model writes or ticks it.
+  plan?(steps: Step[]): void;
 };
 
 export type AgentOptions = {
@@ -31,6 +38,13 @@ export type AgentOptions = {
   toolsets?: string[];
   vision?: Vision;
   session?: string;
+  // Small-model helpers, all on by default.
+  plan?: boolean;
+  memory?: boolean;
+  // The fix-it loop: how many times to send a failed check back (0 turns it off),
+  // and the build command to run (default: detected; false for syntax checks only).
+  fixTries?: number;
+  check?: string | false;
 };
 
 const MAX_BAD_CALLS = 3;
@@ -44,6 +58,7 @@ const STOP_REPEATS = 5;
 // cache from that point on, so prune in batches: at 4 images, back down to 2.
 const KEEP_IMAGES = 2;
 const PRUNE_AT = 4;
+const FIX_TRIES = 3;
 
 export class Agent {
   history: Message[] = [];
@@ -52,9 +67,10 @@ export class Agent {
   private tools: Tool<any>[];
   private prompts: string[] = [];
   toolsets: string[] = [];
+  plan: Step[] = [];
 
   constructor(private opts: AgentOptions, private io: AgentIO) {
-    this.tools = opts.tools ?? TOOLS;
+    this.tools = this.baseTools();
     this.session = opts.session ?? newSessionId();
     this.checkpoints = new Checkpoints(opts.cwd, this.session);
     if (opts.toolsets?.length) this.useToolsets(opts.toolsets);
@@ -67,20 +83,34 @@ export class Agent {
   // Switch tool groups; the system prompt is rewritten in place, history kept.
   useToolsets(names: string[]) {
     const { tools, prompts } = withToolsets(names);
-    this.tools = [...(this.opts.tools ?? TOOLS), ...tools];
+    this.tools = [...this.baseTools(), ...tools];
     this.prompts = prompts;
     this.toolsets = names;
     if (this.vision.mode === "off" && names.length) this.prompts.push("You cannot see images in this session; screenshots arrive as element lists only.");
   }
 
+  private baseTools(): Tool<any>[] {
+    const extra: Tool<any>[] = [];
+    if (this.opts.plan !== false) extra.push(planTool(() => this.plan, (s) => this.setPlan(s)));
+    if (this.opts.memory !== false) extra.push(rememberTool);
+    return [...(this.opts.tools ?? TOOLS), ...extra];
+  }
+
+  private setPlan(steps: Step[]) {
+    this.plan = steps;
+    this.io.plan?.(steps);
+  }
+
   async refreshSystemPrompt() {
-    const content = await systemPrompt(this.opts.cwd, this.prompts);
+    const notes = [this.opts.plan !== false ? PLAN_PROMPT : "", this.opts.memory !== false ? MEMORY_PROMPT : ""].filter(Boolean).join(" ");
+    const content = await systemPrompt(this.opts.cwd, notes ? [notes, ...this.prompts] : this.prompts);
     if (this.history[0]?.role === "system") this.history[0] = { role: "system", content };
     else this.history.unshift({ role: "system", content });
   }
 
   async init() {
     this.history = [];
+    this.setPlan([]);
     await this.refreshSystemPrompt();
     return this;
   }
@@ -89,6 +119,7 @@ export class Agent {
   async restore(id: string, history: Message[]) {
     this.session = id;
     this.history = history.filter((m) => m.role !== "system");
+    this.setPlan(planFromHistory(this.history));
     await this.refreshSystemPrompt();
   }
 
@@ -101,6 +132,11 @@ export class Agent {
     let badCalls = 0;
     const repeats = new Map<string, number>();
     let stuck = 0;
+    // For the fix-it loop: files changed since the last check, and checks sent back.
+    const changed = new Set<string>();
+    let fixes = 0;
+    let nudged = false;
+    let lastFail = "";
 
     for (let step = 0; step < (this.opts.maxSteps ?? 50); step++) {
       await this.maybeCompact();
@@ -110,6 +146,10 @@ export class Agent {
 
       if (!res.toolCalls.length) {
         this.history.push({ role: "assistant", content: res.content });
+        const more = await this.beforeFinish(changed, fixes, nudged, signal);
+        if (more === "fix") fixes++;
+        if (more === "plan") nudged = true;
+        if (more) continue;
         return res.content;
       }
 
@@ -117,8 +157,9 @@ export class Agent {
       this.history.push({ role: "assistant", content: res.rescued ? null : res.content || null, tool_calls: toWire(res.toolCalls) });
       const seen: ContentPart[] = [];
       for (const call of res.toolCalls) {
-        let { result, bad, images, glance } = await this.runTool(call);
+        let { result, bad, images, glance, args } = await this.runTool(call);
         badCalls = bad ? badCalls + 1 : 0;
+        if (args) await this.learn(call.name, args, result, changed, lastFail).then((f) => (lastFail = f));
         const key = `${call.name}|${canonicalArgs(call.arguments)}|${result}`;
         const n = (repeats.get(key) ?? 0) + 1;
         repeats.set(key, n);
@@ -147,6 +188,75 @@ export class Agent {
       }
     }
     return "Stopped: reached the step limit for one turn.";
+  }
+
+  // Bookkeeping after each tool call: which files changed, and lessons from a fix that worked.
+  private async learn(name: string, args: Record<string, unknown>, result: string, changed: Set<string>, lastFail: string): Promise<string> {
+    const tool = findTool(name, this.tools);
+    const bad = failed(result) || result === "user denied this tool call";
+    if (tool?.risk === "write" && typeof args.path === "string" && !bad) changed.add(args.path);
+    if (name !== "bash") return lastFail;
+    const command = String(args.command ?? "");
+    if (bad) return command;
+    const lesson = this.opts.memory !== false && lastFail ? swapLesson(lastFail, command) : null;
+    if (lesson && (await addLesson(this.opts.cwd, lesson).catch(() => false))) this.io.note(`(noted in MAXX.md: ${lesson})`);
+    return "";
+  }
+
+  // The model wants to stop. Check its work first, and hold it to its plan.
+  // Returns why the turn goes on, or null to let it end.
+  private async beforeFinish(changed: Set<string>, fixes: number, nudged: boolean, signal?: AbortSignal): Promise<"fix" | "plan" | null> {
+    const tries = this.opts.fixTries ?? FIX_TRIES;
+    if (changed.size && tries > 0) {
+      const files = [...changed];
+      changed.clear();
+      const r = await this.check(files, signal);
+      if (r && !r.ok) {
+        if (fixes >= tries) {
+          this.io.note(`(${r.what} still fails after ${tries} tries; over to you)`);
+          return null;
+        }
+        const c = coach("bash", {}, r.output);
+        const hint = c.hint ? `\nMaxx hint: ${c.hint}` : "";
+        const text = `Maxx checked your changes: ${r.what} failed (try ${fixes + 1} of ${tries}).\n${excerpt(r.output, c.first)}${hint}\nFix this, then reply when it works.`;
+        // A parts array, so it reads as a report from Maxx rather than a new request (and the UI shows it as a note).
+        this.history.push({ role: "user", content: [{ type: "text", text }] });
+        return "fix";
+      }
+      if (r) this.io.note(`(checked: ${r.what} passed)`);
+    }
+    const open = this.plan.map((s, i) => (s.done ? 0 : i + 1)).filter(Boolean);
+    if (!nudged && this.plan.length && open.length) {
+      const text = `Maxx: plan step${open.length > 1 ? "s" : ""} ${open.join(", ")} not ticked yet.\n${formatPlan(this.plan)}\nDo the next step now. If it is already done, call plan with done set to its number.`;
+      this.history.push({ role: "user", content: [{ type: "text", text }] });
+      return "plan";
+    }
+    return null;
+  }
+
+  // Quick syntax check of the changed files, then the project's build command.
+  private async check(files: string[], signal?: AbortSignal): Promise<CheckResult | null> {
+    const quick = await quickCheck(this.opts.cwd, files);
+    if (quick && !quick.ok) {
+      this.io.toolStart("check", JSON.stringify({ command: quick.what }));
+      this.io.toolEnd("check", quick.output);
+      return quick;
+    }
+    const command = this.opts.check === false ? undefined : this.opts.check || detectCheck(this.opts.cwd);
+    if (!command || signal?.aborted) return quick;
+    const args = { command, timeout: 600 };
+    this.io.toolStart("check", JSON.stringify(args));
+    if (this.opts.permissions.needsPrompt(bash, args)) {
+      const answer = await this.io.ask("Let Maxx check the build?", `$ ${command}`);
+      if (answer === "no") {
+        this.io.toolEnd("check", "skipped");
+        return quick;
+      }
+      if (answer === "always") await this.opts.permissions.remember(bash, args);
+    }
+    const output = truncate(String(await bash.run(args, { cwd: this.opts.cwd })));
+    this.io.toolEnd("check", output);
+    return failed(output) ? { ok: false, what: `\`${command}\``, output } : { ok: true, what: `\`${command}\`` };
   }
 
   private async deliverImages(tool: string, result: string, images: Image[], seen: ContentPart[], signal?: AbortSignal, glance = false): Promise<string> {
@@ -185,7 +295,7 @@ export class Agent {
     }
   }
 
-  private async runTool(call: ToolCall): Promise<{ result: string; bad: boolean; images?: Image[]; glance?: boolean }> {
+  private async runTool(call: ToolCall): Promise<{ result: string; bad: boolean; images?: Image[]; glance?: boolean; args?: Record<string, unknown> }> {
     const tool = findTool(call.name, this.tools);
     if (!tool) return { result: `error: unknown tool "${call.name}". Available: ${this.tools.map((t) => t.name).join(", ")}`, bad: true };
 
@@ -215,7 +325,7 @@ export class Agent {
       if (answer === "no") {
         const result = "user denied this tool call";
         this.io.toolEnd(tool.name, result);
-        return { result, bad: false };
+        return { result, bad: false, args };
       }
       if (answer === "always") await this.opts.permissions.remember(tool, args);
     }
@@ -231,8 +341,9 @@ export class Agent {
     } catch (e) {
       result = `error: ${(e as Error).message}`;
     }
+    result += coachNote(coach(tool.name, args, result), result);
     this.io.toolEnd(tool.name, result);
-    return { result, bad: false, images, glance };
+    return { result, bad: false, images, glance, args };
   }
 
   private async maybeCompact() {

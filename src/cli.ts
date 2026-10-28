@@ -45,12 +45,16 @@ options:
   --vision <v>       auto | native | off: can the model see screenshots? (default auto)
                      with --vision-model: auto describes screenshots the model asks for, always describes every one
   --vision-model <id>  a second model that looks at screenshots for a text-only main model
+  --check <cmd>      build command Maxx runs after the model edits files (default: detected,
+                     or a \`check:\` line in MAXX.md); --check off for syntax checks only
+  --fix-tries <n>    times a failed check goes back to the model (default 3, 0 = off)
+  --no-plan          don't offer the plan checklist tool
   -p, --prompt <s>   one-shot prompt
   -c, --continue     continue the latest session in this project
   --resume <ref>     continue a session by number (from \`maxx sessions\`), id, or words from its title
 
 in a session:
-  /help  /mode <m>  /with <sets|none>  /checkpoints  /rewind <n>  /clear  /exit
+  /help  /mode <m>  /with <sets|none>  /plan  /checkpoints  /rewind <n>  /clear  /exit
   /sessions  /resume <ref>  /new  /title <text>   (sessions are saved per project after every turn)
   /delete <ref>  /undelete     delete a session (this one if no ref), bring it back
   /attach <file...>            send files with your next message: images to the vision model, text inline
@@ -67,6 +71,9 @@ const { values, positionals } = parseArgs({
     with: { type: "string" },
     vision: { type: "string", default: "auto" },
     "vision-model": { type: "string" },
+    check: { type: "string" },
+    "fix-tries": { type: "string" },
+    "no-plan": { type: "boolean" },
     prompt: { type: "string", short: "p" },
     continue: { type: "boolean", short: "c" },
     resume: { type: "string" },
@@ -231,6 +238,11 @@ const io: AgentIO = {
     status.say(C.dim + lines.slice(0, 6).map((l) => "  " + l).join("\n") + (lines.length > 6 ? `\n  ... ${lines.length - 6} more lines` : "") + C.reset);
   },
   note: (text) => status.say(`${C.yellow}${text}${C.reset}`),
+  plan: (steps) => {
+    if (!steps.length) return;
+    const next = steps.findIndex((s) => !s.done);
+    status.say(steps.map((s, i) => (s.done ? `${C.dim}  ✓ ${s.text}${C.reset}` : i === next ? `${C.bold}  ▸ ${s.text}${C.reset}` : `  ○ ${s.text}`)).join("\n"));
+  },
   async ask(question, preview) {
     status.stop();
     if (preview) console.log(preview);
@@ -252,7 +264,9 @@ if (values.continue || values.resume) {
 }
 const toolsets = parseSets(values.with ?? (resumed?.toolsets.join(",") || process.env.MAXX_WITH) ?? "");
 const { vision, note: visionNote } = await pickVision(llm, { flag: values.vision, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL });
-const agent = await new Agent({ llm, cwd, permissions, contextWindow: Number(values.context), toolsets, vision }, io).init();
+const check = values.check === undefined ? undefined : /^(off|none|false)$/i.test(values.check) ? false : values.check;
+const fixTries = values["fix-tries"] === undefined ? undefined : Number(values["fix-tries"]);
+const agent = await new Agent({ llm, cwd, permissions, contextWindow: Number(values.context), toolsets, vision, check, fixTries, plan: !values["no-plan"] }, io).init();
 let created = new Date().toISOString();
 let title = "";
 if (resumed) await resumeInto(resumed);
@@ -408,6 +422,7 @@ async function command(line: string) {
       const sets = Object.entries(TOOLSETS).map(([n, t]) => `  ${agent.toolsets.includes(n) ? "*" : " "} ${n.padEnd(8)} ${t.about}`);
       return console.log(`toolsets (* = on; /with android,desktop or /with none):\n${sets.join("\n")}\nreplay of this session: ${replayFile}`);
     }
+    case "/plan": return agent.plan.length ? io.plan!(agent.plan) : console.log("(no plan yet; the model writes one for bigger tasks)");
     case "/checkpoints": {
       const list = agent.checkpoints.list();
       return console.log(list.length ? list.join("\n") : "(no checkpoints yet; one is taken before every write or command)");
