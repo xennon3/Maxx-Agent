@@ -130,6 +130,20 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
 .plan .step.next .box { color: var(--accent); }
 .tool.check summary b { color: var(--ok); }
 .tool.check.bad summary b { color: var(--bad); }
+.mark { max-width: 860px; align-self: center; font-size: 12.5px; padding: 4px 12px; border-radius: 999px; border: 1px dashed var(--line); color: var(--mute); }
+.mark.up { border: 1px solid #7048e8; color: #7048e8; background: color-mix(in srgb, #7048e8 8%, transparent); }
+.chip.helper.on { background: #7048e8; border-color: #7048e8; }
+.activity.helper .what::before { content: "🧠 "; }
+.activity.helper { box-shadow: inset 3px 0 0 #7048e8; }
+#helperDlg { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); padding: 0; width: min(460px, calc(100vw - 32px)); }
+#helperDlg::backdrop { background: rgba(0,0,0,.35); }
+#helperDlg form { display: flex; flex-direction: column; gap: 10px; padding: 16px; }
+#helperDlg h3 { margin: 0; }
+#helperDlg label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--mute); }
+#helperDlg .row { display: flex; gap: 8px; }
+#helperDlg .row label { flex: 1; }
+#helperDlg .hint { font-size: 12px; color: var(--mute); margin: 0; }
+#helperDlg .btns { display: flex; gap: 8px; justify-content: flex-end; }
 @keyframes blink { 50% { opacity: 0; } }
 @media (max-width: 860px) {
   body { grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; }
@@ -159,6 +173,7 @@ ${STAGE_CSS}
       <option value="yolo">Never ask</option>
     </select>
     <span id="sets"></span>
+    <span class="chip helper" id="helperBtn" title="A bigger model Maxx calls when the local one is stuck">🧠 Helper: off</span>
     <button id="newBtn" title="Start a new session in this project">New</button>
   </header>
   <div class="plan" id="plan"></div>
@@ -178,6 +193,28 @@ ${STAGE_CSS}
   </div>
 </main>
 ${STAGE_HTML}
+<dialog id="helperDlg"><form method="dialog" id="helperForm">
+  <h3>🧠 Helper model</h3>
+  <p class="hint">The local model does the routine steps. When it is stuck (the same call over and over, or several failures in a row), Maxx hands that one step to a bigger model, then hands back.</p>
+  <label>Helper
+    <select id="hKind">
+      <option value="off">Off: everything stays on this machine</option>
+      <option value="lmstudio">Another LM Studio model</option>
+      <option value="anthropic">Claude (Anthropic API key)</option>
+      <option value="openai">Other OpenAI-compatible API</option>
+    </select>
+  </label>
+  <label id="hModelRow">Model <input id="hModel" list="hModels" placeholder="claude-opus-5-5"><datalist id="hModels"></datalist></label>
+  <label id="hUrlRow">API base URL <input id="hUrl" placeholder="https://openrouter.ai/api/v1"></label>
+  <label id="hKeyRow">API key <input id="hKey" type="password" autocomplete="off"></label>
+  <div class="row" id="hNums">
+    <label>Escalate after <input id="hAfter" type="number" min="1" max="10" title="Failed tool calls in a row"></label>
+    <label>Helper steps <input id="hSteps" type="number" min="1" max="20" title="Steps the helper may take before handing back"></label>
+    <label>Per message <input id="hTurn" type="number" min="1" max="10" title="Escalations allowed in one message"></label>
+  </div>
+  <p class="hint" id="hPrivacy"></p>
+  <div class="btns"><button value="cancel" formnovalidate>Cancel</button><button class="primary" id="hSave" value="save">Save</button></div>
+</form></dialog>
 <div id="zoom"><img id="zoomImg" alt=""></div>
 <div id="drop">Drop files to attach them to your message</div>
 <div id="toast"><span id="toastText"></span><button id="toastBtn">Undo</button></div>
@@ -187,6 +224,8 @@ const token = new URLSearchParams(location.search).get("t");
 let ws, state = null, busy = false, live = null, streaming = null;
 // While the model streams: tool cards being written (by call index, not run yet), the thinking block, the status bar.
 let writing = [], thinkCard = null, act = null;
+// The helper model's id while it has the wheel.
+let helperLive = null;
 
 function connect() {
   ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws?t=" + token);
@@ -355,10 +394,17 @@ function on(m) {
       return;
     case "note": return note(m.text);
     case "plan": return drawPlan(m.steps);
+    case "escalation":
+      helperLive = m.active ? m.model : null;
+      $("activity").classList.toggle("helper", !!helperLive);
+      add(div("mark" + (m.active ? " up" : ""), (m.active ? "🧠 " : "↩ ") + m.text));
+      activity({ title: m.active ? m.model + " is on it" : "Working" });
+      return;
     case "image": return stage.shot(m.images[m.images.length - 1], m.tool);
     case "ask": return askCard(m);
     case "busy":
       busy = m.busy; $("stopBtn").disabled = !busy; $("sendBtn").disabled = busy;
+      if (!busy) { helperLive = null; $("activity").classList.remove("helper"); }
       if (!busy) { streaming = null; thinkCard = null; abandonWriting(); }
       activity(busy ? { title: "Starting" } : null);
       return;
@@ -538,6 +584,10 @@ function render(s) {
     sets.appendChild(c);
   }
   drawPlan(cur && cur.plan);
+  const hb = $("helperBtn"), hs = s.helper;
+  const helperOn = hs && !hs.off && hs.model;
+  hb.classList.toggle("on", !!helperOn);
+  hb.textContent = helperOn ? "🧠 " + hs.model : "🧠 Helper: off";
   busy = !!(cur && cur.busy);
   $("stopBtn").disabled = !busy; $("sendBtn").disabled = busy;
   // Transcript, redrawn from the agent's history whenever a turn ends or a session opens
@@ -549,7 +599,8 @@ function render(s) {
     const results = cur.history.filter((h) => h.role === "tool").map((h) => h.text);
     let ri = 0;
     for (const h of cur.history) {
-      if (h.role === "user") userMsg(h.text, h.files);
+      if (h.role === "mark") add(div("mark" + (h.active ? " up" : ""), (h.active ? "🧠 " : "↩ ") + h.text));
+      else if (h.role === "user") userMsg(h.text, h.files);
       else if (h.role === "note") note(h.text.split("\\n")[0]);
       else if (h.role === "assistant") {
         if (h.text) add(div("msg")).innerHTML = md(h.text);
@@ -624,6 +675,41 @@ addEventListener("dragenter", (e) => { if (hasFiles(e)) { dragDepth++; $("drop")
 addEventListener("dragleave", () => { if (--dragDepth <= 0) dragDepth = 0, $("drop").classList.remove("on"); });
 addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
 addEventListener("drop", (e) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; $("drop").classList.remove("on"); attach([...e.dataTransfer.files]); });
+// Helper settings
+function helperForm() {
+  const h = (state && state.helper) || {};
+  $("hKind").value = h.off || !h.kind ? "off" : h.kind;
+  $("hModel").value = h.model || "";
+  $("hUrl").value = h.baseURL || "";
+  $("hKey").value = "";
+  $("hAfter").value = h.afterFailures; $("hSteps").value = h.maxSteps; $("hTurn").value = h.maxPerTurn;
+  helperFields();
+  $("helperDlg").showModal();
+}
+function helperFields() {
+  const h = (state && state.helper) || {}, k = $("hKind").value;
+  $("hModelRow").style.display = k === "off" ? "none" : "";
+  $("hNums").style.display = k === "off" ? "none" : "";
+  $("hUrlRow").style.display = k === "openai" ? "" : "none";
+  $("hKeyRow").style.display = k === "openai" || k === "anthropic" ? "" : "none";
+  const ids = k === "anthropic" ? h.claudeModels || [] : k === "lmstudio" ? (state && state.models) || [] : [];
+  $("hModels").innerHTML = ids.map((id) => '<option value="' + esc(id) + '">').join("");
+  $("hModel").placeholder = k === "anthropic" ? "claude-opus-5-5" : k === "openai" ? "gpt-5" : "a bigger model you have downloaded";
+  const fromEnv = k === "anthropic" ? h.envKey && h.envKey.anthropic : k === "openai" ? h.envKey && h.envKey.openai : false;
+  $("hKey").placeholder = h.hasKey && h.kind === k ? "saved (leave blank to keep)" : fromEnv ? "using " + (k === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY") + " from the environment" : "paste a key";
+  $("hPrivacy").textContent = k === "off" ? "Nothing is sent anywhere." :
+    k === "lmstudio" ? "Stays on this machine. LM Studio loads the bigger model when Maxx first asks for it, which can take a while on a laptop." :
+    "When Maxx escalates, the conversation so far (files it read, command output) is sent to that API and billed to your key. Nothing is sent while the local model is doing fine.";
+}
+$("helperBtn").onclick = helperForm;
+$("hKind").onchange = helperFields;
+$("helperForm").onsubmit = (e) => {
+  if (e.submitter && e.submitter.value !== "save") return;
+  const k = $("hKind").value;
+  const prev = (state && state.helper) || {};
+  send({ type: "helper", off: k === "off", kind: k === "off" ? prev.kind || "lmstudio" : k, model: k === "off" ? prev.model || "" : $("hModel").value,
+    baseURL: $("hUrl").value, apiKey: $("hKey").value, afterFailures: $("hAfter").value, maxSteps: $("hSteps").value, maxPerTurn: $("hTurn").value });
+};
 connect();
 </script>
 </body>

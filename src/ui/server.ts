@@ -16,6 +16,7 @@ import { openWindow, pickFolder } from "./launch.ts";
 import { Stage } from "./stage.ts";
 import { TOOLS, TOOLSETS } from "../tools/index.ts";
 import { TEMPLATES, findTemplate, freeFolder, isEmptyFolder, scaffold } from "../templates/index.ts";
+import { CLAUDE_MODELS, HELPER_DEFAULTS, loadHelper, resolveHelper, saveHelper, type Helper } from "../escalate.ts";
 
 // `maxx ui`: the agent behind a local web page. One WebSocket carries
 // everything: streamed tokens, tool cards, permission questions, screenshots.
@@ -59,6 +60,7 @@ export async function startUI(opts: UIOptions) {
     toolStart: (name, args) => send({ type: "toolStart", name, args }),
     toolEnd: (name, result) => send({ type: "toolEnd", name, result }),
     note: (text) => send({ type: "note", text }),
+    escalation: (e) => send({ type: "escalation", ...e }),
     image: (tool, images) => send({ type: "image", tool, images: images.map((i) => `data:${i.mime};base64,${i.base64}`) }),
     ask: (question, preview) =>
       new Promise<Answer>((res) => {
@@ -76,6 +78,37 @@ export async function startUI(opts: UIOptions) {
     } catch {
       return [];
     }
+  }
+
+  // What the settings form shows. The key itself never goes back to the page.
+  async function helperInfo() {
+    const h = await loadHelper();
+    const envKey = { anthropic: !!process.env.ANTHROPIC_API_KEY, openai: !!process.env.OPENAI_API_KEY };
+    return {
+      ...HELPER_DEFAULTS,
+      ...(h ? { ...h, apiKey: undefined, hasKey: !!h.apiKey } : { off: true }),
+      envKey,
+      claudeModels: CLAUDE_MODELS,
+      // Set from the environment (MAXX_HELPER) for this run, overriding the saved one.
+      fromEnv: !!process.env.MAXX_HELPER,
+    };
+  }
+
+  // Each history entry the page draws, with the escalation banners in place.
+  function transcript(agent: Agent) {
+    const out: Record<string, unknown>[] = [];
+    const marks = (i: number) => agent.marks.filter((m) => m.at === i).forEach((m) => out.push({ role: "mark", text: m.text, active: m.active }));
+    agent.history.forEach((m, i) => {
+      marks(i);
+      // Parts-array user messages are screenshots and Maxx's own reports (fix-it, plan); only the reports are shown, as notes.
+      if (m.role === "system") return;
+      const typed = typedText(m);
+      if (typed !== null) return void out.push({ role: "user", ...stripAttachments(typed) });
+      if (m.role === "user") return void (Array.isArray(m.content) && isReport(m.content) && out.push({ role: "note", text: textOf(m.content) }));
+      out.push({ role: m.role, text: textOf(m.content as any), tools: "tool_calls" in m ? m.tool_calls?.map((t) => ({ name: t.function.name, args: t.function.arguments })) : undefined });
+    });
+    agent.marks.filter((m) => m.at >= agent.history.length).forEach((m) => out.push({ role: "mark", text: m.text, active: m.active }));
+    return out;
   }
 
   async function snapshot(): Promise<Out> {
@@ -99,14 +132,10 @@ export async function startUI(opts: UIOptions) {
         toolsets: s.agent.toolsets,
         busy: !!s.controller,
         plan: s.agent.plan,
-        // Parts-array user messages are screenshots and Maxx's own reports (fix-it, plan); only the reports are shown, as notes.
-        history: s.agent.history
-          .filter((m) => m.role !== "system" && !(m.role === "user" && typedText(m) === null && !(Array.isArray(m.content) && isReport(m.content))))
-          .map((m) => {
-            if (m.role === "user" && typedText(m) !== null) return { role: m.role, ...stripAttachments(typedText(m)!) };
-            return { role: m.role === "user" ? "note" : m.role, text: textOf(m.content as any), tools: "tool_calls" in m ? m.tool_calls?.map((t) => ({ name: t.function.name, args: t.function.arguments })) : undefined };
-          }),
+        history: transcript(s.agent),
+        helper: s.agent.helper && { model: s.agent.helper.model, kind: s.agent.helper.kind },
       },
+      helper: await helperInfo(),
     };
   }
 
@@ -128,7 +157,8 @@ export async function startUI(opts: UIOptions) {
     const permissions = await new Permissions(dir, o.mode ?? state?.permissions.mode ?? "ask").load();
     const { vision, note } = await pickVision(llm, { visionModel: opts.visionModel });
     const toolsets = o.toolsets ?? saved?.toolsets ?? [];
-    const agent = await new Agent({ llm, cwd: dir, permissions, toolsets, vision, contextWindow: opts.context, tools: [...TOOLS, ...stage!.tools()] }, io).init();
+    const helper = await resolveHelper({}).catch(() => null);
+    const agent = await new Agent({ llm, cwd: dir, permissions, toolsets, vision, helper, contextWindow: opts.context, tools: [...TOOLS, ...stage!.tools()] }, io).init();
     if (saved) await agent.restore(saved.id, saved.history);
     state = { cwd: dir, agent, permissions, llm, created: saved?.created ?? new Date().toISOString(), title: saved?.title ?? "", controller: null };
     recordTo(resolve(dir, ".maxx", "replays", `${agent.session}.jsonl`));
@@ -209,6 +239,25 @@ export async function startUI(opts: UIOptions) {
           await state.agent.refreshSystemPrompt();
         }
         if (m.model && m.model !== state.llm.model) await open(state.cwd, { session: state.agent.session, model: m.model, toolsets: state.agent.toolsets });
+        return send(await snapshot());
+      }
+      case "helper": {
+        // A blank key keeps the saved one; the page never sees it to send it back.
+        const prev = await loadHelper();
+        const h: Helper = {
+          kind: m.kind,
+          model: String(m.model ?? "").trim(),
+          off: !!m.off,
+          ...(m.kind === "openai" && m.baseURL ? { baseURL: String(m.baseURL).trim() } : {}),
+          ...(m.apiKey ? { apiKey: String(m.apiKey).trim() } : m.clearKey || prev?.kind !== m.kind ? {} : prev?.apiKey ? { apiKey: prev.apiKey } : {}),
+          afterFailures: clamp(m.afterFailures, 1, 10, HELPER_DEFAULTS.afterFailures),
+          maxPerTurn: clamp(m.maxPerTurn, 1, 10, HELPER_DEFAULTS.maxPerTurn),
+          maxSteps: clamp(m.maxSteps, 1, 20, HELPER_DEFAULTS.maxSteps),
+        };
+        if (!["lmstudio", "openai", "anthropic"].includes(h.kind)) throw new Error("pick where the helper runs");
+        if (!h.off && !h.model) throw new Error("pick a helper model, or turn the helper off");
+        await saveHelper(h);
+        state?.agent.setHelper(h.off ? null : h);
         return send(await snapshot());
       }
       case "answer":
@@ -317,6 +366,10 @@ export async function startUI(opts: UIOptions) {
 
 const MAX_UPLOAD = 50 << 20;
 const isReport = (parts: { type: string; text?: string }[]) => parts.every((p) => p.type === "text") && /^Maxx( checked|:)/.test(parts[0]?.text ?? "");
+const clamp = (v: unknown, lo: number, hi: number, d: number) => {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) && n > 0 ? Math.min(hi, Math.max(lo, n)) : d;
+};
 
 // Only the tail of a long preview goes over the wire each time: the card
 // shows the end of what is being written, the way a terminal would.

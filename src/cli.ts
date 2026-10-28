@@ -17,6 +17,7 @@ import { launchedFromExplorer } from "./ui/launch.ts";
 import { ago, deleteSession, findSession, newSessionId, formatList, listProjects, listSessions, loadSession, restoreSession, saveSession, type Session, type SessionInfo } from "./sessions.ts";
 import { buildTurn, type Upload } from "./attach.ts";
 import { TEMPLATES, findTemplate, scaffold } from "./templates/index.ts";
+import { describeHelper, resolveHelper, type Helper } from "./escalate.ts";
 
 const C = { dim: "\x1b[2m", cyan: "\x1b[36m", yellow: "\x1b[33m", bold: "\x1b[1m", reset: "\x1b[0m" };
 
@@ -49,12 +50,19 @@ options:
                      or a \`check:\` line in MAXX.md); --check off for syntax checks only
   --fix-tries <n>    times a failed check goes back to the model (default 3, 0 = off)
   --no-plan          don't offer the plan checklist tool
+  --helper <id>      a bigger model to hand the hard step to when the local one is stuck
+                     (default $MAXX_HELPER or the app's saved setting; "off" disables it)
+                     claude-* ids use the Claude API ($ANTHROPIC_API_KEY); with --helper-url, any
+                     OpenAI-compatible API ($MAXX_HELPER_KEY or $OPENAI_API_KEY); otherwise another LM Studio model
+  --helper-url <url>   OpenAI-compatible API for the helper
+  --helper-kind <k>    lmstudio | openai | anthropic (guessed from the model id and URL)
+  --helper-after <n>   failed tool calls in a row before escalating (default 3)
   -p, --prompt <s>   one-shot prompt
   -c, --continue     continue the latest session in this project
   --resume <ref>     continue a session by number (from \`maxx sessions\`), id, or words from its title
 
 in a session:
-  /help  /mode <m>  /with <sets|none>  /plan  /checkpoints  /rewind <n>  /clear  /exit
+  /help  /mode <m>  /with <sets|none>  /plan  /helper [off|on]  /checkpoints  /rewind <n>  /clear  /exit
   /sessions  /resume <ref>  /new  /title <text>   (sessions are saved per project after every turn)
   /delete <ref>  /undelete     delete a session (this one if no ref), bring it back
   /attach <file...>            send files with your next message: images to the vision model, text inline
@@ -74,6 +82,10 @@ const { values, positionals } = parseArgs({
     check: { type: "string" },
     "fix-tries": { type: "string" },
     "no-plan": { type: "boolean" },
+    helper: { type: "string" },
+    "helper-url": { type: "string" },
+    "helper-kind": { type: "string" },
+    "helper-after": { type: "string" },
     prompt: { type: "string", short: "p" },
     continue: { type: "boolean", short: "c" },
     resume: { type: "string" },
@@ -266,7 +278,13 @@ const toolsets = parseSets(values.with ?? (resumed?.toolsets.join(",") || proces
 const { vision, note: visionNote } = await pickVision(llm, { flag: values.vision, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL });
 const check = values.check === undefined ? undefined : /^(off|none|false)$/i.test(values.check) ? false : values.check;
 const fixTries = values["fix-tries"] === undefined ? undefined : Number(values["fix-tries"]);
-const agent = await new Agent({ llm, cwd, permissions, contextWindow: Number(values.context), toolsets, vision, check, fixTries, plan: !values["no-plan"] }, io).init();
+let helper: Helper | null = null;
+try {
+  helper = await resolveHelper({ model: values.helper, url: values["helper-url"], kind: values["helper-kind"], after: values["helper-after"] });
+} catch (e) {
+  die((e as Error).message);
+}
+const agent = await new Agent({ llm, cwd, permissions, contextWindow: Number(values.context), toolsets, vision, check, fixTries, plan: !values["no-plan"], helper }, io).init();
 let created = new Date().toISOString();
 let title = "";
 if (resumed) await resumeInto(resumed);
@@ -306,7 +324,7 @@ if (values.prompt) {
   process.exit(0);
 }
 
-const extras = toolsets.length ? ` · with ${toolsets.join(",")} · vision ${vision.mode === "proxy" ? vision.llm.model : vision.mode}` : "";
+const extras = (toolsets.length ? ` · with ${toolsets.join(",")} · vision ${vision.mode === "proxy" ? vision.llm.model : vision.mode}` : "") + (helper ? ` · helper ${describeHelper(helper)}` : "");
 console.log(`${C.bold}maxx${C.reset} ${C.dim}${llm.model} via ${baseURL} · mode ${permissions.mode}${extras} · /help${C.reset}`);
 if (!resumed) {
   const prev = (await listSessions(cwd))[0];
@@ -423,6 +441,14 @@ async function command(line: string) {
       return console.log(`toolsets (* = on; /with android,desktop or /with none):\n${sets.join("\n")}\nreplay of this session: ${replayFile}`);
     }
     case "/plan": return agent.plan.length ? io.plan!(agent.plan) : console.log("(no plan yet; the model writes one for bigger tasks)");
+    case "/helper": {
+      if (arg === "off" || arg === "on") {
+        if (!helper) return console.log("no helper configured; start with --helper <model>, or set one in the app (maxx ui)");
+        agent.setHelper(arg === "off" ? null : helper);
+      }
+      const h = agent.helper;
+      return console.log(h ? `helper: ${describeHelper(h)}, after ${h.afterFailures ?? 3} failed calls in a row or a repeat loop (/helper off to stay local)` : `helper: off, everything stays on this machine${helper ? " (/helper on)" : ""}`);
+    }
     case "/checkpoints": {
       const list = agent.checkpoints.list();
       return console.log(list.length ? list.join("\n") : "(no checkpoints yet; one is taken before every write or command)");
