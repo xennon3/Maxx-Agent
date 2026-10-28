@@ -115,3 +115,19 @@ test("the same call with the same result gets a nudge, then ends the turn", asyn
   expect(tools[2]).toContain("this exact list_files call 3 times");
   script = [];
 });
+
+test("resending an edit that already landed is stopped even when results alternate", async () => {
+  const dir = await workspace();
+  const edit = { tool: { name: "edit_file", args: { path: "app.ts", old_string: "const port = 3000;", new_string: "const port = 8080;" } } };
+  const read = { tool: { name: "read_file", args: { path: "app.ts" } } };
+  script = [edit, edit, read, edit, read, edit, read, edit, { text: "should not get here" }];
+  const { agent } = await agentIn(dir, ["always"]);
+  const answer = await agent.send("use port 8080");
+
+  expect(answer).toStartWith("Stopped: the model kept repeating the same tool call");
+  const tools = agent.history.filter((m) => m.role === "tool").map((m) => m.content as string);
+  expect(tools[0]).toContain("It now reads:");
+  expect(tools[1]).toStartWith("no change: app.ts already contains new_string");
+  expect(tools.at(-1)).toContain("this exact edit_file call 5 times");
+  script = [];
+});
