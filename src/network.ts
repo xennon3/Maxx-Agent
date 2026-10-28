@@ -77,5 +77,5 @@ export const OFFLINE_ENV: Record<string, string> = {
 
 export const NETWORK_PROMPT = {
   on: "Network access is on: when a task needs a library (pandas, matplotlib, pillow...), install it with pip or npm and use it. Install only what the task needs, and tell the user what you installed. Save charts and visualizations as PNG or HTML files in the project.",
-  off: "Network access is off: do not install packages or download files. Use the standard library and what is already installed.",
+  off: "Network access is off: do not install packages or download files, and you cannot look things up online. Use the standard library and what is already installed. If the task needs current information you are not sure of (latest versions, changed APIs), say so, and that the user can turn on network access so you can check.",
 };

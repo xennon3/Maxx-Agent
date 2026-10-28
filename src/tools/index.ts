@@ -32,6 +32,7 @@ export function withToolsets(names: string[]): { tools: Tool<any>[]; prompts: st
 
 export function toolSpecs(tools: Tool<any>[] = TOOLS): ToolSpec[] {
   return tools.map((t) => {
+    if (t.parameters) return { type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } };
     const { $schema, ...parameters } = z.toJSONSchema(t.schema, { io: "input" }) as Record<string, unknown>;
     return { type: "function", function: { name: t.name, description: t.description, parameters } };
   });

@@ -334,6 +334,38 @@ the rest of a session.
 It is off until you set a helper, so nothing leaves the machine by default. With a hosted helper,
 the conversation so far (files read, command output) is sent to that API only when Maxx escalates.
 
+## Looking things up: web search and free MCP servers
+
+A small local model's knowledge stops at its training date, so it will happily describe last
+year's API. With network access on (🌐 in the app, `/network on` or `--network on`), Maxx gets
+lookup tools in both chat and project mode, and its prompt says today's date and tells it to look
+up anything version-, date- or price-sensitive it isn't sure of, then end with a `Sources:` line.
+
+- **`web_search`** needs no API key: a SearXNG server if you run one (`$MAXX_SEARXNG` or
+  `{"searxng": "http://localhost:8888"}` in `~/.maxx/web.json`), else DuckDuckGo's HTML pages,
+  else Wikipedia. Five results, about 300 tokens.
+- **`web_fetch`** reads a page as plain text. With `find` ("install command", "release date") it
+  returns only the lines that mention those words plus their neighbours, so a 4B model at 16K
+  context reads a paragraph, not a whole page. Without it, pages come in ~3,200-character slices
+  (`start=` for more).
+- **MCP servers** from `~/.maxx/mcp.json`, in the same `{"mcpServers": {...}}` shape Claude Desktop
+  and Cursor use, over stdio (a command) or Streamable HTTP (a URL). With no file, Maxx uses
+  [Context7](https://context7.com) (current library docs, free, nothing to install).
+
+```sh
+maxx mcp                         # what is configured, and the free presets
+maxx mcp add deepwiki            # questions about any public GitHub repo
+maxx mcp add microsoft-learn     # Windows, PowerShell, .NET and Azure docs
+maxx mcp add fetch -- uvx mcp-server-fetch      # any stdio server
+maxx doctor web                  # check search, page reading and every MCP server from here
+```
+
+MCP calls ask first in ask mode unless the server has `"trust": true` (the presets do), outputs are
+cut at 4,000 characters, schema descriptions are trimmed, and at most 12 MCP tools are offered
+(pick them with `"tools": [...]` per server). A server that is down is skipped with a note and
+tried again two minutes later. With network access off, none of this is offered and the model is
+told to say when its answer may be out of date.
+
 ## A simulated EVO-X2
 
 `bun sim/run.ts` runs the real Maxx CLI against a simulated EVO-X2: a fake LM Studio that charges

@@ -85,7 +85,9 @@ test("the agent refuses installs before asking, says so in the system prompt, an
   const log: string[] = [];
   const io: AgentIO = { token: () => {}, toolStart: () => {}, toolEnd: (n, r) => log.push(`end ${n}: ${r.split("\n")[0]}`), note: () => {}, ask: async (q) => (log.push(`ask ${q}`), "no") };
   const llm = { baseURL: `http://localhost:${server.port}/v1`, model: "fake" };
-  const agent = await new Agent({ llm, cwd, permissions: await new Permissions(cwd, "ask").load() }, io).init();
+  // No real web or MCP servers in tests.
+  const online = async () => ({ tools: [], notes: [], servers: [] });
+  const agent = await new Agent({ llm, cwd, permissions: await new Permissions(cwd, "ask").load(), online }, io).init();
   expect(agent.network).toBe(false);
   expect(String(agent.history[0]!.content)).toContain("Network access is off");
 

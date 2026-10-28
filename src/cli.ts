@@ -13,6 +13,7 @@ import { recordTo } from "./devices/run.ts";
 import { replay } from "./replay.ts";
 import { startUI } from "./ui/server.ts";
 import { doctorVoice } from "./ui/voice.ts";
+import { doctorWeb, mcpCommand } from "./lookup-cli.ts";
 import { describe, SPINNER, statusLine, type StreamProgress } from "./progress.ts";
 import { launchedFromExplorer } from "./ui/launch.ts";
 import { ago, deleteSession, findSession, newSessionId, formatList, listProjects, listSessions, loadSession, restoreSession, saveSession, type Session, type SessionInfo } from "./sessions.ts";
@@ -37,6 +38,8 @@ usage:
   maxx doctor android         check adb, the JDK and the connected phone
   maxx doctor desktop         check screenshots and UI Automation on Windows
   maxx doctor vision          check that the model (or --vision-model) can read an image
+  maxx doctor web             check that web search, page reading and the MCP servers work from here
+  maxx mcp [add|rm] [name]    list, add or remove MCP servers (context7 library docs is on by default)
   maxx doctor voice           check the local Whisper used by the mic button in maxx ui
   maxx replay <file.jsonl>    re-run the phone/desktop actions of an earlier session
   maxx sessions [--all]       list saved sessions for this project (or every project)
@@ -64,8 +67,8 @@ options:
   --helper-url <url>   OpenAI-compatible API for the helper
   --helper-kind <k>    lmstudio | openai | anthropic (guessed from the model id and URL)
   --helper-after <n>   failed tool calls in a row before escalating (default 3)
-  --network <on|off> let the model install packages (pip, npm...) and download files, for data
-                     analysis, charts and file processing (default $MAXX_NETWORK or the saved
+  --network <on|off> let the model look things up (web_search, web_fetch, MCP servers), install
+                     packages (pip, npm...) and download files (default $MAXX_NETWORK or the saved
                      setting, which starts off); installs still ask first in ask mode
   --whisper <x>      offline speech-to-text for the mic button: a Whisper server URL
                      (whisper.cpp's whisper-server) or the path to whisper-cli (default $MAXX_WHISPER,
@@ -173,6 +176,8 @@ const baseURL = values["base-url"] ?? process.env.MAXX_BASE_URL ?? "http://local
 const fromExplorer = launchedFromExplorer();
 const voice = { whisper: values.whisper ?? process.env.MAXX_WHISPER, whisperModel: values["whisper-model"] ?? process.env.MAXX_WHISPER_MODEL };
 
+if (positionals[0] === "doctor" && positionals[1] === "web") process.exit((await doctorWeb()) ? 0 : 1);
+if (positionals[0] === "mcp") process.exit(await mcpCommand(positionals.slice(1)).catch((e) => (console.error(String((e as Error).message)), 1)));
 if (positionals[0] === "doctor" && positionals[1] === "voice") process.exit((await doctorVoice({ whisper: voice.whisper, model: voice.whisperModel })) ? 0 : 1);
 
 if (positionals[0] === "ui" || (fromExplorer && !positionals.length && !values.prompt)) {
@@ -479,7 +484,7 @@ async function command(line: string) {
         await agent.setNetwork(on);
         await saveNetwork(on);
       }
-      return console.log(agent.network ? "network: on, Maxx may install packages (pip, npm...) and download files (/network off to stop)" : "network: off, no installs or downloads (/network on to allow them)");
+      return console.log(agent.network ? "network: on, Maxx may look things up on the web, install packages (pip, npm...) and download files (/network off to stop)" : "network: off, no web lookups, installs or downloads (/network on to allow them)");
     }
     case "/checkpoints": {
       const list = agent.checkpoints.list();

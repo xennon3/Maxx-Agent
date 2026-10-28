@@ -14,6 +14,8 @@ import { addLesson, rememberTool, swapLesson, MEMORY_PROMPT } from "./memory.ts"
 import { detectCheck, excerpt, quickCheck, type CheckResult } from "./fixit.ts";
 import { bash } from "./tools/bash.ts";
 import { NETWORK_PROMPT } from "./network.ts";
+import { lookupPrompt, WEB_TOOLS } from "./web.ts";
+import { mcpHub } from "./mcp.ts";
 import { chatPrompt } from "./chat.ts";
 import { brief, describeHelper, HELPER_DEFAULTS, helperLLM, type Helper } from "./escalate.ts";
 
@@ -59,7 +61,16 @@ export type AgentOptions = {
   network?: boolean;
   // Chat mode: no tools, no project, and a prompt about drawing visuals instead.
   chat?: boolean;
+  // The look-up tools offered while network access is on (default: web search, web fetch and MCP servers).
+  online?: () => Promise<Online>;
 };
+
+export type Online = { tools: Tool<any>[]; notes: string[]; servers: string[] };
+
+async function defaultOnline(): Promise<Online> {
+  const m = await mcpHub.tools();
+  return { tools: [...WEB_TOOLS, ...m.tools], notes: m.notes, servers: [...new Set(m.tools.map((t) => t.description.match(/^\((.+?)\)/)?.[1]).filter((s): s is string => !!s))] };
+}
 
 const MAX_BAD_CALLS = 3;
 // Weak models get stuck re-running a call that already worked (mkdir five
@@ -82,6 +93,8 @@ export class Agent {
   readonly checkpoints: Checkpoints;
   session: string;
   private tools: Tool<any>[];
+  private setTools: Tool<any>[] = [];
+  private online: Online = { tools: [], notes: [], servers: [] };
   private prompts: string[] = [];
   toolsets: string[] = [];
   plan: Step[] = [];
@@ -110,6 +123,7 @@ export class Agent {
   // The system prompt says which, so the model doesn't plan around an install it can't do.
   async setNetwork(on: boolean) {
     this.opts.network = on;
+    await this.goOnline();
     await this.refreshSystemPrompt();
   }
 
@@ -121,6 +135,7 @@ export class Agent {
   useToolsets(names: string[]) {
     if (this.opts.chat) return;
     const { tools, prompts } = withToolsets(names);
+    this.setTools = tools;
     this.tools = [...this.baseTools(), ...tools];
     this.prompts = prompts;
     this.toolsets = names;
@@ -132,11 +147,25 @@ export class Agent {
   }
 
   private baseTools(): Tool<any>[] {
-    if (this.opts.chat) return [];
+    if (this.opts.chat) return this.online.tools;
     const extra: Tool<any>[] = [];
     if (this.opts.plan !== false) extra.push(planTool(() => this.plan, (s) => this.setPlan(s)));
     if (this.opts.memory !== false) extra.push(rememberTool);
-    return [...(this.opts.tools ?? TOOLS), ...extra];
+    return [...(this.opts.tools ?? TOOLS), ...this.online.tools, ...extra];
+  }
+
+  // Network on: web search, web fetch and the MCP servers' tools join in. Off: gone again.
+  private async goOnline() {
+    const before = this.online.notes;
+    this.online = this.network ? await (this.opts.online ?? defaultOnline)() : { tools: [], notes: [], servers: [] };
+    for (const n of this.online.notes) if (!before.includes(n)) this.io.note(`(${n})`);
+    this.tools = [...this.baseTools(), ...this.setTools];
+  }
+
+  // What the system prompt says about looking things up.
+  private lookupNote(): string {
+    if (!this.online.tools.length) return "";
+    return lookupPrompt(new Date(), this.online.servers.map((s) => `the ${s} tools`));
   }
 
   private setPlan(steps: Step[]) {
@@ -145,8 +174,8 @@ export class Agent {
   }
 
   async refreshSystemPrompt() {
-    const notes = [this.opts.plan !== false ? PLAN_PROMPT : "", this.opts.memory !== false ? MEMORY_PROMPT : "", NETWORK_PROMPT[this.network ? "on" : "off"]].filter(Boolean).join(" ");
-    const content = this.opts.chat ? chatPrompt() : await systemPrompt(this.opts.cwd, notes ? [notes, ...this.prompts] : this.prompts);
+    const notes = [this.opts.plan !== false ? PLAN_PROMPT : "", this.opts.memory !== false ? MEMORY_PROMPT : "", NETWORK_PROMPT[this.network ? "on" : "off"], this.lookupNote()].filter(Boolean).join(" ");
+    const content = this.opts.chat ? chatPrompt(new Date(), this.lookupNote()) : await systemPrompt(this.opts.cwd, notes ? [notes, ...this.prompts] : this.prompts);
     if (this.history[0]?.role === "system") this.history[0] = { role: "system", content };
     else this.history.unshift({ role: "system", content });
   }
@@ -155,6 +184,7 @@ export class Agent {
     this.history = [];
     this.setPlan([]);
     this.marks = [];
+    await this.goOnline();
     await this.refreshSystemPrompt();
     return this;
   }
