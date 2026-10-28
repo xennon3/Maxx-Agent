@@ -11,6 +11,7 @@ import { recordTo } from "../devices/run.ts";
 import { textOf } from "../context.ts";
 import { listProjects, listSessions, loadSession, newSessionId, saveSession } from "../sessions.ts";
 import { PAGE } from "./page.ts";
+import { describe, statusLine, throttle, type StreamProgress } from "../progress.ts";
 import { openWindow, pickFolder } from "./launch.ts";
 
 // `maxx ui`: the agent behind a local web page. One WebSocket carries
@@ -43,8 +44,10 @@ export async function startUI(opts: UIOptions) {
   } | null = null;
   const pending = new Map<string, (a: Answer) => void>();
 
+  const progress = throttle((p: StreamProgress) => send(progressMessage(p)), 120);
   const io: AgentIO = {
     token: (t) => send({ type: "token", text: t }),
+    progress,
     toolStart: (name, args) => send({ type: "toolStart", name, args }),
     toolEnd: (name, result) => send({ type: "toolEnd", name, result }),
     note: (text) => send({ type: "note", text }),
@@ -210,4 +213,25 @@ export async function startUI(opts: UIOptions) {
   const link = `http://127.0.0.1:${server.port}/?t=${token}`;
   if (opts.open !== false) openWindow(link);
   return { server, link, token, stop: () => server.stop(true) };
+}
+
+// Only the tail of a long preview goes over the wire each time: the card
+// shows the end of what is being written, the way a terminal would.
+const PREVIEW_TAIL = 4000;
+
+export function progressMessage(p: StreamProgress): Out {
+  const a = describe(p);
+  const cut = a.preview.length > PREVIEW_TAIL;
+  return {
+    type: "progress",
+    phase: p.phase,
+    tokens: p.tokens,
+    elapsedMs: p.elapsedMs,
+    generatingMs: p.generatingMs,
+    title: a.title,
+    status: statusLine(p, a),
+    lines: a.lines,
+    tool: p.tool && { index: p.tool.index, name: p.tool.name },
+    preview: (cut ? "…" : "") + a.preview.slice(-PREVIEW_TAIL),
+  };
 }

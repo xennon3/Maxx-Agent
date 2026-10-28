@@ -157,6 +157,11 @@ Claude Code app:
 - **Chat:** streamed replies, collapsible tool cards ("Edit src/App.kt", "Tap Calculate"), and
   permission prompts with the diff inline and **Allow / Always allow / Deny** buttons. **Stop**
   ends the current turn.
+- **Live progress:** while the model works, a status bar under the chat says what it is doing
+  and for how long ("Reading the 9.2k-token prompt · 48s", "Thinking", "Writing src/App.kt ·
+  41 lines · 312 tokens · 4.1 tok/s · 1m12s"), and the file being written fills its tool card as
+  it streams. Reasoning goes into a collapsed "Thought for 42s" block. The terminal shows the same
+  status line with a spinner.
 - **Header:** model picker (from LM Studio), permission mode, 📱 Android / 🖥 Desktop toolset
   toggles, *New* session.
 - **Screen panel:** the latest phone or desktop screenshot with its numbered boxes, live while
@@ -227,6 +232,7 @@ src/
   vision.ts        native / proxy / off delivery of screenshots to a model
   replay.ts        maxx replay
   sessions.ts      saved sessions per project
+  progress.ts      live status while the model streams: partial JSON, status lines
   ui/              maxx ui: local server, the page, Windows launch helpers
 sim/               the simulated EVO-X2 (bun sim/run.ts)
   devices/         adb, the Windows PowerShell helper, screen coordinates, the command runner
@@ -236,6 +242,10 @@ sim/               the simulated EVO-X2 (bun sim/run.ts)
 - **Tool-call rescue.** Local models sometimes write a tool call as text instead of a real
   `tool_calls` entry. `llm.ts` recognizes `<tool_call>` JSON (Hermes/Qwen), `<function=...>` XML
   (Qwen3-Coder) and fenced JSON, and runs them anyway.
+- **Live progress.** A slow model writing a whole file in one `write_file` call is minutes of
+  silence. `llm.ts` reports every chunk: reading the prompt, thinking, or which tool call is being
+  written, with its arguments parsed as they arrive (`progress.ts` reads incomplete JSON). Tool
+  calls written as `<tool_call>` text are hidden from the output and shown the same way.
 - **Errors go back to the model.** Bad JSON, schema failures, unknown tools and denied calls all
   come back as tool results, so the model corrects itself. Three bad calls in a row stop the turn.
 - **Forgiving edits.** `edit_file` tries an exact match, then a whitespace-insensitive line match
