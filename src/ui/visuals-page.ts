@@ -9,6 +9,21 @@
 // without allow-same-origin, under a CSP that allows no network at all, so it
 // can't reach this page, its token, or the internet.
 
+// Which visual a fenced block is. Small models often label a Chart.js config
+// \x60\x60\x60json (or js) instead of chart, and leave a Mermaid diagram unlabelled;
+// those still draw. Other code stays code. It runs in the page too (VIS_JS
+// embeds its source), so it must be plain JavaScript once types are stripped.
+export function visualKind(lang: string, src: string): string | undefined {
+  const named: Record<string, string> = { chart: "chart", chartjs: "chart", mermaid: "mermaid", html: "html", svg: "html" };
+  const l = lang.toLowerCase();
+  if (named[l]) return named[l];
+  const chartType = /["']?type["']?\s*:\s*["'](bar|line|pie|doughnut|radar|polarArea|scatter|bubble)["']/;
+  if (/^(json|json5|js|javascript)?$/.test(l) && chartType.test(src) && /["']?data["']?\s*:\s*\{/.test(src)) return "chart";
+  const diagram = /^\s*(flowchart|graph|sequenceDiagram|mindmap|timeline|gantt|stateDiagram(-v2)?|erDiagram|classDiagram|journey|quadrantChart)\b/;
+  if (l === "" && diagram.test(src)) return "mermaid";
+  return undefined;
+}
+
 export const VIS_CSS = `
 .msg .vis { white-space: normal; margin: 8px 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); overflow: hidden; }
 .vis .vbar { display: flex; align-items: center; gap: 4px; padding: 4px 6px 4px 10px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--mute); }
@@ -52,7 +67,7 @@ export const VIS_RAIL = `<button data-tab="visual" title="Visual">✦<span class
 export const VIS_JS = String.raw`
 const visuals = (() => {
   const FENCE = /\x60\x60\x60[ \t]*([\w-]*)[^\n]*\n([\s\S]*?)(\n\x60\x60\x60|$)/g;
-  const KINDS = { chart: "chart", chartjs: "chart", mermaid: "mermaid", html: "html", svg: "html" };
+  const visualKind = ${visualKind.toString()};
   const NAMES = { chart: "Chart", mermaid: "Diagram", html: "Interactive" };
   const libs = {};
   // Visuals finish drawing after the transcript is laid out and make it taller.
@@ -88,7 +103,7 @@ const visuals = (() => {
     let last = 0, text = "";
     FENCE.lastIndex = 0;
     for (let m; (m = FENCE.exec(raw)); ) {
-      const kind = KINDS[m[1].toLowerCase()];
+      const kind = visualKind(m[1], m[2]);
       if (!kind || (kind === "html" && !html)) continue;
       text += raw.slice(last, m.index);
       if (text) out.push({ text }), text = "";
