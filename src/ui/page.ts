@@ -1,4 +1,5 @@
 import { STAGE_CSS, STAGE_HTML, STAGE_JS } from "./stage-page.ts";
+import { VIS_CSS, VIS_JS } from "./visuals-page.ts";
 import { VOICE_CSS, VOICE_HINT, VOICE_HTML, VOICE_JS } from "./voice-page.ts";
 
 // The whole web UI in one string, so the compiled maxx.exe carries it.
@@ -153,6 +154,7 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
 }
 ${STAGE_CSS}
 ${VOICE_CSS}
+${VIS_CSS}
 </style>
 </head>
 <body>
@@ -163,24 +165,27 @@ ${VOICE_CSS}
     <button id="openBtn">Open</button>
   </div>
   <div class="openbox" id="pickRow" style="display:none"><button id="pickBtn" style="flex:1">Choose folder…</button></div>
+  <div class="chathead">Chat</div>
+  <div class="chatnav" id="chatnav"><button class="go" id="chatBtn" title="Everyday questions, with charts and diagrams drawn right in the chat. No project, no tools.">💬 New chat</button></div>
+  <div class="chathead">Projects</div>
   <div class="projects" id="projects"></div>
 </aside>
 <main>
   <header>
     <div class="where" id="where">No project open</div>
     <select id="model" title="Model"></select>
-    <select id="mode" title="Permissions">
+    <select id="mode" title="Permissions" class="projonly">
       <option value="ask">Ask before acting</option>
       <option value="auto-edit">Auto-approve edits</option>
       <option value="yolo">Never ask</option>
     </select>
-    <span id="sets"></span>
-    <span class="chip" id="netBtn" title="Let Maxx install packages (pip, npm...) and download files, for data analysis, charts and file processing">🌐 Network: off</span>
-    <span class="chip helper" id="helperBtn" title="A bigger model Maxx calls when the local one is stuck">🧠 Helper: off</span>
-    <button id="newBtn" title="Start a new session in this project">New</button>
+    <span id="sets" class="projonly"></span>
+    <span class="chip projonly" id="netBtn" title="Let Maxx install packages (pip, npm...) and download files, for data analysis, charts and file processing">🌐 Network: off</span>
+    <span class="chip helper projonly" id="helperBtn" title="A bigger model Maxx calls when the local one is stuck">🧠 Helper: off</span>
+    <button id="newBtn" title="Start a new session">New</button>
   </header>
   <div class="plan" id="plan"></div>
-  <div id="log"><div class="empty"><h2>Pick a project</h2>Open a folder on the left, or choose one of your recent sessions. Everything runs on this machine against LM Studio.</div></div>
+  <div id="log"></div>
   <div class="activity" id="activity"><span class="spin" id="actSpin">⠋</span><span class="what" id="actWhat"></span><span class="meta" id="actMeta"></span><span class="tail" id="actTail"></span></div>
   ${VOICE_HINT}
   <div class="composer">
@@ -368,7 +373,7 @@ function on(m) {
     case "token":
       if (!streaming) streaming = add(div("msg")), streaming.raw = "";
       streaming.raw += m.text;
-      streaming.innerHTML = md(streaming.raw);
+      visuals.paint(streaming, streaming.raw, chatMode());
       return;
     case "toolStart": {
       streaming = null;
@@ -549,12 +554,17 @@ function askCard(m) {
 
 ${STAGE_JS}
 ${VOICE_JS}
+${VIS_JS}
 
 function render(s) {
   state = s;
   const cur = s.current;
   $("pickRow").style.display = s.platform === "win32" ? "flex" : "none";
   // Sidebar
+  document.body.classList.toggle("chat", !!(cur && cur.chat));
+  const cn = $("chatnav"); cn.querySelectorAll(".sess").forEach((x) => x.remove());
+  $("chatBtn").classList.toggle("on", !!(cur && cur.chat));
+  for (const ss of (s.chat && s.chat.sessions) || []) cn.appendChild(sessRow(s.chat.cwd, ss, cur));
   const p = $("projects"); p.innerHTML = "";
   if (!s.projects.length) p.appendChild(div("status", "No sessions yet. Open a folder to start."));
   for (const proj of s.projects) {
@@ -562,16 +572,7 @@ function render(s) {
     const name = proj.cwd.split(/[\\\\/]/).filter(Boolean).pop() || proj.cwd;
     const n = div("name", name); n.title = "Open " + proj.cwd; n.onclick = () => send({ type: "open", cwd: proj.cwd });
     box.append(n, div("path", proj.cwd));
-    for (const ss of proj.sessions) {
-      const r = div("sess" + (cur && cur.session === ss.id ? " on" : ""));
-      r.innerHTML = "<span>" + esc(ss.title) + "</span><span class=when>" + ago(ss.updated) + "</span>";
-      r.title = ss.turns + " turns" + (ss.toolsets.length ? " · " + ss.toolsets.join(", ") : "");
-      r.onclick = () => send({ type: "open", cwd: proj.cwd, session: ss.id });
-      const x = document.createElement("button"); x.className = "x"; x.textContent = "×"; x.title = "Delete this session";
-      x.onclick = (e) => { e.stopPropagation(); confirmDelete(r, proj.cwd, ss); };
-      r.appendChild(x);
-      box.appendChild(r);
-    }
+    for (const ss of proj.sessions) box.appendChild(sessRow(proj.cwd, ss, cur));
     p.appendChild(box);
   }
   // Header
@@ -579,8 +580,9 @@ function render(s) {
   const models = s.models.length ? s.models : cur ? [cur.model] : [];
   if (!models.length) sel.innerHTML = "<option>No model: start LM Studio's server</option>";
   for (const id of models) { const o = document.createElement("option"); o.value = o.textContent = id; if (cur && cur.model === id) o.selected = true; sel.appendChild(o); }
-  $("where").textContent = cur ? cur.cwd : "No project open";
-  $("where").title = cur ? cur.cwd : "";
+  $("where").textContent = cur ? (cur.chat ? "💬 Chat" : cur.cwd) : "No project open";
+  $("where").title = cur ? (cur.chat ? "No project and no tools: just ask. Charts and diagrams are drawn right here." : cur.cwd) : "";
+  $("input").placeholder = cur && cur.chat ? "Ask anything. Try \u201cchart my monthly budget\u201d or \u201cdraw how a bill becomes a law\u201d  (Enter to send, Shift+Enter for a new line)" : PROJECT_HINT;
   if (cur) $("mode").value = cur.mode;
   const sets = $("sets"); sets.innerHTML = "";
   for (const t of s.toolsets) {
@@ -602,9 +604,10 @@ function render(s) {
   // Transcript, redrawn from the agent's history whenever a turn ends or a session opens
   if (!busy) {
     const log = $("log"); log.innerHTML = ""; live = null; streaming = null; writing = []; thinkCard = null;
-    if (!cur) { log.innerHTML = '<div class="empty"><h2>Pick a project</h2>Open a folder on the left, or choose one of your recent sessions.</div>'; return; }
-    if (!cur.history.length) log.innerHTML = '<div class="empty"><h2>' + esc(cur.cwd.split(/[\\\\/]/).filter(Boolean).pop() || "") + '</h2>Ask for something: "make a tip calculator app and test it on my phone", "why does the build fail?"</div>';
-    if (!cur.history.length && s.templates) $("log").querySelector(".empty").appendChild(starters(s.templates));
+    if (!cur) { log.innerHTML = '<div class="empty"><h2>Pick a project</h2>Open a folder on the left, or choose one of your recent sessions. Everything runs on this machine against LM Studio.</div>'; $("log").querySelector(".empty").appendChild(chatStart()); return; }
+    if (!cur.history.length && cur.chat) log.appendChild(chatEmpty());
+    else if (!cur.history.length) log.innerHTML = '<div class="empty"><h2>' + esc(cur.cwd.split(/[\\\\/]/).filter(Boolean).pop() || "") + '</h2>Ask for something: "make a tip calculator app and test it on my phone", "why does the build fail?"</div>';
+    if (!cur.history.length && !cur.chat && s.templates) $("log").querySelector(".empty").appendChild(starters(s.templates));
     const results = cur.history.filter((h) => h.role === "tool").map((h) => h.text);
     let ri = 0;
     for (const h of cur.history) {
@@ -612,12 +615,53 @@ function render(s) {
       else if (h.role === "user") userMsg(h.text, h.files);
       else if (h.role === "note") note(h.text.split("\\n")[0]);
       else if (h.role === "assistant") {
-        if (h.text) add(div("msg")).innerHTML = md(h.text);
+        if (h.text) visuals.paint(add(div("msg")), h.text, cur.chat);
         for (const t of h.tools || []) toolCard(t.name, t.args, results[ri++] ?? "");
       }
     }
     $("log").scrollTop = $("log").scrollHeight;
   }
+}
+
+const PROJECT_HINT = $("input").placeholder;
+const chatMode = () => !!(state && state.current && state.current.chat);
+function sessRow(cwd, ss, cur) {
+  const r = div("sess" + (cur && cur.session === ss.id ? " on" : ""));
+  r.innerHTML = "<span>" + esc(ss.title) + "</span><span class=when>" + ago(ss.updated) + "</span>";
+  r.title = ss.turns + " turns" + (ss.toolsets.length ? " · " + ss.toolsets.join(", ") : "");
+  r.onclick = () => send({ type: "open", cwd, session: ss.id });
+  const x = document.createElement("button"); x.className = "x"; x.textContent = "×"; x.title = "Delete this session";
+  x.onclick = (e) => { e.stopPropagation(); confirmDelete(r, cwd, ss); };
+  r.appendChild(x);
+  return r;
+}
+function chatStart() {
+  const b = document.createElement("button"); b.className = "primary"; b.style.marginTop = "14px";
+  b.textContent = "💬 Or just chat"; b.onclick = () => send({ type: "chat" });
+  return b;
+}
+// Chat mode's empty screen: a few things worth asking, each showing off a kind of visual.
+const CHAT_IDEAS = [
+  ["📊", "Chart my monthly budget: rent 1200, food 450, transport 180, fun 220, savings 400"],
+  ["🧭", "Draw a flowchart for deciding whether to repair or replace an old laptop"],
+  ["🧠", "Make a mind map of ideas for a weekend trip"],
+  ["🕹", "Make an interactive tip calculator I can use right here"],
+  ["🪐", "Compare the planets by diameter in a bar chart"],
+  ["🗓", "Plan a 4-week learn-to-run schedule as a Gantt chart"],
+];
+function chatEmpty() {
+  const e = div("empty");
+  e.style.maxWidth = "760px";
+  e.innerHTML = "<h2>💬 Chat</h2>Everyday questions, no project needed. Maxx draws charts, diagrams and small interactive tools right in the conversation, all on this machine.";
+  const box = div("starters");
+  for (const [icon, text] of CHAT_IDEAS) {
+    const b = document.createElement("button"); b.className = "starter";
+    b.innerHTML = '<span class="icon">' + icon + "</span><span>" + esc(text) + "</span>";
+    b.onclick = () => { $("input").value = text; submit(); };
+    box.appendChild(b);
+  }
+  e.appendChild(box);
+  return e;
 }
 
 // New sessions offer starter projects: a small model does far better changing
@@ -672,6 +716,7 @@ $("openBtn").onclick = () => { const v = $("folder").value.trim(); if (v) send({
 $("folder").onkeydown = (e) => { if (e.key === "Enter") $("openBtn").onclick(); };
 $("pickBtn").onclick = () => send({ type: "pick" });
 $("newBtn").onclick = () => send({ type: "new" });
+$("chatBtn").onclick = () => send({ type: "chat" });
 $("model").onchange = (e) => state && state.current && send({ type: "settings", model: e.target.value });
 $("mode").onchange = (e) => send({ type: "settings", mode: e.target.value });
 $("zoom").onclick = () => $("zoom").style.display = "none";

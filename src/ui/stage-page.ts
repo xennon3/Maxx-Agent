@@ -4,6 +4,8 @@
 // (Bun turns non-ASCII text in raw strings into \u escapes, which JavaScript
 // reads back fine but HTML would show, so the markup is a plain string.)
 
+import { VIS_PANE, VIS_RAIL } from "./visuals-page.ts";
+
 export const STAGE_CSS = `
 #stage { display: flex; border-left: 1px solid var(--line); background: var(--panel); min-height: 0; }
 #stageBody { width: 0; overflow: hidden; display: flex; flex-direction: column; min-height: 0; position: relative; }
@@ -118,12 +120,13 @@ export const STAGE_HTML = `
       </div>
       <div class="phwrap"><img id="shot" alt="Latest screenshot" draggable="false"><div class="blank" id="scBlank">Screenshots from the phone or desktop show here while Maxx tests.<br><br>Turn on <b>Live phone</b> to mirror a connected Android phone and tap it yourself.</div></div>
       <div class="sbar phkeys" id="phKeys" style="display:none"><button data-key="back" title="Back">◀</button><button data-key="home" title="Home">●</button><button data-key="recents" title="Recent apps">■</button></div>
-    </div>
+    </div>${VIS_PANE}
   </div>
   <nav id="rail">
     <button data-tab="preview" title="Preview">◧<span class="dot" id="dotPreview"></span></button>
     <button data-tab="run" title="Run">▶<span class="dot" id="dotRun"></span></button>
     <button data-tab="screen" title="Phone / desktop screen">📱<span class="dot" id="dotScreen"></span></button>
+    ${VIS_RAIL}
   </nav>
 </section>
 `;
@@ -306,14 +309,14 @@ const stage = (() => {
 
   // ---- Panel ----
   for (const b of document.querySelectorAll("#rail button")) b.onclick = () => shown && tab === b.dataset.tab ? hide() : show(b.dataset.tab);
-  for (const id of ["stageHide", "stageHide2", "stageHide3"]) $(id).onclick = hide;
+  for (const id of ["stageHide", "stageHide2", "stageHide3", "stageHide4"]) $(id).onclick = hide;
   const w = Number(load("width")); if (w > 280) document.documentElement.style.setProperty("--stage-w", w + "px");
   if (load("mobile")) $("pvSize").onclick();
   const grip = $("stageGrip");
   grip.onmousedown = (e) => {
-    e.preventDefault(); grip.classList.add("drag"); frame.style.pointerEvents = "none";
+    e.preventDefault(); grip.classList.add("drag"); frame.style.pointerEvents = $("visBox").style.pointerEvents = "none";
     const move = (ev) => { const nw = Math.max(300, Math.min(innerWidth - 560, innerWidth - ev.clientX - 44)); document.documentElement.style.setProperty("--stage-w", nw + "px"); save("width", nw); };
-    const up = () => { grip.classList.remove("drag"); frame.style.pointerEvents = ""; removeEventListener("mousemove", move); removeEventListener("mouseup", up); };
+    const up = () => { grip.classList.remove("drag"); frame.style.pointerEvents = $("visBox").style.pointerEvents = ""; removeEventListener("mousemove", move); removeEventListener("mouseup", up); };
     addEventListener("mousemove", move); addEventListener("mouseup", up);
   };
   const t0 = load("tab"); if (t0) show(t0);
@@ -323,6 +326,8 @@ const stage = (() => {
     // After a spoken change: the app on the live phone, or the page at phone size.
     phone() { show("screen"); if (!mirror) setMirror(true); },
     phoneView() { if (!mobile) $("pvSize").onclick(); show("preview"); },
+    // A chart, diagram or widget from the chat, at the panel's full size.
+    visual(kind, src) { const box = $("visBox"); box.innerHTML = ""; box.appendChild(visuals.card(kind, src, true)); show("visual"); },
     shot(src, tool) {
       shot(src, tool);
       if (!shown) show("screen"); else badge("screen");

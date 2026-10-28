@@ -195,6 +195,21 @@ Claude Code app:
   41 lines · 312 tokens · 4.1 tok/s · 1m12s"), and the file being written fills its tool card as
   it streams. Reasoning goes into a collapsed "Thought for 42s" block. The terminal shows the same
   status line with a spinner.
+- **💬 Chat mode** (top of the sidebar): everyday questions with no project and no tools, so even
+  a 4B model just talks. When a picture helps, Maxx answers with a fenced block and the window
+  draws it right in the conversation:
+  - ` ```chart ` with a Chart.js config (bar, line, pie, doughnut, radar, scatter...). Configs are
+    parsed as JSON, forgiving trailing commas and single quotes; ones written as JavaScript run
+    in a sandbox instead. Series without colors get Maxx's palette.
+  - ` ```mermaid ` diagrams: flowcharts, mind maps, timelines, Gantt charts, sequence diagrams.
+  - ` ```html ` small interactive tools (calculators, simulations, games) in a sandboxed frame with
+    no network and no access to the app; `Chart` is preloaded in it.
+
+  Each visual has **</>** (source), **⬇** (save as PNG, SVG or HTML) and **⤢** (open big in the
+  stage panel's ✦ Visual tab). One that fails to draw shows the error and an *Ask Maxx to fix it*
+  button. Chart.js and Mermaid are built into `maxx.exe`, so it all works offline. Chat sessions
+  are saved under `~/.maxx/chat` and listed under *Chat* in the sidebar. In project sessions,
+  chart and mermaid blocks are drawn too; html stays code.
 - **Header:** model picker (from LM Studio), permission mode, 📱 Android / 🖥 Desktop toolset
   toggles, *New* session.
 - **Stage panel** (the icons on the right edge), for running and testing what Maxx builds, like
