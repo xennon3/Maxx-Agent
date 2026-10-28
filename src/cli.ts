@@ -20,6 +20,7 @@ import { buildTurn, type Upload } from "./attach.ts";
 import { TEMPLATES, findTemplate, scaffold } from "./templates/index.ts";
 import { describeHelper, resolveHelper, type Helper } from "./escalate.ts";
 import { useAndroidToolchain } from "./toolchain.ts";
+import { parseSwitch, resolveNetwork, saveNetwork } from "./network.ts";
 
 // Before any command runs, so Gradle and adb find Android Studio's JDK and SDK.
 useAndroidToolchain();
@@ -63,6 +64,9 @@ options:
   --helper-url <url>   OpenAI-compatible API for the helper
   --helper-kind <k>    lmstudio | openai | anthropic (guessed from the model id and URL)
   --helper-after <n>   failed tool calls in a row before escalating (default 3)
+  --network <on|off> let the model install packages (pip, npm...) and download files, for data
+                     analysis, charts and file processing (default $MAXX_NETWORK or the saved
+                     setting, which starts off); installs still ask first in ask mode
   --whisper <x>      offline speech-to-text for the mic button: a Whisper server URL
                      (whisper.cpp's whisper-server) or the path to whisper-cli (default $MAXX_WHISPER,
                      else whisper-cli on PATH with a model in ~/.maxx/whisper)
@@ -72,7 +76,7 @@ options:
   --resume <ref>     continue a session by number (from \`maxx sessions\`), id, or words from its title
 
 in a session:
-  /help  /mode <m>  /with <sets|none>  /plan  /helper [off|on]  /checkpoints  /rewind <n>  /clear  /exit
+  /help  /mode <m>  /with <sets|none>  /plan  /helper [off|on]  /network [on|off]  /checkpoints  /rewind <n>  /clear  /exit
   /sessions  /resume <ref>  /new  /title <text>   (sessions are saved per project after every turn)
   /delete <ref>  /undelete     delete a session (this one if no ref), bring it back
   /attach <file...>            send files with your next message: images to the vision model, text inline
@@ -96,6 +100,7 @@ const { values, positionals } = parseArgs({
     "helper-url": { type: "string" },
     "helper-kind": { type: "string" },
     "helper-after": { type: "string" },
+    network: { type: "string" },
     prompt: { type: "string", short: "p" },
     continue: { type: "boolean", short: "c" },
     resume: { type: "string" },
@@ -174,9 +179,9 @@ if (positionals[0] === "ui" || (fromExplorer && !positionals.length && !values.p
   const port = values.port ? Number(values.port) : 4317;
   let ui;
   try {
-    ui = await startUI({ baseURL, port, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), ...voice });
+    ui = await startUI({ baseURL, port, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, ...voice });
   } catch {
-    ui = await startUI({ baseURL, port: 0, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), ...voice });
+    ui = await startUI({ baseURL, port: 0, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, ...voice });
   }
   // Dev servers started from the Run panel go down with Maxx.
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(sig, () => (ui.stop(), process.exit(0)));
@@ -300,7 +305,8 @@ try {
 } catch (e) {
   die((e as Error).message);
 }
-const agent = await new Agent({ llm, cwd, permissions, contextWindow: Number(values.context), toolsets, vision, check, fixTries, plan: !values["no-plan"], helper }, io).init();
+const network = await resolveNetwork(values.network).catch((e) => die((e as Error).message));
+const agent = await new Agent({ llm, cwd, permissions, contextWindow: Number(values.context), toolsets, vision, check, fixTries, plan: !values["no-plan"], helper, network }, io).init();
 let created = new Date().toISOString();
 let title = "";
 if (resumed) await resumeInto(resumed);
@@ -340,7 +346,7 @@ if (values.prompt) {
   process.exit(0);
 }
 
-const extras = (toolsets.length ? ` · with ${toolsets.join(",")} · vision ${vision.mode === "proxy" ? vision.llm.model : vision.mode}` : "") + (helper ? ` · helper ${describeHelper(helper)}` : "");
+const extras = (toolsets.length ? ` · with ${toolsets.join(",")} · vision ${vision.mode === "proxy" ? vision.llm.model : vision.mode}` : "") + (helper ? ` · helper ${describeHelper(helper)}` : "") + (network ? " · network on" : "");
 console.log(`${C.bold}maxx${C.reset} ${C.dim}${llm.model} via ${baseURL} · mode ${permissions.mode}${extras} · /help${C.reset}`);
 if (!resumed) {
   const prev = (await listSessions(cwd))[0];
@@ -464,6 +470,16 @@ async function command(line: string) {
       }
       const h = agent.helper;
       return console.log(h ? `helper: ${describeHelper(h)}, after ${h.afterFailures ?? 3} failed calls in a row or a repeat loop (/helper off to stay local)` : `helper: off, everything stays on this machine${helper ? " (/helper on)" : ""}`);
+    }
+    case "/network": {
+      // Saved, so the next `maxx` and `maxx ui` start the same way.
+      const on = arg === undefined ? undefined : parseSwitch(arg);
+      if (arg !== undefined && on === undefined) return console.log("usage: /network on | off");
+      if (on !== undefined) {
+        await agent.setNetwork(on);
+        await saveNetwork(on);
+      }
+      return console.log(agent.network ? "network: on, Maxx may install packages (pip, npm...) and download files (/network off to stop)" : "network: off, no installs or downloads (/network on to allow them)");
     }
     case "/checkpoints": {
       const list = agent.checkpoints.list();

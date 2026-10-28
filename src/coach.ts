@@ -33,7 +33,10 @@ export function missingTool(result: string): Missing | undefined {
   return MISSING.find((m) => m.test.test(result) && (m.when?.() ?? true))?.missing;
 }
 
-type Rule = { test: RegExp; when?: () => boolean; hint: (m: RegExpMatchArray, ctx: { tool: string; command: string; win: boolean }) => string };
+// offline: Maxx's network access setting is off, so installing is not an option.
+type Rule = { test: RegExp; when?: () => boolean; hint: (m: RegExpMatchArray, ctx: { tool: string; command: string; win: boolean; offline: boolean }) => string };
+
+const NO_INSTALL = "network access is off, so it cannot be installed. Use the standard library instead, or tell the user it needs network access turned on.";
 
 const fixAt = (file: string, line: string, msg: string) => `Fix line ${line} of ${file}: ${msg.trim().replace(/\.$/, "")}.`;
 
@@ -63,11 +66,15 @@ const RULES: Rule[] = [
   { test: /permission denied: '?\.\/gradlew|\.\/gradlew: Permission denied/, hint: () => "Run `chmod +x gradlew` once, then run it again." },
   { test: /EADDRINUSE|address already in use|Only one usage of each socket address|port \d+ is (?:already )?in use/i, hint: () => "That port is busy, probably because the server is already running in the background. Use it as it is, or pick another port. Do not start it again." },
   { test: /npm ERR! Missing script: "?([\w:-]+)"?|error: Script not found "([\w:-]+)"/, hint: (m) => `There is no "${m[1] ?? m[2]}" script. Read package.json to see which scripts exist.` },
-  { test: /Cannot find module '([^']+)'|Cannot find package '([^']+)'|Module not found: (?:Error: )?Can't resolve '([^']+)'/, hint: (m) => {
+  { test: /Cannot find module '([^']+)'|Cannot find package '([^']+)'|Module not found: (?:Error: )?Can't resolve '([^']+)'/, hint: (m, c) => {
     const mod = m[1] ?? m[2] ?? m[3]!;
-    return mod.startsWith(".") || mod.startsWith("/") ? `The import path ${mod} is wrong. List the folder to find the real file name.` : `The package ${mod} is not installed. Install it (npm install ${mod}), or remove the import.`;
+    if (mod.startsWith(".") || mod.startsWith("/")) return `The import path ${mod} is wrong. List the folder to find the real file name.`;
+    return c.offline ? `The package ${mod} is not installed, and ${NO_INSTALL}` : `The package ${mod} is not installed. Install it (npm install ${mod}), or remove the import.`;
   } },
-  { test: /ModuleNotFoundError: No module named '([^']+)'/, hint: (m, c) => `The Python package ${m[1]!.split(".")[0]} is not installed. Run \`${c.win ? "py" : "python3"} -m pip install ${m[1]!.split(".")[0]}\`, or use only the standard library.` },
+  { test: /ModuleNotFoundError: No module named '([^']+)'/, hint: (m, c) => {
+    const pkg = m[1]!.split(".")[0];
+    return c.offline ? `The Python package ${pkg} is not installed, and ${NO_INSTALL}` : `The Python package ${pkg} is not installed. Run \`${c.win ? "py" : "python3"} -m pip install ${pkg}\`, or use only the standard library.`;
+  } },
   { test: /IndentationError|TabError/, hint: () => "Python indentation is wrong. Read the lines around the error and use 4 spaces consistently." },
   { test: /old_string not found/, hint: () => "Call read_file on this file again and copy old_string from the fresh output, a few whole lines, without the line numbers." },
   { test: /old_string matches \d+ places/, hint: () => "Include one or two neighbouring lines in old_string so it matches only one place." },
@@ -104,9 +111,9 @@ export function failed(result: string): boolean {
   return /^error: /.test(result) || /^exit code: (?!0\b)/m.test(result);
 }
 
-export function coach(tool: string, args: Record<string, unknown>, result: string, platform: NodeJS.Platform = process.platform): Coaching {
+export function coach(tool: string, args: Record<string, unknown>, result: string, platform: NodeJS.Platform = process.platform, network = true): Coaching {
   if (!failed(result)) return {};
-  const ctx = { tool, command: String(args.command ?? ""), win: platform === "win32" };
+  const ctx = { tool, command: String(args.command ?? ""), win: platform === "win32", offline: !network };
   const first = firstError(result.replace(/^exit code: .*$/m, ""));
   for (const r of RULES) {
     const m = result.match(r.test);

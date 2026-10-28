@@ -16,6 +16,7 @@ import { openWindow, pickFolder } from "./launch.ts";
 import { Stage } from "./stage.ts";
 import { TOOLS, TOOLSETS } from "../tools/index.ts";
 import { TEMPLATES, findTemplate, freeFolder, isEmptyFolder, scaffold } from "../templates/index.ts";
+import { resolveNetwork, saveNetwork } from "../network.ts";
 import { CLAUDE_MODELS, HELPER_DEFAULTS, loadHelper, resolveHelper, saveHelper, type Helper } from "../escalate.ts";
 import { htmlFiles } from "./preview.ts";
 import * as A from "../devices/adb.ts";
@@ -29,9 +30,11 @@ import { FIX_ROUNDS, describeWhisper, failed, findWhisper, fixPrompt, planRebuil
 type Client = ServerWebSocket<unknown>;
 type Out = Record<string, unknown> & { type: string };
 
-export type UIOptions = { baseURL: string; port?: number; previewPort?: number; open?: boolean; visionModel?: string; context?: number; whisper?: string; whisperModel?: string };
+export type UIOptions = { baseURL: string; port?: number; previewPort?: number; open?: boolean; visionModel?: string; context?: number; whisper?: string; whisperModel?: string; network?: string };
 
 export async function startUI(opts: UIOptions) {
+  // Installs and downloads: the header's 🌐 switch, saved for next time.
+  let network = await resolveNetwork(opts.network);
   const token = crypto.randomUUID().replace(/-/g, "");
   const clients = new Set<Client>();
   const send = (m: Out) => {
@@ -147,6 +150,7 @@ export async function startUI(opts: UIOptions) {
         helper: s.agent.helper && { model: s.agent.helper.model, kind: s.agent.helper.kind },
       },
       helper: await helperInfo(),
+      network,
     };
   }
 
@@ -169,7 +173,7 @@ export async function startUI(opts: UIOptions) {
     const { vision, note } = await pickVision(llm, { visionModel: opts.visionModel });
     const toolsets = o.toolsets ?? saved?.toolsets ?? [];
     const helper = await resolveHelper({}).catch(() => null);
-    const agent = await new Agent({ llm, cwd: dir, permissions, toolsets, vision, helper, contextWindow: opts.context, tools: [...TOOLS, ...stage!.tools()] }, io).init();
+    const agent = await new Agent({ llm, cwd: dir, permissions, toolsets, vision, helper, network, contextWindow: opts.context, tools: [...TOOLS, ...stage!.tools()] }, io).init();
     if (saved) await agent.restore(saved.id, saved.history);
     state = { cwd: dir, agent, permissions, llm, created: saved?.created ?? new Date().toISOString(), title: saved?.title ?? "", controller: null };
     recordTo(resolve(dir, ".maxx", "replays", `${agent.session}.jsonl`));
@@ -271,6 +275,11 @@ export async function startUI(opts: UIOptions) {
         state?.agent.setHelper(h.off ? null : h);
         return send(await snapshot());
       }
+      case "network":
+        network = !!m.on;
+        await saveNetwork(network);
+        await state?.agent.setNetwork(network);
+        return send(await snapshot());
       case "answer":
         pending.get(m.id)?.(m.answer);
         pending.delete(m.id);

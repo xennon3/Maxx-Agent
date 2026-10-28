@@ -4,7 +4,8 @@ import type { Image } from "../image.ts";
 // "read" tools never prompt; "write" and "exec" go through the permission gate.
 export type Risk = "read" | "write" | "exec";
 
-export type ToolContext = { cwd: string };
+// network: may commands install packages and download files? Unset means no limit.
+export type ToolContext = { cwd: string; network?: boolean };
 
 // Most tools return text. Screen tools also return images, which the loop
 // shows to a vision model (see vision.ts). A "glance" is the screenshot an
@@ -23,6 +24,8 @@ export type Tool<S extends z.ZodObject = z.ZodObject> = {
   preview?: (args: z.infer<S>, ctx: ToolContext) => Promise<string> | string;
   // A short key used for "always allow" rules, e.g. the command for bash.
   ruleKey?: (args: z.infer<S>) => string;
+  // A reason the call must not run at all (checked before the user is asked).
+  refuse?: (args: z.infer<S>, ctx: ToolContext) => string | undefined;
   run: (args: z.infer<S>, ctx: ToolContext) => Promise<ToolResult>;
 };
 

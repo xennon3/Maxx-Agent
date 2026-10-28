@@ -13,6 +13,7 @@ import { planFromHistory, planTool, PLAN_PROMPT, formatPlan, type Step } from ".
 import { addLesson, rememberTool, swapLesson, MEMORY_PROMPT } from "./memory.ts";
 import { detectCheck, excerpt, quickCheck, type CheckResult } from "./fixit.ts";
 import { bash } from "./tools/bash.ts";
+import { NETWORK_PROMPT } from "./network.ts";
 import { brief, describeHelper, HELPER_DEFAULTS, helperLLM, type Helper } from "./escalate.ts";
 
 // The local model got stuck and a helper took over (active), or handed back.
@@ -53,6 +54,8 @@ export type AgentOptions = {
   check?: string | false;
   // A bigger model for when the local one is stuck; none keeps everything local.
   helper?: Helper | null;
+  // May the model install packages and download files? Off unless turned on.
+  network?: boolean;
 };
 
 const MAX_BAD_CALLS = 3;
@@ -97,6 +100,16 @@ export class Agent {
     this.opts.helper = h;
   }
 
+  get network(): boolean {
+    return this.opts.network === true;
+  }
+
+  // The system prompt says which, so the model doesn't plan around an install it can't do.
+  async setNetwork(on: boolean) {
+    this.opts.network = on;
+    await this.refreshSystemPrompt();
+  }
+
   get vision(): Vision {
     return this.opts.vision ?? { mode: "native" };
   }
@@ -123,7 +136,7 @@ export class Agent {
   }
 
   async refreshSystemPrompt() {
-    const notes = [this.opts.plan !== false ? PLAN_PROMPT : "", this.opts.memory !== false ? MEMORY_PROMPT : ""].filter(Boolean).join(" ");
+    const notes = [this.opts.plan !== false ? PLAN_PROMPT : "", this.opts.memory !== false ? MEMORY_PROMPT : "", NETWORK_PROMPT[this.network ? "on" : "off"]].filter(Boolean).join(" ");
     const content = await systemPrompt(this.opts.cwd, notes ? [notes, ...this.prompts] : this.prompts);
     if (this.history[0]?.role === "system") this.history[0] = { role: "system", content };
     else this.history.unshift({ role: "system", content });
@@ -316,7 +329,7 @@ export class Agent {
           this.io.note(`(${r.what} still fails after ${tries} tries; over to you)`);
           return null;
         }
-        const c = coach("bash", {}, r.output);
+        const c = coach("bash", {}, r.output, process.platform, this.network);
         const hint = c.hint ? `\nMaxx hint: ${c.hint}` : "";
         const text = `Maxx checked your changes: ${r.what} failed (try ${fixes + 1} of ${tries}).\n${excerpt(r.output, c.first)}${hint}\nFix this, then reply when it works.`;
         // A parts array, so it reads as a report from Maxx rather than a new request (and the UI shows it as a note).
@@ -354,7 +367,7 @@ export class Agent {
       }
       if (answer === "always") await this.opts.permissions.remember(bash, args);
     }
-    const output = truncate(String(await bash.run(args, { cwd: this.opts.cwd })));
+    const output = truncate(String(await bash.run(args, { cwd: this.opts.cwd, network: this.network })));
     this.io.toolEnd("check", output);
     return failed(output) ? { ok: false, what: `\`${command}\``, output } : { ok: true, what: `\`${command}\`` };
   }
@@ -435,8 +448,15 @@ export class Agent {
       return { result: `error: invalid arguments for ${tool.name}: ${issues}`, bad: true };
     }
     const args = parsed.data;
-    const ctx = { cwd: this.opts.cwd };
+    const ctx = { cwd: this.opts.cwd, network: this.network };
     this.io.toolStart(tool.name, JSON.stringify(args));
+
+    const refused = tool.refuse?.(args, ctx);
+    if (refused) {
+      const result = refused;
+      this.io.toolEnd(tool.name, result);
+      return { result, bad: false, args };
+    }
 
     if (this.opts.permissions.needsPrompt(tool, args)) {
       let preview = "";
@@ -465,7 +485,7 @@ export class Agent {
     } catch (e) {
       result = `error: ${(e as Error).message}`;
     }
-    result += coachNote(coach(tool.name, args, result), result);
+    result += coachNote(coach(tool.name, args, result, process.platform, this.network), result);
     this.io.toolEnd(tool.name, result);
     return { result, bad: false, images, glance, args };
   }

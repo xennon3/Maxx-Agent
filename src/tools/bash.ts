@@ -3,6 +3,7 @@ import { defineTool } from "./types.ts";
 import { truncate } from "../context.ts";
 import { shell } from "../shell.ts";
 import { fromGitBash } from "./paths.ts";
+import { blocked, fetches, OFFLINE_ENV } from "../network.ts";
 
 // Servers and watchers never exit; waiting for them hangs the turn until the
 // timeout. These start in the background even when the model does not ask.
@@ -46,6 +47,12 @@ function drain(stream: ReadableStream<Uint8Array>, keep = 40_000) {
   return sink;
 }
 
+// With network access off, installs and downloads are refused before they run.
+function refuseFetch(command: string, network?: boolean): string | undefined {
+  const what = network === false ? fetches(command) : null;
+  return what ? blocked(what) : undefined;
+}
+
 // Named "bash" because models are trained on that name; on Windows without
 // Git Bash it runs PowerShell, and the system prompt says which.
 export const bash = defineTool({
@@ -59,10 +66,15 @@ export const bash = defineTool({
   }),
   risk: "exec",
   ruleKey: (a) => a.command,
+  refuse: ({ command }, { network }) => refuseFetch(command, network),
   preview: ({ command }) => `${shell().kind === "powershell" ? "PS>" : "$"} ${command}`,
-  async run({ command, timeout = 120, background }, { cwd }) {
+  async run({ command, timeout = 120, background }, ctx) {
+    const { cwd } = ctx;
+    const refused = refuseFetch(command, ctx.network);
+    if (refused) return refused;
     const cmd = dropWorkspaceCd(command, cwd);
-    const proc = Bun.spawn(shell().args(cmd), { cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+    const env = ctx.network === false ? { ...process.env, ...OFFLINE_ENV } : undefined;
+    const proc = Bun.spawn(shell().args(cmd), { cwd, env, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
     const parts: string[] = [];
 
     if (background || LONG_RUNNING.test(cmd)) {

@@ -175,6 +175,7 @@ ${VOICE_CSS}
       <option value="yolo">Never ask</option>
     </select>
     <span id="sets"></span>
+    <span class="chip" id="netBtn" title="Let Maxx install packages (pip, npm...) and download files, for data analysis, charts and file processing">🌐 Network: off</span>
     <span class="chip helper" id="helperBtn" title="A bigger model Maxx calls when the local one is stuck">🧠 Helper: off</span>
     <button id="newBtn" title="Start a new session in this project">New</button>
   </header>
@@ -589,6 +590,9 @@ function render(s) {
     sets.appendChild(c);
   }
   drawPlan(cur && cur.plan);
+  const nb = $("netBtn");
+  nb.classList.toggle("on", !!s.network);
+  nb.textContent = s.network ? "🌐 Network: on" : "🌐 Network: off";
   const hb = $("helperBtn"), hs = s.helper;
   const helperOn = hs && !hs.off && hs.model;
   hb.classList.toggle("on", !!helperOn);
@@ -707,6 +711,11 @@ function helperFields() {
     "When Maxx escalates, the conversation so far (files it read, command output) is sent to that API and billed to your key. Nothing is sent while the local model is doing fine.";
 }
 $("helperBtn").onclick = helperForm;
+$("netBtn").onclick = () => {
+  const on = !(state && state.network);
+  if (on && !confirm("Let Maxx install packages (pip, npm...) and download files from the internet?\\n\\nUse it for data analysis, charts and file processing. With 'Ask before acting', every install still asks first.")) return;
+  send({ type: "network", on });
+};
 $("hKind").onchange = helperFields;
 $("helperForm").onsubmit = (e) => {
   if (e.submitter && e.submitter.value !== "save") return;
