@@ -14,6 +14,19 @@ export const estimateTokens = (msgs: Message[]) =>
 export const textOf = (content: string | ContentPart[] | null): string =>
   !content ? "" : typeof content === "string" ? content : content.map((p) => (p.type === "text" ? p.text : "[image]")).join(" ");
 
+// Marks a user turn that carries images the user attached, so it reads as
+// something the user said rather than a screenshot a tool took.
+export const ATTACHED_IMAGE = "[attached image: ";
+
+// What the user typed in a turn (attachments included), or null when the
+// message is not a typed turn (screenshots that follow tool results).
+export function typedText(m: Message): string | null {
+  if (m.role !== "user") return null;
+  if (typeof m.content === "string") return m.content;
+  const first = m.content[0];
+  return first?.type === "text" && first.text.includes(ATTACHED_IMAGE) ? first.text : null;
+}
+
 // Big tool outputs are cut when they are produced, so they never bloat history.
 export function truncate(text: string, head = 100, tail = 100): string {
   const lines = text.split("\n");
@@ -30,23 +43,26 @@ export async function systemPrompt(cwd: string, toolsetNotes: string[] = []): Pr
     "Tools and shell commands already run in the project folder: use paths relative to it (like src/main.ts), never absolute paths.",
     "",
     "How to work:",
-    "- Look before you change: list or grep, then read the relevant files. In an empty or new project, start writing files right away.",
+    "- Look before you change: list or grep, then read the relevant files. In an empty or new project, start right away.",
+    "- To make a new app, game, script or web app, call use_template first and change the working starter it creates instead of writing every file yourself.",
     "- Make small, targeted edits with edit_file; copy old_string exactly from read_file output, without the line numbers.",
     "- After changing code, run the tests or a build with bash when the project has them.",
     "- If a tool returns an error, fix the arguments and try again instead of giving up.",
     "- When you are done, reply in plain text with a short summary of what changed. Do not call tools in that final reply.",
     "- If the user denies a tool call, respect it and ask how they want to proceed.",
     ...toolsetNotes.map((n) => "\n" + n),
-    memory ? `\nProject notes from ${memory.file}:\n${memory.text}` : "",
+    ...memory.map((m) => `\nProject notes from ${m.file}:\n${m.text}`),
   ].join("\n");
 }
 
+// MAXX.md (which holds the lessons Maxx keeps) plus the first other agent notes file.
 async function loadMemory(cwd: string) {
-  for (const file of ["MAXX.md", "AGENTS.md", "CLAUDE.md"]) {
+  const read = async (file: string) => {
     const f = Bun.file(join(cwd, file));
-    if (await f.exists()) return { file, text: truncate(await f.text(), 200, 0) };
-  }
-  return null;
+    return (await f.exists()) ? { file, text: truncate(await f.text(), 150, 0) } : null;
+  };
+  const other = (await read("AGENTS.md")) ?? (await read("CLAUDE.md"));
+  return [await read("MAXX.md"), other].filter((m) => m !== null);
 }
 
 // Replace the oldest turns with a model-written summary, keeping the system

@@ -63,6 +63,27 @@ app window.
 
    Or build a single binary with `bun run build` and put `dist/maxx` on your PATH.
 
+## Starter templates: `maxx new`
+
+Small local models are much better at changing a project that already builds than at writing Gradle
+files from nothing, so new projects can start from a template:
+
+| id | what you get | run it |
+|---|---|---|
+| `android-compose` | Kotlin + Jetpack Compose app, one screen, Gradle wrapper with `gradlew.bat` | `.\gradlew.bat assembleDebug` |
+| `html-game` | Snake on a canvas, plain JavaScript, speed and colors under "Tweak me" in game.js | open index.html |
+| `python-script` | argparse CLI with unittest tests, standard library only | `python main.py file.txt` |
+| `web-app` | notes app: HTML/CSS/JS page + JSON API on a standard-library Python server | `python app.py` |
+
+```powershell
+maxx new                      # list them
+maxx new html-game snake      # create ./snake
+```
+
+In the app window, a new session offers the same templates as cards. The model has a `use_template`
+tool too, so "make me a snake game" starts from the working one. Every template writes a MAXX.md
+that tells the model where things live and how to build and test.
+
 ## Phone and desktop: `--with android,desktop`
 
 Maxx can build an Android app, put it on your phone, look at it and poke it, and it can see and
@@ -153,19 +174,80 @@ Double-click `maxx.exe` (or run `maxx ui`) and Maxx opens as its own window, lai
 Claude Code app:
 
 - **Sidebar:** your projects and their sessions; click one to pick up where you left off, or
-  *Choose folder…* to open a new project.
+  *Choose folder…* to open a new project. Hover a session and click **×** to delete it: the row
+  asks *Delete / Keep*, and an **Undo** toast stays up for ten seconds after.
+- **Attachments:** drop files on the window, paste a screenshot, or click 📎. Each file shows as a
+  chip with what will happen to it, and a click switches it between the two:
+  - *👁 Show to Maxx* (images): shrunk in the browser to a JPEG (1024 px on a 16K context, 1280 px
+    otherwise, at most 2 or 4 per message) and sent to a vision model. A `--vision-model` describes
+    it instead; a model that can't see gets it saved to `.maxx/uploads/` and you get a note.
+  - *📄 Add to context* (code and text): inlined in the message. All attached text together may use
+    30% of the context window; a bigger file (a long build log) is saved to `.maxx/uploads/` and
+    only its start is inlined, with a pointer so Maxx can `read_file` or `grep` the rest.
+  - *💾 Save to project*: copied into the project folder (never over an existing file; `logo.png`
+    becomes `logo-1.png`) and Maxx is told it is there. Zips, APKs, PDFs and other binaries always
+    go this way.
 - **Chat:** streamed replies, collapsible tool cards ("Edit src/App.kt", "Tap Calculate"), and
   permission prompts with the diff inline and **Allow / Always allow / Deny** buttons. **Stop**
   ends the current turn.
+- **Live progress:** while the model works, a status bar under the chat says what it is doing
+  and for how long ("Reading the 9.2k-token prompt · 48s", "Thinking", "Writing src/App.kt ·
+  41 lines · 312 tokens · 4.1 tok/s · 1m12s"), and the file being written fills its tool card as
+  it streams. Reasoning goes into a collapsed "Thought for 42s" block. The terminal shows the same
+  status line with a spinner.
 - **Header:** model picker (from LM Studio), permission mode, 📱 Android / 🖥 Desktop toolset
   toggles, *New* session.
-- **Screen panel:** the latest phone or desktop screenshot with its numbered boxes, live while
-  Maxx tests; click to enlarge.
+- **Stage panel** (the icons on the right edge), for running and testing what Maxx builds, like
+  Claude's artifacts:
+  - **◧ Preview** shows the project's web pages. The first `.html` file Maxx writes opens by
+    itself, and every later edit reloads it. Pick a page from the menu, or type a dev server
+    URL. *Phone size* frames it at 390 px. The console strip collects the page's `console` output
+    and errors, and *Ask Maxx to fix* puts them in the message box.
+  - **▶ Run** runs project commands in the background, like terminal tabs: one-click chips for
+    `package.json` scripts, Gradle, Cargo, Go, pytest and `make`, plus anything you type (kept
+    per project in `.maxx/run.json`). Output streams live. When a dev server prints its URL it
+    opens in Preview, and a failed command gets an *ask Maxx to fix* link with the end of its
+    output.
+  - **📱 Screen** shows the latest phone or desktop screenshot. *Live phone* mirrors a connected
+    Android phone at about two frames a second: click to tap, drag to swipe, plus Back / Home /
+    Recents.
+
+  The model gets two tools of its own in the app window: `preview` opens a page in the panel and
+  returns its title, visible text and console errors (so even a text-only model can tell if its
+  page works), and `start_server` starts a dev server in the Run tab and returns its URL.
+  Previewed pages are served from a second random port with its own token, so a page's scripts
+  can't reach Maxx itself. `bun sim/stage-demo.ts` drives the panel in a headless browser and
+  saves screenshots to `sim/out/stage/`.
 
 It runs in Edge's app mode (no tabs or address bar) on `127.0.0.1` only, behind a random token
 in the link, so other sites and other machines can't drive it. Closing the console window quits.
 `bun sim/ui-demo.ts` drives the UI in a headless browser against the simulated EVO-X2 and saves
 screenshots to `sim/out/ui/`.
+
+### Voice in, phone out
+
+Click 🎙 in the composer (or press Ctrl+Space, or hold the button and let go) and say what you want: "make the snake faster". The words appear in the box as you speak and are sent when you stop talking (there is a short countdown; Esc or typing cancels it). Short commands act on the window instead: "stop", "send", "cancel", "new session".
+
+After a spoken request changes the project, Maxx rebuilds it by itself and shows the result:
+
+- an Android project (with 📱 Android on and a phone connected): it runs `android_run` (build, install, launch) and turns on the live phone view;
+- a web page: it opens the page, or the running dev server, in the Preview panel at phone size.
+
+If that build or page fails, the error goes back to the model to fix, twice at most. The rebuild asks for permission like any other command unless you allowed it. Each step can be turned off under **▾ voice**, which also has "Read Maxx's reply aloud" (Windows' own voices, offline).
+
+Speech-to-text has two engines:
+
+- **Edge speech recognition**: built into Edge, nothing to install, but Edge sends the audio to Microsoft's online service.
+- **Local Whisper**: fully offline. Either run whisper.cpp's server and point Maxx at it, or let Maxx call `whisper-cli` itself:
+
+  ```powershell
+  whisper-server -m ggml-base.en.bin --port 8178     # then:
+  maxx ui --whisper http://127.0.0.1:8178
+  # or: whisper-cli on PATH and a model in %USERPROFILE%\.maxx\whisper\ (or --whisper <path> --whisper-model <file.bin>)
+  maxx doctor voice                                  # checks it and times a transcription
+  ```
+
+  `base.en` (142 MB) is quick on a laptop CPU; any server with an OpenAI-style `/v1/audio/transcriptions` works too. When a local Whisper is set up, it is used by default.
 
 ## Sessions per project
 
@@ -181,8 +263,61 @@ maxx sessions --all        # every project, most recent first
 
 A resumed session brings back its toolsets (`--with android` stays on for the app project) and
 shows the last reply. In a session: `/sessions`, `/resume <ref>`, `/new`, `/title <text>`.
+
+Deleting moves a session to `~/.maxx/trash/` for 7 days, so it can be undone:
+
+```sh
+maxx sessions rm 3 "dark mode"   # by number, id or title words; asks first (-y skips that)
+maxx sessions undo               # bring back the one deleted last
+```
+
+In a session, `/delete [ref]` (no ref: this one) and `/undelete` do the same, and
+`/attach [save] <file...>` sends files with your next message the way the app's 📎 does.
 Starting `maxx` in a folder with history shows a one-line hint to continue it. `MAXX_HOME` moves
 the store.
+
+## Helping small models recover
+
+A 4B model on a laptop CPU loses its way more often than it lacks knowledge. Four helpers, all on
+by default, keep it on track while costing only about 150 prompt tokens:
+
+- **Error coach.** When a tool call fails, Maxx adds the first real error line and, when it knows the
+  problem, one plain hint: `Maxx hint: python is not on PATH here. Try py instead of python.`
+  It knows about missing programs, busy ports, missing packages and files, Gradle without an SDK or
+  JDK, and compiler errors (it says which line of which file to fix).
+- **Plan first.** For bigger tasks the model writes 3 to 5 steps with the `plan` tool and ticks them
+  off. The app pins the checklist above the chat (`/plan` in the terminal). If the model says it
+  is done with steps left, Maxx sends it back once.
+- **Fix-it loop.** When the model finishes after changing files, Maxx checks the work: changed
+  .js/.ts/.html/.json files must still parse (no tools needed), then the project's build runs if
+  there is an obvious one (`typecheck` or `build` script, `gradlew assembleDebug`, `cargo build`,
+  `go build`) or MAXX.md has a `check: <command>` line. A failure goes back to the model with the
+  lines around the first error, up to 3 times. `--check <cmd>`, `--check off`, `--fix-tries 0`.
+- **Memory notes.** The `remember` tool adds a lesson to a "Lessons" section of MAXX.md, and when a
+  failed command works with a different program (`python a.py`, then `py a.py`), Maxx writes that
+  down by itself. MAXX.md is read at the start of every session (keeps the last 20 lessons).
+## Brain swap: a bigger helper when the local model is stuck
+
+A small model does most steps fine and then gets stuck on one: the same call five times, or a
+build that keeps failing. With a helper set, Maxx notices (the repeat detector fires, or 3 tool
+calls fail in a row), hands just that step to a bigger model, and hands back to the local model as
+soon as one of the helper's steps works. The helper gets the whole conversation plus a short note
+on why it was called, and the local model is told the helper got it past the blocker.
+
+```sh
+maxx --helper qwen3.8-27b                     # another LM Studio model (loaded on first use)
+ANTHROPIC_API_KEY=sk-ant-... maxx --helper claude-opus-5-5           # Claude
+maxx --helper gpt-5 --helper-url https://api.openai.com/v1          # any OpenAI-compatible API ($OPENAI_API_KEY or $MAXX_HELPER_KEY)
+```
+
+In the app, the 🧠 chip in the header opens the same settings (saved in `~/.maxx/helper.json`,
+which `maxx` also reads). Each hand-off shows as a purple banner in the transcript, and the hand-back
+says how many steps and tokens the helper used. Limits: 4 helper steps per escalation and
+3 escalations per message, so a hopeless task can't run up a bill. `/helper off` stays local for
+the rest of a session.
+
+It is off until you set a helper, so nothing leaves the machine by default. With a hosted helper,
+the conversation so far (files read, command output) is sent to that API only when Maxx escalates.
 
 ## A simulated EVO-X2
 
@@ -204,10 +339,15 @@ It tests the plumbing and timing, not the model's intelligence.
 | `--with` | `$MAXX_WITH` | Extra toolsets: `android`, `desktop` |
 | `--vision` | `auto` | `auto` asks LM Studio whether the model sees images; `native`, `off`; `always` (with `--vision-model`) describes every screenshot |
 | `--vision-model` | `$MAXX_VISION_MODEL` | A second model that describes screenshots for a text-only main model |
+| `--check <cmd>` | detected | Build command for the fix-it loop; `off` for syntax checks only |
+| `--fix-tries <n>` | `3` | Times a failed check goes back to the model; `0` turns the loop off |
+| `--no-plan` | | Don't offer the `plan` tool |
+| `--helper` | `$MAXX_HELPER` or the app's setting | A bigger model for stuck steps; `claude-*` uses the Claude API, `off` disables it |
+| `--helper-url`, `--helper-kind`, `--helper-after` | | OpenAI-compatible URL for the helper; `lmstudio`/`openai`/`anthropic`; failures before escalating (3) |
 | `-p` | | Run one prompt and exit |
 | `-c`, `--resume <ref>` | | Continue the latest, or a chosen, session in this project |
 
-In a session: `/help`, `/mode <m>`, `/with <sets|none>`, `/sessions`, `/resume <ref>`, `/new`, `/title`, `/checkpoints`, `/rewind <n>`, `/clear`, `/exit`.
+In a session: `/help`, `/mode <m>`, `/with <sets|none>`, `/plan`, `/helper [on|off]`, `/sessions`, `/resume <ref>`, `/new`, `/title`, `/delete`, `/undelete`, `/attach`, `/checkpoints`, `/rewind <n>`, `/clear`, `/exit`.
 Ctrl-C stops the current turn.
 
 ## How it works
@@ -227,6 +367,7 @@ src/
   vision.ts        native / proxy / off delivery of screenshots to a model
   replay.ts        maxx replay
   sessions.ts      saved sessions per project
+  progress.ts      live status while the model streams: partial JSON, status lines
   ui/              maxx ui: local server, the page, Windows launch helpers
 sim/               the simulated EVO-X2 (bun sim/run.ts)
   devices/         adb, the Windows PowerShell helper, screen coordinates, the command runner
@@ -236,6 +377,10 @@ sim/               the simulated EVO-X2 (bun sim/run.ts)
 - **Tool-call rescue.** Local models sometimes write a tool call as text instead of a real
   `tool_calls` entry. `llm.ts` recognizes `<tool_call>` JSON (Hermes/Qwen), `<function=...>` XML
   (Qwen3-Coder) and fenced JSON, and runs them anyway.
+- **Live progress.** A slow model writing a whole file in one `write_file` call is minutes of
+  silence. `llm.ts` reports every chunk: reading the prompt, thinking, or which tool call is being
+  written, with its arguments parsed as they arrive (`progress.ts` reads incomplete JSON). Tool
+  calls written as `<tool_call>` text are hidden from the output and shown the same way.
 - **Errors go back to the model.** Bad JSON, schema failures, unknown tools and denied calls all
   come back as tool results, so the model corrects itself. Three bad calls in a row stop the turn.
 - **Forgiving edits.** `edit_file` tries an exact match, then a whitespace-insensitive line match
