@@ -5,13 +5,16 @@ import type { ServerWebSocket } from "bun";
 import { Agent, type AgentIO } from "../loop.ts";
 import { Permissions, type Answer, type Mode } from "../permissions.ts";
 import type { LLMConfig } from "../llm.ts";
-import { TOOLSETS } from "../tools/index.ts";
 import { pickVision } from "../vision.ts";
 import { recordTo } from "../devices/run.ts";
-import { textOf } from "../context.ts";
-import { listProjects, listSessions, loadSession, newSessionId, saveSession } from "../sessions.ts";
+import { textOf, typedText } from "../context.ts";
+import { deleteSession, listProjects, loadSession, newSessionId, restoreSession, saveSession, stripAttachments } from "../sessions.ts";
+import { buildTurn, imageLimits, type Upload } from "../attach.ts";
 import { PAGE } from "./page.ts";
+import { describe, statusLine, throttle, type StreamProgress } from "../progress.ts";
 import { openWindow, pickFolder } from "./launch.ts";
+import { Stage } from "./stage.ts";
+import { TOOLS, TOOLSETS } from "../tools/index.ts";
 
 // `maxx ui`: the agent behind a local web page. One WebSocket carries
 // everything: streamed tokens, tool cards, permission questions, screenshots.
@@ -21,7 +24,7 @@ import { openWindow, pickFolder } from "./launch.ts";
 type Client = ServerWebSocket<unknown>;
 type Out = Record<string, unknown> & { type: string };
 
-export type UIOptions = { baseURL: string; port?: number; open?: boolean; visionModel?: string; context?: number };
+export type UIOptions = { baseURL: string; port?: number; previewPort?: number; open?: boolean; visionModel?: string; context?: number };
 
 export async function startUI(opts: UIOptions) {
   const token = crypto.randomUUID().replace(/-/g, "");
@@ -42,9 +45,15 @@ export async function startUI(opts: UIOptions) {
     controller: AbortController | null;
   } | null = null;
   const pending = new Map<string, (a: Answer) => void>();
+  let stage: Stage | null = null;
+  // Files posted to /upload wait here until the message they belong to is sent.
+  const uploads = new Map<string, Upload>();
+  const contextWindow = opts.context ?? 32_768;
 
+  const progress = throttle((p: StreamProgress) => send(progressMessage(p)), 120);
   const io: AgentIO = {
     token: (t) => send({ type: "token", text: t }),
+    progress,
     toolStart: (name, args) => send({ type: "toolStart", name, args }),
     toolEnd: (name, result) => send({ type: "toolEnd", name, result }),
     note: (text) => send({ type: "note", text }),
@@ -75,6 +84,8 @@ export async function startUI(opts: UIOptions) {
       platform: process.platform,
       models: await models(),
       baseURL: opts.baseURL,
+      maxUpload: MAX_UPLOAD,
+      imageSide: imageLimits(contextWindow).maxSide,
       toolsets: Object.entries(TOOLSETS).map(([name, t]) => ({ name, about: t.about })),
       projects,
       current: s && {
@@ -85,8 +96,11 @@ export async function startUI(opts: UIOptions) {
         toolsets: s.agent.toolsets,
         busy: !!s.controller,
         history: s.agent.history
-          .filter((m) => m.role !== "system" && !(m.role === "user" && Array.isArray(m.content)))
-          .map((m) => ({ role: m.role, text: textOf(m.content as any), tools: "tool_calls" in m ? m.tool_calls?.map((t) => ({ name: t.function.name, args: t.function.arguments })) : undefined })),
+          .filter((m) => m.role !== "system" && !(m.role === "user" && typedText(m) === null))
+          .map((m) => {
+            if (m.role === "user") return { role: m.role, ...stripAttachments(typedText(m)!) };
+            return { role: m.role, text: textOf(m.content as any), tools: "tool_calls" in m ? m.tool_calls?.map((t) => ({ name: t.function.name, args: t.function.arguments })) : undefined };
+          }),
       },
     };
   }
@@ -109,34 +123,65 @@ export async function startUI(opts: UIOptions) {
     const permissions = await new Permissions(dir, o.mode ?? state?.permissions.mode ?? "ask").load();
     const { vision, note } = await pickVision(llm, { visionModel: opts.visionModel });
     const toolsets = o.toolsets ?? saved?.toolsets ?? [];
-    const agent = await new Agent({ llm, cwd: dir, permissions, toolsets, vision, contextWindow: opts.context }, io).init();
+    const agent = await new Agent({ llm, cwd: dir, permissions, toolsets, vision, contextWindow: opts.context, tools: [...TOOLS, ...stage!.tools()] }, io).init();
     if (saved) await agent.restore(saved.id, saved.history);
     state = { cwd: dir, agent, permissions, llm, created: saved?.created ?? new Date().toISOString(), title: saved?.title ?? "", controller: null };
     recordTo(resolve(dir, ".maxx", "replays", `${agent.session}.jsonl`));
+    if (stage!.runner?.cwd !== dir) await stage!.use(dir);
     if (toolsets.length && note) io.note(note);
   }
 
+  // A fresh, unsaved session in the open project (after New, or deleting the open one).
+  async function fresh() {
+    if (!state) return;
+    await state.agent.init();
+    state.agent.session = newSessionId();
+    state.created = new Date().toISOString();
+    state.title = "";
+    recordTo(resolve(state.cwd, ".maxx", "replays", `${state.agent.session}.jsonl`));
+  }
+
   async function handle(m: any) {
+    if (await stage!.handle(m)) return;
     switch (m.type) {
       case "hello":
-        return send(await snapshot());
+        send(await snapshot());
+        return send(await stage!.info());
       case "open":
         await open(m.cwd, { session: m.session, model: m.model });
-        return send(await snapshot());
+        send(await snapshot());
+        return send(await stage!.info());
       case "pick": {
         const dir = await pickFolder();
         if (!dir) return;
         await open(dir, {});
-        return send(await snapshot());
+        send(await snapshot());
+        return send(await stage!.info());
       }
       case "new":
         if (!state) return;
         await save();
-        await state.agent.init();
-        state.agent.session = newSessionId();
-        state.created = new Date().toISOString();
-        state.title = "";
+        await fresh();
         return send(await snapshot());
+      case "delete": {
+        const open = state && resolve(state.cwd) === resolve(String(m.cwd)) && state.agent.session === m.session;
+        if (open && state!.controller) throw new Error("stop the current turn before deleting this session");
+        if (!(await deleteSession(String(m.cwd), String(m.session)))) throw new Error("that session is already gone");
+        // Deleting the open session leaves an empty one in its place, not a resurrected file on the next save.
+        if (open) await fresh();
+        send({ type: "deleted", cwd: m.cwd, session: m.session, title: m.title ?? "", wasOpen: !!open });
+        return send(await snapshot());
+      }
+      case "undelete": {
+        const info = await restoreSession(String(m.cwd), m.session ? String(m.session) : undefined);
+        if (!info) throw new Error("nothing to undo; the session is no longer in the trash");
+        if (m.reopen) await open(info.cwd, { session: info.id });
+        send(await snapshot());
+        return send(await stage!.info());
+      }
+      case "discard":
+        for (const id of [].concat(m.ids ?? [])) uploads.delete(id);
+        return;
       case "settings": {
         if (!state) return;
         if (m.mode) state.permissions.mode = m.mode;
@@ -159,10 +204,19 @@ export async function startUI(opts: UIOptions) {
         if (!state) throw new Error("open a project folder first");
         if (state.controller) throw new Error("Maxx is still working; stop it or wait");
         const s = state;
+        const files: Upload[] = [];
+        for (const f of m.files ?? []) {
+          const u = uploads.get(String(f.id));
+          if (!u) throw new Error("an attached file expired; attach it again");
+          files.push({ ...u, mode: f.mode === "save" ? "save" : "attach" });
+        }
+        for (const f of m.files ?? []) uploads.delete(String(f.id));
         s.controller = new AbortController();
         send({ type: "busy", busy: true });
         try {
-          const answer = await s.agent.send(String(m.text), s.controller.signal);
+          const turn = await buildTurn(String(m.text ?? ""), files, { cwd: s.cwd, contextWindow, vision: s.agent.vision, signal: s.controller.signal });
+          for (const n of turn.notes) io.note(n);
+          const answer = await s.agent.send(turn.content, s.controller.signal);
           send({ type: "done", text: answer });
         } catch (e) {
           const err = e as Error;
@@ -190,6 +244,7 @@ export async function startUI(opts: UIOptions) {
         if (origin && new URL(origin).host !== url.host) return new Response("bad origin", { status: 403 });
         return srv.upgrade(req) ? undefined : new Response("upgrade failed", { status: 400 });
       }
+      if (url.pathname === "/upload" && req.method === "POST") return upload(req, url);
       if (url.pathname === "/") return new Response(PAGE, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
       return new Response("not found", { status: 404 });
     },
@@ -207,7 +262,59 @@ export async function startUI(opts: UIOptions) {
     },
   });
 
+  async function upload(req: Request, url: URL): Promise<Response> {
+    const origin = req.headers.get("origin");
+    if (origin && new URL(origin).host !== url.host) return new Response("bad origin", { status: 403 });
+    const len = Number(req.headers.get("content-length") ?? 0);
+    if (len > MAX_UPLOAD) return Response.json({ error: `too big (the limit is ${MAX_UPLOAD >> 20} MB)` }, { status: 413 });
+    const data = new Uint8Array(await req.arrayBuffer());
+    if (data.length > MAX_UPLOAD) return Response.json({ error: `too big (the limit is ${MAX_UPLOAD >> 20} MB)` }, { status: 413 });
+    const id = crypto.randomUUID();
+    uploads.set(id, { name: url.searchParams.get("name") || "upload", mime: req.headers.get("content-type") ?? undefined, data });
+    // Attached and then never sent: keep only the latest few around.
+    while (uploads.size > 40) uploads.delete(uploads.keys().next().value!);
+    return Response.json({ id });
+  }
+
+  // Started after the UI's own port is taken, so a failed start leaves nothing behind.
+  stage = new Stage(send, () => clients.size, opts.previewPort ?? 0);
+  const quit = () => stage?.runner?.stopAll();
+  process.once("exit", quit);
+
   const link = `http://127.0.0.1:${server.port}/?t=${token}`;
   if (opts.open !== false) openWindow(link);
-  return { server, link, token, stop: () => server.stop(true) };
+  return {
+    server,
+    link,
+    token,
+    stage,
+    stop: () => {
+      process.off("exit", quit);
+      stage!.stop();
+      server.stop(true);
+    },
+  };
+}
+
+const MAX_UPLOAD = 50 << 20;
+
+// Only the tail of a long preview goes over the wire each time: the card
+// shows the end of what is being written, the way a terminal would.
+const PREVIEW_TAIL = 4000;
+
+export function progressMessage(p: StreamProgress): Out {
+  const a = describe(p);
+  const cut = a.preview.length > PREVIEW_TAIL;
+  return {
+    type: "progress",
+    phase: p.phase,
+    tokens: p.tokens,
+    elapsedMs: p.elapsedMs,
+    generatingMs: p.generatingMs,
+    title: a.title,
+    status: statusLine(p, a),
+    lines: a.lines,
+    tool: p.tool && { index: p.tool.index, name: p.tool.name },
+    preview: (cut ? "…" : "") + a.preview.slice(-PREVIEW_TAIL),
+  };
 }

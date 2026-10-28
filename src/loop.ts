@@ -3,10 +3,11 @@ import { TOOLS, toolSpecs, findTool, withToolsets } from "./tools/index.ts";
 import type { Tool } from "./tools/types.ts";
 import { Permissions, type Answer } from "./permissions.ts";
 import { Checkpoints } from "./checkpoint.ts";
-import { compact, estimateTokens, systemPrompt, truncate } from "./context.ts";
+import { compact, estimateTokens, systemPrompt, truncate, typedText } from "./context.ts";
 import { describeImages, imagePart, type Vision } from "./vision.ts";
 import type { Image } from "./image.ts";
 import { newSessionId } from "./sessions.ts";
+import type { StreamProgress } from "./progress.ts";
 
 export type AgentIO = {
   token(t: string): void;
@@ -16,6 +17,8 @@ export type AgentIO = {
   note(text: string): void;
   // Screenshots as they arrive, for UIs that can show them.
   image?(tool: string, images: Image[]): void;
+  // What the model is doing while it streams (often for minutes on a CPU).
+  progress?(p: StreamProgress): void;
 };
 
 export type AgentOptions = {
@@ -90,8 +93,10 @@ export class Agent {
   }
 
   // One user turn: loop until the model answers without calling tools.
-  async send(userText: string, signal?: AbortSignal): Promise<string> {
+  // A turn with attached images comes as parts (see attach.ts).
+  async send(userText: string | ContentPart[], signal?: AbortSignal): Promise<string> {
     this.history.push({ role: "user", content: userText });
+    if (Array.isArray(userText)) this.pruneImages();
     const specs = toolSpecs(this.tools);
     let badCalls = 0;
     const repeats = new Map<string, number>();
@@ -99,7 +104,8 @@ export class Agent {
 
     for (let step = 0; step < (this.opts.maxSteps ?? 50); step++) {
       await this.maybeCompact();
-      const res = await complete(this.opts.llm, this.history, specs, (t) => this.io.token(t), signal);
+      const promptTokens = estimateTokens(this.history);
+      const res = await complete(this.opts.llm, this.history, specs, (t) => this.io.token(t), signal, (p) => this.io.progress?.({ ...p, promptTokens }));
       if (res.rescued) this.io.note(`(recovered ${res.toolCalls.length} tool call(s) written as text)`);
 
       if (!res.toolCalls.length) {
@@ -113,12 +119,15 @@ export class Agent {
       for (const call of res.toolCalls) {
         let { result, bad, images, glance } = await this.runTool(call);
         badCalls = bad ? badCalls + 1 : 0;
-        const key = `${call.name}|${canonicalArgs(call.arguments)}|${result}`;
+        // Sending the same edit or write again is never progress, whatever it returned
+        // (applied, then "not found", then applied...), so those count by the call alone.
+        const writes = findTool(call.name, this.tools)?.risk === "write";
+        const key = `${call.name}|${canonicalArgs(call.arguments)}${writes ? "" : `|${result}`}`;
         const n = (repeats.get(key) ?? 0) + 1;
         repeats.set(key, n);
         if (n >= WARN_REPEATS) {
           stuck = Math.max(stuck, n);
-          result += `\n\nNote from Maxx: you have made this exact ${call.name} call ${n} times in this turn and got the same result each time. Repeating it will not change anything. Do the next step of the task instead, or reply to the user if you are stuck.`;
+          result += `\n\nNote from Maxx: you have made this exact ${call.name} call ${n} times in this turn and ${writes ? "already made that change" : "got the same result each time"}. Repeating it will not change anything. Do the next step of the task instead, or reply to the user if you are stuck.`;
         }
         if (images?.length) this.io.image?.(call.name, images);
         const content = images?.length ? await this.deliverImages(call.name, result, images, seen, signal, glance) : result;
@@ -168,6 +177,11 @@ export class Agent {
       const m = this.history[i]!;
       if (m.role !== "user" || !Array.isArray(m.content) || !m.content.some((p) => p.type === "image_url")) continue;
       if (++kept <= KEEP_IMAGES) continue;
+      const typed = typedText(m);
+      if (typed !== null) {
+        this.history[i] = { role: "user", content: `${typed} [image removed to save context]` };
+        continue;
+      }
       const text = m.content.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join(" ");
       // Stays a parts array, so it still reads as tool output rather than a new request from the user.
       this.history[i] = { role: "user", content: [{ type: "text", text: `${text} [older screenshot removed to save context]` }] };

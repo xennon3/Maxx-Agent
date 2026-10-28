@@ -60,3 +60,37 @@ test("a restored session keeps its turns under today's system prompt", async () 
   expect(agent.history.filter((m) => m.role === "system")).toHaveLength(1);
   expect(titleFrom(agent.history)).toBe("hello");
 });
+
+test("deleted sessions go to the trash and come back with undo", async () => {
+  const { deleteSession, restoreSession } = await import("../src/sessions.ts");
+  const cwd = await mkdtemp(join(tmpdir(), "proj-del-"));
+  const base = { created: new Date().toISOString(), model: "m", toolsets: [] as string[] };
+  await saveSession({ ...base, id: "keep", cwd, history: convo("keep me") });
+  await saveSession({ ...base, id: "gone1", cwd, history: convo("first to go") });
+  await saveSession({ ...base, id: "gone2", cwd, history: convo("second to go") });
+  expect(await deleteSession(cwd, "gone1")).toBe(true);
+  await Bun.sleep(20);
+  expect(await deleteSession(cwd, "gone2")).toBe(true);
+  expect(await deleteSession(cwd, "gone2")).toBe(false);
+  expect(await deleteSession(cwd, "../keep")).toBe(false);
+  expect((await listSessions(cwd)).map((s) => s.id)).toEqual(["keep"]);
+  // Undo brings back the one deleted last, then the one before.
+  expect((await restoreSession(cwd))!.id).toBe("gone2");
+  expect((await restoreSession(cwd, "gone1"))!.title).toBe("first to go");
+  expect(await restoreSession(cwd)).toBeNull();
+  expect((await listSessions(cwd)).length).toBe(3);
+});
+
+test("a turn with an attached image is saved as a typed turn", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "proj-img-"));
+  const history: Message[] = [
+    { role: "system", content: "sys" },
+    { role: "user", content: [{ type: "text", text: "match this design\n\n[attached image: mock.jpg]" }, { type: "image_url", image_url: { url: "data:image/jpeg;base64,AAAA" } }] },
+    { role: "assistant", content: "ok" },
+  ];
+  await saveSession({ id: "img", cwd, created: new Date().toISOString(), model: "m", toolsets: [], history });
+  const s = (await loadSession(cwd, "img"))!;
+  expect(s.title).toBe("match this design");
+  expect(s.turns).toBe(1);
+  expect(s.history[1]!.content).toBe("match this design\n\n[attached image: mock.jpg] [image not saved]");
+});
