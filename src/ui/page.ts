@@ -1,3 +1,5 @@
+import { STAGE_CSS, STAGE_HTML, STAGE_JS } from "./stage-page.ts";
+
 // The whole web UI in one string, so the compiled maxx.exe carries it.
 export const PAGE = /* html */ `<!doctype html>
 <html lang="en">
@@ -64,11 +66,6 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
 .composer textarea { flex: 1; resize: none; height: 64px; }
 .empty { margin: auto; text-align: center; color: var(--mute); max-width: 420px; }
 .empty h2 { color: var(--ink); margin: 0 0 6px; }
-#screen { width: 0; overflow: hidden; border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; transition: width .2s; }
-#screen.on { width: 340px; }
-#screen .top { padding: 10px 12px; display: flex; justify-content: space-between; align-items: center; font-weight: 600; }
-#screen img { width: 100%; max-height: calc(100vh - 60px); object-fit: contain; cursor: zoom-in; background: #000; }
-#screen .cap { padding: 6px 12px; color: var(--mute); font-size: 12px; font-family: var(--mono); }
 #zoom { position: fixed; inset: 0; background: rgba(0,0,0,.85); display: none; align-items: center; justify-content: center; cursor: zoom-out; z-index: 9; }
 #zoom img { max-width: 95vw; max-height: 95vh; }
 .status { font-size: 12px; color: var(--mute); }
@@ -90,9 +87,9 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
 @media (max-width: 860px) {
   body { grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; }
   aside { max-height: 34vh; border-right: 0; border-bottom: 1px solid var(--line); }
-  #screen.on { width: auto; max-height: 40vh; border-left: 0; border-top: 1px solid var(--line); }
   header .where { max-width: 100%; }
 }
+${STAGE_CSS}
 </style>
 </head>
 <body>
@@ -127,11 +124,7 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
     </div>
   </div>
 </main>
-<section id="screen">
-  <div class="top"><span id="screenTitle">Screen</span><button id="hideScreen" title="Hide">✕</button></div>
-  <img id="shot" alt="Latest screenshot">
-  <div class="cap" id="shotCap"></div>
-</section>
+${STAGE_HTML}
 <div id="zoom"><img id="zoomImg" alt=""></div>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -172,10 +165,11 @@ function note(text, cls = "note") { add(div("msg " + cls, text)); }
 const VERBS = { read_file: "Read", write_file: "Write", edit_file: "Edit", list_files: "List", grep: "Search", bash: "Run",
   android_run: "Build & run on phone", android_screen: "Look at phone", android_tap: "Tap", android_type: "Type", android_swipe: "Swipe",
   android_key: "Press", android_logcat: "Read phone log", android_devices: "List devices", android_connect: "Connect phone",
-  desktop_screenshot: "Look at desktop", desktop_click: "Click", desktop_type: "Type", desktop_key: "Press", desktop_scroll: "Scroll", desktop_open: "Open" };
+  desktop_screenshot: "Look at desktop", desktop_click: "Click", desktop_type: "Type", desktop_key: "Press", desktop_scroll: "Scroll", desktop_open: "Open",
+  preview: "Preview", start_server: "Start" };
 function label(name, args) {
   let a = {}; try { a = JSON.parse(args || "{}"); } catch {}
-  const main = a.path ?? a.command ?? a.pattern ?? a.keys ?? a.key ?? a.target ?? a.direction ?? (a.text !== undefined ? JSON.stringify(a.text) : undefined) ??
+  const main = a.path ?? a.url ?? a.command ?? a.pattern ?? a.keys ?? a.key ?? a.target ?? a.direction ?? (a.text !== undefined ? JSON.stringify(a.text) : undefined) ??
     (a.element !== undefined ? "element " + a.element : a.x !== undefined ? a.x + "," + a.y : a.crashes ? "crashes" : a.project_dir ?? a.apk ?? "");
   return [VERBS[name] || name, String(main)];
 }
@@ -256,6 +250,7 @@ function abandonWriting() {
 }
 
 function on(m) {
+  stage.on(m);
   switch (m.type) {
     case "state": return render(m);
     case "progress": return progress(m);
@@ -291,7 +286,7 @@ function on(m) {
       activity({ title: "Working" });
       return;
     case "note": return note(m.text);
-    case "image": return showShot(m.images[m.images.length - 1], m.tool);
+    case "image": return stage.shot(m.images[m.images.length - 1], m.tool);
     case "ask": return askCard(m);
     case "busy":
       busy = m.busy; $("stopBtn").disabled = !busy; $("sendBtn").disabled = busy;
@@ -317,12 +312,7 @@ function askCard(m) {
   if (document.hidden && "Notification" in window && Notification.permission === "granted") new Notification("Maxx needs your OK", { body: m.question });
 }
 
-function showShot(src, tool) {
-  $("screen").classList.add("on");
-  $("shot").src = src;
-  $("screenTitle").textContent = tool.startsWith("desktop") ? "Desktop" : "Phone";
-  $("shotCap").textContent = tool + " · " + new Date().toLocaleTimeString();
-}
+${STAGE_JS}
 
 function render(s) {
   state = s;
@@ -399,8 +389,6 @@ $("pickBtn").onclick = () => send({ type: "pick" });
 $("newBtn").onclick = () => send({ type: "new" });
 $("model").onchange = (e) => state && state.current && send({ type: "settings", model: e.target.value });
 $("mode").onchange = (e) => send({ type: "settings", mode: e.target.value });
-$("hideScreen").onclick = () => $("screen").classList.remove("on");
-$("shot").onclick = () => { $("zoomImg").src = $("shot").src; $("zoom").style.display = "flex"; };
 $("zoom").onclick = () => $("zoom").style.display = "none";
 connect();
 </script>
