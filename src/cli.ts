@@ -19,6 +19,10 @@ import { ago, deleteSession, findSession, newSessionId, formatList, listProjects
 import { buildTurn, type Upload } from "./attach.ts";
 import { TEMPLATES, findTemplate, scaffold } from "./templates/index.ts";
 import { describeHelper, resolveHelper, type Helper } from "./escalate.ts";
+import { useAndroidToolchain } from "./toolchain.ts";
+
+// Before any command runs, so Gradle and adb find Android Studio's JDK and SDK.
+useAndroidToolchain();
 
 const C = { dim: "\x1b[2m", cyan: "\x1b[36m", yellow: "\x1b[33m", bold: "\x1b[1m", reset: "\x1b[0m" };
 
