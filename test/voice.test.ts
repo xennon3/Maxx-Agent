@@ -68,7 +68,8 @@ test("plans the rebuild after a spoken change", () => {
   expect(planRebuild(web, [call("edit_file", { path: "game.js" }, "error: old_string not found")], o).kind).toBe("none");
 
   const app = dir();
-  writeFileSync(join(app, "gradlew"), "");
+  // Gradle projects carry both wrappers; Windows looks for gradlew.bat.
+  for (const w of ["gradlew", "gradlew.bat"]) writeFileSync(join(app, w), "");
   const kt = [call("edit_file", { path: "app/src/main/java/com/x/MainActivity.kt" })];
   expect(planRebuild(app, kt, { android: true, phone: true, html: [] })).toEqual({ kind: "android", args: {} });
   expect(planRebuild(app, kt, { android: false, phone: true, html: [] })).toMatchObject({ kind: "none", why: expect.stringContaining("Android") });
@@ -77,7 +78,7 @@ test("plans the rebuild after a spoken change", () => {
 
   const cap = dir();
   mkdirSync(join(cap, "android"));
-  writeFileSync(join(cap, "android", "gradlew"), "");
+  for (const w of ["gradlew", "gradlew.bat"]) writeFileSync(join(cap, "android", w), "");
   expect(androidDir(cap)).toBe("android");
   expect(planRebuild(cap, [call("edit_file", { path: "android/app/build.gradle" })], { android: true, phone: true, html: [] })).toEqual({ kind: "android", args: { project_dir: "android" } });
 });
