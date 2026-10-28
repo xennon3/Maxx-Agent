@@ -115,3 +115,15 @@ test("the same call with the same result gets a nudge, then ends the turn", asyn
   expect(tools[2]).toContain("this exact list_files call 3 times");
   script = [];
 });
+
+test("Maxx can call a tool itself, through the permission gate, and the model sees it", async () => {
+  const dir = await workspace();
+  const { agent, log } = await agentIn(dir, ["no"]);
+  expect(await agent.runDirect("read_file", { path: "app.ts" })).toContain("const port = 3000;");
+  expect(await agent.runDirect("bash", { command: "echo hi" })).toBe("user denied this tool call");
+  expect(log).toContain("ask Allow bash?");
+  const calls = agent.history.filter((m: any) => m.role === "assistant" && m.tool_calls);
+  const results = agent.history.filter((m) => m.role === "tool");
+  expect(calls.map((m: any) => m.tool_calls[0].function.name)).toEqual(["read_file", "bash"]);
+  expect(results.map((m: any) => m.tool_call_id)).toEqual(calls.map((m: any) => m.tool_calls[0].id));
+});

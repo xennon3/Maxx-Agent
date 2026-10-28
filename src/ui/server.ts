@@ -5,13 +5,18 @@ import type { ServerWebSocket } from "bun";
 import { Agent, type AgentIO } from "../loop.ts";
 import { Permissions, type Answer, type Mode } from "../permissions.ts";
 import type { LLMConfig } from "../llm.ts";
-import { TOOLSETS } from "../tools/index.ts";
 import { pickVision } from "../vision.ts";
 import { recordTo } from "../devices/run.ts";
 import { textOf } from "../context.ts";
 import { listProjects, listSessions, loadSession, newSessionId, saveSession } from "../sessions.ts";
 import { PAGE } from "./page.ts";
+import { describe, statusLine, throttle, type StreamProgress } from "../progress.ts";
 import { openWindow, pickFolder } from "./launch.ts";
+import { Stage } from "./stage.ts";
+import { TOOLS, TOOLSETS } from "../tools/index.ts";
+import { htmlFiles } from "./preview.ts";
+import * as A from "../devices/adb.ts";
+import { FIX_ROUNDS, describeWhisper, failed, findWhisper, fixPrompt, planRebuild, speakable, transcribe, type TurnCall } from "./voice.ts";
 
 // `maxx ui`: the agent behind a local web page. One WebSocket carries
 // everything: streamed tokens, tool cards, permission questions, screenshots.
@@ -21,7 +26,7 @@ import { openWindow, pickFolder } from "./launch.ts";
 type Client = ServerWebSocket<unknown>;
 type Out = Record<string, unknown> & { type: string };
 
-export type UIOptions = { baseURL: string; port?: number; open?: boolean; visionModel?: string; context?: number };
+export type UIOptions = { baseURL: string; port?: number; previewPort?: number; open?: boolean; visionModel?: string; context?: number; whisper?: string; whisperModel?: string };
 
 export async function startUI(opts: UIOptions) {
   const token = crypto.randomUUID().replace(/-/g, "");
@@ -42,11 +47,21 @@ export async function startUI(opts: UIOptions) {
     controller: AbortController | null;
   } | null = null;
   const pending = new Map<string, (a: Answer) => void>();
+  let stage: Stage | null = null;
+  const whisper = findWhisper({ whisper: opts.whisper, model: opts.whisperModel });
+  // The tool calls of the current turn, for the rebuild after a spoken request.
+  let turn: TurnCall[] = [];
 
+  const progress = throttle((p: StreamProgress) => send(progressMessage(p)), 120);
   const io: AgentIO = {
     token: (t) => send({ type: "token", text: t }),
-    toolStart: (name, args) => send({ type: "toolStart", name, args }),
-    toolEnd: (name, result) => send({ type: "toolEnd", name, result }),
+    progress,
+    toolStart: (name, args) => (turn.push({ name, args, result: "" }), send({ type: "toolStart", name, args })),
+    toolEnd: (name, result) => {
+      const c = turn.findLast((t) => t.name === name && !t.result);
+      if (c) c.result = result || " ";
+      send({ type: "toolEnd", name, result });
+    },
     note: (text) => send({ type: "note", text }),
     image: (tool, images) => send({ type: "image", tool, images: images.map((i) => `data:${i.mime};base64,${i.base64}`) }),
     ask: (question, preview) =>
@@ -77,6 +92,7 @@ export async function startUI(opts: UIOptions) {
       baseURL: opts.baseURL,
       toolsets: Object.entries(TOOLSETS).map(([name, t]) => ({ name, about: t.about })),
       projects,
+      voice: { whisper: describeWhisper(whisper) || null },
       current: s && {
         cwd: s.cwd,
         session: s.agent.session,
@@ -109,25 +125,30 @@ export async function startUI(opts: UIOptions) {
     const permissions = await new Permissions(dir, o.mode ?? state?.permissions.mode ?? "ask").load();
     const { vision, note } = await pickVision(llm, { visionModel: opts.visionModel });
     const toolsets = o.toolsets ?? saved?.toolsets ?? [];
-    const agent = await new Agent({ llm, cwd: dir, permissions, toolsets, vision, contextWindow: opts.context }, io).init();
+    const agent = await new Agent({ llm, cwd: dir, permissions, toolsets, vision, contextWindow: opts.context, tools: [...TOOLS, ...stage!.tools()] }, io).init();
     if (saved) await agent.restore(saved.id, saved.history);
     state = { cwd: dir, agent, permissions, llm, created: saved?.created ?? new Date().toISOString(), title: saved?.title ?? "", controller: null };
     recordTo(resolve(dir, ".maxx", "replays", `${agent.session}.jsonl`));
+    if (stage!.runner?.cwd !== dir) await stage!.use(dir);
     if (toolsets.length && note) io.note(note);
   }
 
   async function handle(m: any) {
+    if (await stage!.handle(m)) return;
     switch (m.type) {
       case "hello":
-        return send(await snapshot());
+        send(await snapshot());
+        return send(await stage!.info());
       case "open":
         await open(m.cwd, { session: m.session, model: m.model });
-        return send(await snapshot());
+        send(await snapshot());
+        return send(await stage!.info());
       case "pick": {
         const dir = await pickFolder();
         if (!dir) return;
         await open(dir, {});
-        return send(await snapshot());
+        send(await snapshot());
+        return send(await stage!.info());
       }
       case "new":
         if (!state) return;
@@ -159,11 +180,16 @@ export async function startUI(opts: UIOptions) {
         if (!state) throw new Error("open a project folder first");
         if (state.controller) throw new Error("Maxx is still working; stop it or wait");
         const s = state;
-        s.controller = new AbortController();
+        const controller = (s.controller = new AbortController());
         send({ type: "busy", busy: true });
+        turn = [];
         try {
-          const answer = await s.agent.send(String(m.text), s.controller.signal);
+          let answer = await s.agent.send(String(m.text), controller.signal);
           send({ type: "done", text: answer });
+          if (m.voice) {
+            if (m.rebuild !== false) answer = (await phoneOut(s, controller.signal)) ?? answer;
+            send({ type: "speak", text: speakable(answer) });
+          }
         } catch (e) {
           const err = e as Error;
           send({ type: "error", text: err.name === "AbortError" ? "(stopped)" : err.message });
@@ -178,12 +204,64 @@ export async function startUI(opts: UIOptions) {
     }
   }
 
+  // Voice in, phone out: after a spoken request changed the project, rebuild
+  // it and show it (phone, or preview at phone size). A failure goes back to
+  // the model, which gets FIX_ROUNDS tries. Returns the model's last answer.
+  async function phoneOut(s: NonNullable<typeof state>, signal: AbortSignal): Promise<string | undefined> {
+    let answer: string | undefined;
+    for (let round = 0; !signal.aborted; round++) {
+      const android = s.agent.toolsets.includes("android");
+      const procs = stage!.runner?.list() ?? [];
+      const plan = planRebuild(s.cwd, turn, {
+        android,
+        phone: android && (await A.devices().then((d) => d.some((x) => x.state === "device"), () => false)),
+        html: await htmlFiles(s.cwd),
+        serverUrl: procs.filter((p) => p.status === "running" && p.url).at(-1)?.url,
+      });
+      if (plan.kind === "none") {
+        if (plan.shown) send({ type: "voiceShow", where: plan.shown === "android" ? "phone" : "preview" });
+        else if (plan.why !== "nothing changed") io.note(`🎙 ${plan.why}`);
+        return answer;
+      }
+      io.note(plan.kind === "android" ? "🎙 Rebuilding and running it on your phone…" : "🎙 Opening it in the preview at phone size…");
+      if (plan.kind === "preview") send({ type: "voiceShow", where: "preview" });
+      const result = await s.agent.runDirect(plan.kind === "android" ? "android_run" : "preview", plan.args);
+      if (!failed(plan.kind, result)) {
+        if (plan.kind === "android") send({ type: "voiceShow", where: "phone" });
+        return answer;
+      }
+      if (/^user denied/.test(result)) return answer;
+      if (round >= FIX_ROUNDS) {
+        io.note(`🎙 It still fails after ${FIX_ROUNDS} fixes. Have a look at the last result, or say what to change.`);
+        return answer;
+      }
+      io.note(`🎙 That didn't work; asking Maxx to fix it (try ${round + 1} of ${FIX_ROUNDS})`);
+      turn = [];
+      answer = await s.agent.send(fixPrompt(plan.kind, result), signal);
+      send({ type: "done", text: answer });
+    }
+    return answer;
+  }
+
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: opts.port ?? 4317,
-    fetch(req, srv) {
+    async fetch(req, srv) {
       const url = new URL(req.url);
       if (url.searchParams.get("t") !== token) return new Response("Open the link Maxx printed in the terminal.", { status: 403 });
+      // Recorded speech (16 kHz WAV) in, text out, through the local Whisper.
+      if (url.pathname === "/voice" && req.method === "POST") {
+        const origin = req.headers.get("origin");
+        if (origin && new URL(origin).host !== url.host) return new Response("bad origin", { status: 403 });
+        if (!whisper) return Response.json({ error: "no local Whisper set up (see maxx --help: --whisper)" }, { status: 404 });
+        const wav = new Uint8Array(await req.arrayBuffer());
+        if (wav.length > 8 << 20) return Response.json({ error: "recording too long" }, { status: 413 });
+        try {
+          return Response.json({ text: await transcribe(whisper, wav, url.searchParams.get("lang") || "auto") });
+        } catch (e) {
+          return Response.json({ error: (e as Error).message }, { status: 502 });
+        }
+      }
       if (url.pathname === "/ws") {
         // Only our own page may connect, not some other site in the same browser.
         const origin = req.headers.get("origin");
@@ -207,7 +285,43 @@ export async function startUI(opts: UIOptions) {
     },
   });
 
+  // Started after the UI's own port is taken, so a failed start leaves nothing behind.
+  stage = new Stage(send, () => clients.size, opts.previewPort ?? 0);
+  const quit = () => stage?.runner?.stopAll();
+  process.once("exit", quit);
+
   const link = `http://127.0.0.1:${server.port}/?t=${token}`;
   if (opts.open !== false) openWindow(link);
-  return { server, link, token, stop: () => server.stop(true) };
+  return {
+    server,
+    link,
+    token,
+    stage,
+    stop: () => {
+      process.off("exit", quit);
+      stage!.stop();
+      server.stop(true);
+    },
+  };
+}
+
+// Only the tail of a long preview goes over the wire each time: the card
+// shows the end of what is being written, the way a terminal would.
+const PREVIEW_TAIL = 4000;
+
+export function progressMessage(p: StreamProgress): Out {
+  const a = describe(p);
+  const cut = a.preview.length > PREVIEW_TAIL;
+  return {
+    type: "progress",
+    phase: p.phase,
+    tokens: p.tokens,
+    elapsedMs: p.elapsedMs,
+    generatingMs: p.generatingMs,
+    title: a.title,
+    status: statusLine(p, a),
+    lines: a.lines,
+    tool: p.tool && { index: p.tool.index, name: p.tool.name },
+    preview: (cut ? "…" : "") + a.preview.slice(-PREVIEW_TAIL),
+  };
 }

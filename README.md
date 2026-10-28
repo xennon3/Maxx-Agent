@@ -157,15 +157,64 @@ Claude Code app:
 - **Chat:** streamed replies, collapsible tool cards ("Edit src/App.kt", "Tap Calculate"), and
   permission prompts with the diff inline and **Allow / Always allow / Deny** buttons. **Stop**
   ends the current turn.
+- **Live progress:** while the model works, a status bar under the chat says what it is doing
+  and for how long ("Reading the 9.2k-token prompt · 48s", "Thinking", "Writing src/App.kt ·
+  41 lines · 312 tokens · 4.1 tok/s · 1m12s"), and the file being written fills its tool card as
+  it streams. Reasoning goes into a collapsed "Thought for 42s" block. The terminal shows the same
+  status line with a spinner.
 - **Header:** model picker (from LM Studio), permission mode, 📱 Android / 🖥 Desktop toolset
   toggles, *New* session.
-- **Screen panel:** the latest phone or desktop screenshot with its numbered boxes, live while
-  Maxx tests; click to enlarge.
+- **Stage panel** (the icons on the right edge), for running and testing what Maxx builds, like
+  Claude's artifacts:
+  - **◧ Preview** shows the project's web pages. The first `.html` file Maxx writes opens by
+    itself, and every later edit reloads it. Pick a page from the menu, or type a dev server
+    URL. *Phone size* frames it at 390 px. The console strip collects the page's `console` output
+    and errors, and *Ask Maxx to fix* puts them in the message box.
+  - **▶ Run** runs project commands in the background, like terminal tabs: one-click chips for
+    `package.json` scripts, Gradle, Cargo, Go, pytest and `make`, plus anything you type (kept
+    per project in `.maxx/run.json`). Output streams live. When a dev server prints its URL it
+    opens in Preview, and a failed command gets an *ask Maxx to fix* link with the end of its
+    output.
+  - **📱 Screen** shows the latest phone or desktop screenshot. *Live phone* mirrors a connected
+    Android phone at about two frames a second: click to tap, drag to swipe, plus Back / Home /
+    Recents.
+
+  The model gets two tools of its own in the app window: `preview` opens a page in the panel and
+  returns its title, visible text and console errors (so even a text-only model can tell if its
+  page works), and `start_server` starts a dev server in the Run tab and returns its URL.
+  Previewed pages are served from a second random port with its own token, so a page's scripts
+  can't reach Maxx itself. `bun sim/stage-demo.ts` drives the panel in a headless browser and
+  saves screenshots to `sim/out/stage/`.
 
 It runs in Edge's app mode (no tabs or address bar) on `127.0.0.1` only, behind a random token
 in the link, so other sites and other machines can't drive it. Closing the console window quits.
 `bun sim/ui-demo.ts` drives the UI in a headless browser against the simulated EVO-X2 and saves
 screenshots to `sim/out/ui/`.
+
+### Voice in, phone out
+
+Click 🎙 in the composer (or press Ctrl+Space, or hold the button and let go) and say what you want: "make the snake faster". The words appear in the box as you speak and are sent when you stop talking (there is a short countdown; Esc or typing cancels it). Short commands act on the window instead: "stop", "send", "cancel", "new session".
+
+After a spoken request changes the project, Maxx rebuilds it by itself and shows the result:
+
+- an Android project (with 📱 Android on and a phone connected): it runs `android_run` (build, install, launch) and turns on the live phone view;
+- a web page: it opens the page, or the running dev server, in the Preview panel at phone size.
+
+If that build or page fails, the error goes back to the model to fix, twice at most. The rebuild asks for permission like any other command unless you allowed it. Each step can be turned off under **▾ voice**, which also has "Read Maxx's reply aloud" (Windows' own voices, offline).
+
+Speech-to-text has two engines:
+
+- **Edge speech recognition**: built into Edge, nothing to install, but Edge sends the audio to Microsoft's online service.
+- **Local Whisper**: fully offline. Either run whisper.cpp's server and point Maxx at it, or let Maxx call `whisper-cli` itself:
+
+  ```powershell
+  whisper-server -m ggml-base.en.bin --port 8178     # then:
+  maxx ui --whisper http://127.0.0.1:8178
+  # or: whisper-cli on PATH and a model in %USERPROFILE%\.maxx\whisper\ (or --whisper <path> --whisper-model <file.bin>)
+  maxx doctor voice                                  # checks it and times a transcription
+  ```
+
+  `base.en` (142 MB) is quick on a laptop CPU; any server with an OpenAI-style `/v1/audio/transcriptions` works too. When a local Whisper is set up, it is used by default.
 
 ## Sessions per project
 
@@ -227,6 +276,7 @@ src/
   vision.ts        native / proxy / off delivery of screenshots to a model
   replay.ts        maxx replay
   sessions.ts      saved sessions per project
+  progress.ts      live status while the model streams: partial JSON, status lines
   ui/              maxx ui: local server, the page, Windows launch helpers
 sim/               the simulated EVO-X2 (bun sim/run.ts)
   devices/         adb, the Windows PowerShell helper, screen coordinates, the command runner
@@ -236,6 +286,10 @@ sim/               the simulated EVO-X2 (bun sim/run.ts)
 - **Tool-call rescue.** Local models sometimes write a tool call as text instead of a real
   `tool_calls` entry. `llm.ts` recognizes `<tool_call>` JSON (Hermes/Qwen), `<function=...>` XML
   (Qwen3-Coder) and fenced JSON, and runs them anyway.
+- **Live progress.** A slow model writing a whole file in one `write_file` call is minutes of
+  silence. `llm.ts` reports every chunk: reading the prompt, thinking, or which tool call is being
+  written, with its arguments parsed as they arrive (`progress.ts` reads incomplete JSON). Tool
+  calls written as `<tool_call>` text are hidden from the output and shown the same way.
 - **Errors go back to the model.** Bad JSON, schema failures, unknown tools and denied calls all
   come back as tool results, so the model corrects itself. Three bad calls in a row stop the turn.
 - **Forgiving edits.** `edit_file` tries an exact match, then a whitespace-insensitive line match

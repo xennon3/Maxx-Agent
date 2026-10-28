@@ -7,6 +7,7 @@ import { compact, estimateTokens, systemPrompt, truncate } from "./context.ts";
 import { describeImages, imagePart, type Vision } from "./vision.ts";
 import type { Image } from "./image.ts";
 import { newSessionId } from "./sessions.ts";
+import type { StreamProgress } from "./progress.ts";
 
 export type AgentIO = {
   token(t: string): void;
@@ -16,6 +17,8 @@ export type AgentIO = {
   note(text: string): void;
   // Screenshots as they arrive, for UIs that can show them.
   image?(tool: string, images: Image[]): void;
+  // What the model is doing while it streams (often for minutes on a CPU).
+  progress?(p: StreamProgress): void;
 };
 
 export type AgentOptions = {
@@ -99,7 +102,8 @@ export class Agent {
 
     for (let step = 0; step < (this.opts.maxSteps ?? 50); step++) {
       await this.maybeCompact();
-      const res = await complete(this.opts.llm, this.history, specs, (t) => this.io.token(t), signal);
+      const promptTokens = estimateTokens(this.history);
+      const res = await complete(this.opts.llm, this.history, specs, (t) => this.io.token(t), signal, (p) => this.io.progress?.({ ...p, promptTokens }));
       if (res.rescued) this.io.note(`(recovered ${res.toolCalls.length} tool call(s) written as text)`);
 
       if (!res.toolCalls.length) {
@@ -141,6 +145,17 @@ export class Agent {
       }
     }
     return "Stopped: reached the step limit for one turn.";
+  }
+
+  // Maxx calling a tool on its own (the rebuild after a spoken request): the
+  // same permission gate, and kept in the history as if the model had called
+  // it, so the model knows what happened on the next turn.
+  async runDirect(name: string, args: Record<string, unknown>): Promise<string> {
+    const call: ToolCall = { id: `maxx_${Date.now().toString(36)}`, name, arguments: JSON.stringify(args) };
+    const { result, images } = await this.runTool(call);
+    if (images?.length) this.io.image?.(name, images);
+    this.history.push({ role: "assistant", content: null, tool_calls: toWire([call]) }, { role: "tool", tool_call_id: call.id, content: result });
+    return result;
   }
 
   private async deliverImages(tool: string, result: string, images: Image[], seen: ContentPart[], signal?: AbortSignal, glance = false): Promise<string> {
