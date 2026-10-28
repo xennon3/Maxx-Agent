@@ -36,7 +36,11 @@ test("the Android template has a working Gradle wrapper for Windows and Unix", a
   const files = await scaffold(findTemplate("android-compose"), join(dir, "tip-calc"));
   const root = join(dir, "tip-calc");
   expect(files).toContain("app/src/main/java/com/example/tipcalc/MainActivity.kt");
-  expect(await readFile(join(root, "app/build.gradle.kts"), "utf8")).toContain('applicationId = "com.example.tipcalc"');
+  const app = await readFile(join(root, "app/build.gradle.kts"), "utf8");
+  expect(app).toContain('applicationId = "com.example.tipcalc"');
+  expect(app).not.toContain("kotlinOptions"); // removed in Kotlin 2.2
+  // Android Studio bundles Java 25, which needs Gradle 9.1 or newer.
+  expect(await readFile(join(root, "gradle/wrapper/gradle-wrapper.properties"), "utf8")).toContain("gradle-9.1.0-bin.zip");
   const bat = await readFile(join(root, "gradlew.bat"), "utf8");
   expect(bat.split("\n").every((l, i, all) => i === all.length - 1 || l.endsWith("\r"))).toBe(true);
   if (process.platform !== "win32") expect((await stat(join(root, "gradlew"))).mode & 0o111).toBeTruthy();

@@ -1,5 +1,6 @@
 // gradle/wrapper/gradle-wrapper.jar from Gradle 8.10.2 (gradle/gradle tag v8.10.2),
 // sha256 2db75c40782f5e8ba1fc278a5574bab070adccb2d21ca5a6e5ed840888448046.
+// The launcher works with any distribution, including the 9.1.0 the template uses.
 // Kept as base64 so the compiled maxx.exe can write a complete Gradle wrapper.
 export const GRADLE_WRAPPER_SHA256 = "2db75c40782f5e8ba1fc278a5574bab070adccb2d21ca5a6e5ed840888448046";
 export const GRADLE_WRAPPER_JAR =
