@@ -4,8 +4,13 @@
 
 export type ToolCall = { id: string; name: string; arguments: string };
 
+export type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
 export type Message =
-  | { role: "system" | "user"; content: string }
+  | { role: "system"; content: string }
+  | { role: "user"; content: string | ContentPart[] }
   | { role: "assistant"; content: string | null; tool_calls?: WireToolCall[] }
   | { role: "tool"; tool_call_id: string; content: string };
 

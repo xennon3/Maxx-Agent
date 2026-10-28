@@ -1,10 +1,18 @@
 import { join } from "node:path";
-import type { Message } from "./llm.ts";
+import type { ContentPart, Message } from "./llm.ts";
 import { describeShell } from "./shell.ts";
 
 // Rough but dependency-free: ~4 characters per token for code and English.
+// An image is counted as a flat ~1000 tokens, not by the length of its base64.
+const IMAGE_TOKENS = 1000;
 export const estimateTokens = (msgs: Message[]) =>
-  Math.ceil(msgs.reduce((n, m) => n + JSON.stringify(m).length, 0) / 4);
+  msgs.reduce((n, m) => {
+    if (!Array.isArray(m.content)) return n + Math.ceil(JSON.stringify(m).length / 4);
+    return n + m.content.reduce((k, p) => k + (p.type === "text" ? Math.ceil(p.text.length / 4) : IMAGE_TOKENS), 4);
+  }, 0);
+
+export const textOf = (content: string | ContentPart[] | null): string =>
+  !content ? "" : typeof content === "string" ? content : content.map((p) => (p.type === "text" ? p.text : "[image]")).join(" ");
 
 // Big tool outputs are cut when they are produced, so they never bloat history.
 export function truncate(text: string, head = 100, tail = 100): string {
@@ -13,7 +21,7 @@ export function truncate(text: string, head = 100, tail = 100): string {
   return [...lines.slice(0, head), `... ${lines.length - head - tail} lines omitted ...`, ...lines.slice(-tail)].join("\n");
 }
 
-export async function systemPrompt(cwd: string): Promise<string> {
+export async function systemPrompt(cwd: string, toolsetNotes: string[] = []): Promise<string> {
   const memory = await loadMemory(cwd);
   return [
     "You are Maxx, a coding agent working in the user's terminal on the project in " + cwd + ".",
@@ -27,6 +35,7 @@ export async function systemPrompt(cwd: string): Promise<string> {
     "- If a tool returns an error, fix the arguments and try again instead of giving up.",
     "- When you are done, reply in plain text with a short summary of what changed. Do not call tools in that final reply.",
     "- If the user denies a tool call, respect it and ask how they want to proceed.",
+    ...toolsetNotes.map((n) => "\n" + n),
     memory ? `\nProject notes from ${memory.file}:\n${memory.text}` : "",
   ].join("\n");
 }
@@ -54,7 +63,7 @@ export async function compact(
   while (cut < rest.length && rest[cut]!.role === "tool") cut++;
   const old = rest.slice(0, cut), recent = rest.slice(cut);
   const transcript = old
-    .map((m) => `${m.role}: ${"content" in m && m.content ? m.content : ""}${"tool_calls" in m && m.tool_calls ? " [tools: " + m.tool_calls.map((t) => t.function.name + " " + t.function.arguments).join("; ") + "]" : ""}`)
+    .map((m) => `${m.role}: ${textOf(m.content)}${"tool_calls" in m && m.tool_calls ? " [tools: " + m.tool_calls.map((t) => t.function.name + " " + t.function.arguments).join("; ") + "]" : ""}`)
     .join("\n")
     .slice(-60_000);
   const summary = await summarize(transcript);

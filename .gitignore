@@ -1,3 +1,4 @@
 node_modules/
 dist/
 .maxx/sessions/
+sim/out/
