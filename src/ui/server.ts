@@ -50,6 +50,7 @@ export async function startUI(opts: UIOptions) {
   const io: AgentIO = {
     token: (t) => send({ type: "token", text: t }),
     progress,
+    plan: (steps) => send({ type: "plan", steps }),
     toolStart: (name, args) => send({ type: "toolStart", name, args }),
     toolEnd: (name, result) => send({ type: "toolEnd", name, result }),
     note: (text) => send({ type: "note", text }),
@@ -89,9 +90,11 @@ export async function startUI(opts: UIOptions) {
         mode: s.permissions.mode,
         toolsets: s.agent.toolsets,
         busy: !!s.controller,
+        plan: s.agent.plan,
+        // Parts-array user messages are screenshots and Maxx's own reports (fix-it, plan); only the reports are shown, as notes.
         history: s.agent.history
-          .filter((m) => m.role !== "system" && !(m.role === "user" && Array.isArray(m.content)))
-          .map((m) => ({ role: m.role, text: textOf(m.content as any), tools: "tool_calls" in m ? m.tool_calls?.map((t) => ({ name: t.function.name, args: t.function.arguments })) : undefined })),
+          .filter((m) => m.role !== "system" && !(m.role === "user" && Array.isArray(m.content) && !isReport(m.content)))
+          .map((m) => ({ role: m.role === "user" && Array.isArray(m.content) ? "note" : m.role, text: textOf(m.content as any), tools: "tool_calls" in m ? m.tool_calls?.map((t) => ({ name: t.function.name, args: t.function.arguments })) : undefined })),
       },
     };
   }
@@ -236,6 +239,8 @@ export async function startUI(opts: UIOptions) {
     },
   };
 }
+
+const isReport = (parts: { type: string; text?: string }[]) => parts.every((p) => p.type === "text") && /^Maxx( checked|:)/.test(parts[0]?.text ?? "");
 
 // Only the tail of a long preview goes over the wire each time: the card
 // shows the end of what is being written, the way a terminal would.

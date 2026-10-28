@@ -208,6 +208,27 @@ shows the last reply. In a session: `/sessions`, `/resume <ref>`, `/new`, `/titl
 Starting `maxx` in a folder with history shows a one-line hint to continue it. `MAXX_HOME` moves
 the store.
 
+## Helping small models recover
+
+A 4B model on a laptop CPU loses its way more often than it lacks knowledge. Four helpers, all on
+by default, keep it on track while costing only about 150 prompt tokens:
+
+- **Error coach.** When a tool call fails, Maxx adds the first real error line and, when it knows the
+  problem, one plain hint: `Maxx hint: python is not on PATH here. Try py instead of python.`
+  It knows about missing programs, busy ports, missing packages and files, Gradle without an SDK or
+  JDK, and compiler errors (it says which line of which file to fix).
+- **Plan first.** For bigger tasks the model writes 3 to 5 steps with the `plan` tool and ticks them
+  off. The app pins the checklist above the chat (`/plan` in the terminal). If the model says it
+  is done with steps left, Maxx sends it back once.
+- **Fix-it loop.** When the model finishes after changing files, Maxx checks the work: changed
+  .js/.ts/.html/.json files must still parse (no tools needed), then the project's build runs if
+  there is an obvious one (`typecheck` or `build` script, `gradlew assembleDebug`, `cargo build`,
+  `go build`) or MAXX.md has a `check: <command>` line. A failure goes back to the model with the
+  lines around the first error, up to 3 times. `--check <cmd>`, `--check off`, `--fix-tries 0`.
+- **Memory notes.** The `remember` tool adds a lesson to a "Lessons" section of MAXX.md, and when a
+  failed command works with a different program (`python a.py`, then `py a.py`), Maxx writes that
+  down by itself. MAXX.md is read at the start of every session (keeps the last 20 lessons).
+
 ## A simulated EVO-X2
 
 `bun sim/run.ts` runs the real Maxx CLI against a simulated EVO-X2: a fake LM Studio that charges
@@ -228,10 +249,13 @@ It tests the plumbing and timing, not the model's intelligence.
 | `--with` | `$MAXX_WITH` | Extra toolsets: `android`, `desktop` |
 | `--vision` | `auto` | `auto` asks LM Studio whether the model sees images; `native`, `off`; `always` (with `--vision-model`) describes every screenshot |
 | `--vision-model` | `$MAXX_VISION_MODEL` | A second model that describes screenshots for a text-only main model |
+| `--check <cmd>` | detected | Build command for the fix-it loop; `off` for syntax checks only |
+| `--fix-tries <n>` | `3` | Times a failed check goes back to the model; `0` turns the loop off |
+| `--no-plan` | | Don't offer the `plan` tool |
 | `-p` | | Run one prompt and exit |
 | `-c`, `--resume <ref>` | | Continue the latest, or a chosen, session in this project |
 
-In a session: `/help`, `/mode <m>`, `/with <sets|none>`, `/sessions`, `/resume <ref>`, `/new`, `/title`, `/checkpoints`, `/rewind <n>`, `/clear`, `/exit`.
+In a session: `/help`, `/mode <m>`, `/with <sets|none>`, `/plan`, `/sessions`, `/resume <ref>`, `/new`, `/title`, `/checkpoints`, `/rewind <n>`, `/clear`, `/exit`.
 Ctrl-C stops the current turn.
 
 ## How it works

@@ -37,16 +37,18 @@ export async function systemPrompt(cwd: string, toolsetNotes: string[] = []): Pr
     "- When you are done, reply in plain text with a short summary of what changed. Do not call tools in that final reply.",
     "- If the user denies a tool call, respect it and ask how they want to proceed.",
     ...toolsetNotes.map((n) => "\n" + n),
-    memory ? `\nProject notes from ${memory.file}:\n${memory.text}` : "",
+    ...memory.map((m) => `\nProject notes from ${m.file}:\n${m.text}`),
   ].join("\n");
 }
 
+// MAXX.md (which holds the lessons Maxx keeps) plus the first other agent notes file.
 async function loadMemory(cwd: string) {
-  for (const file of ["MAXX.md", "AGENTS.md", "CLAUDE.md"]) {
+  const read = async (file: string) => {
     const f = Bun.file(join(cwd, file));
-    if (await f.exists()) return { file, text: truncate(await f.text(), 200, 0) };
-  }
-  return null;
+    return (await f.exists()) ? { file, text: truncate(await f.text(), 150, 0) } : null;
+  };
+  const other = (await read("AGENTS.md")) ?? (await read("CLAUDE.md"));
+  return [await read("MAXX.md"), other].filter((m) => m !== null);
 }
 
 // Replace the oldest turns with a model-written summary, keeping the system
