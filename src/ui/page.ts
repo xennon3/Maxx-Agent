@@ -1,3 +1,5 @@
+import { STAGE_CSS, STAGE_HTML, STAGE_JS } from "./stage-page.ts";
+
 // The whole web UI in one string, so the compiled maxx.exe carries it.
 export const PAGE = /* html */ `<!doctype html>
 <html lang="en">
@@ -64,20 +66,38 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
 .composer textarea { flex: 1; resize: none; height: 64px; }
 .empty { margin: auto; text-align: center; color: var(--mute); max-width: 420px; }
 .empty h2 { color: var(--ink); margin: 0 0 6px; }
-#screen { width: 0; overflow: hidden; border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; transition: width .2s; }
-#screen.on { width: 340px; }
-#screen .top { padding: 10px 12px; display: flex; justify-content: space-between; align-items: center; font-weight: 600; }
-#screen img { width: 100%; max-height: calc(100vh - 60px); object-fit: contain; cursor: zoom-in; background: #000; }
-#screen .cap { padding: 6px 12px; color: var(--mute); font-size: 12px; font-family: var(--mono); }
+.starters { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 18px 0 0; text-align: left; }
+.empty:has(.starters) { max-width: 760px; }
+.starter { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; text-align: left; padding: 12px; border-radius: var(--radius); background: var(--panel); }
+.starter .icon { font-size: 22px; }
+.starter b { color: var(--ink); }
+.starter span { color: var(--mute); font-size: 12.5px; line-height: 1.35; }
+.starter:disabled { opacity: .5; cursor: wait; }
+.ideas { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 12px; }
 #zoom { position: fixed; inset: 0; background: rgba(0,0,0,.85); display: none; align-items: center; justify-content: center; cursor: zoom-out; z-index: 9; }
 #zoom img { max-width: 95vw; max-height: 95vh; }
 .status { font-size: 12px; color: var(--mute); }
+.activity { display: none; align-items: center; gap: 8px; padding: 6px 16px; border-top: 1px solid var(--line); background: var(--panel); font-size: 13px; min-width: 0; }
+.activity.on { display: flex; }
+.activity .spin { color: var(--accent); font-family: var(--mono); width: 1ch; flex: none; }
+.activity .what { font-weight: 600; flex: none; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity .meta { color: var(--mute); flex: none; font-variant-numeric: tabular-nums; }
+.activity .tail { color: var(--mute); font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tool.live { border-color: var(--accent); }
+.tool.live summary::after { content: ""; }
+.tool summary .meta { color: var(--mute); font-family: system-ui, "Segoe UI", sans-serif; font-size: 12px; margin-left: 6px; }
+.tool.live pre::after { content: "▍"; color: var(--accent); animation: blink 1s steps(1) infinite; }
+.tool.skipped { opacity: .6; }
+.think { max-width: 860px; color: var(--mute); }
+.think summary { cursor: pointer; font-size: 13px; font-style: italic; }
+.think pre { margin: 4px 0 0; padding: 6px 10px; border-left: 2px solid var(--line); font: 12px/1.45 var(--mono); white-space: pre-wrap; max-height: 240px; overflow: auto; }
+@keyframes blink { 50% { opacity: 0; } }
 @media (max-width: 860px) {
   body { grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; }
   aside { max-height: 34vh; border-right: 0; border-bottom: 1px solid var(--line); }
-  #screen.on { width: auto; max-height: 40vh; border-left: 0; border-top: 1px solid var(--line); }
   header .where { max-width: 100%; }
 }
+${STAGE_CSS}
 </style>
 </head>
 <body>
@@ -103,6 +123,7 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
     <button id="newBtn" title="Start a new session in this project">New</button>
   </header>
   <div id="log"><div class="empty"><h2>Pick a project</h2>Open a folder on the left, or choose one of your recent sessions. Everything runs on this machine against LM Studio.</div></div>
+  <div class="activity" id="activity"><span class="spin" id="actSpin">⠋</span><span class="what" id="actWhat"></span><span class="meta" id="actMeta"></span><span class="tail" id="actTail"></span></div>
   <div class="composer">
     <textarea id="input" placeholder="Ask Maxx to build, fix or test something…  (Enter to send, Shift+Enter for a new line)"></textarea>
     <div style="display:flex;flex-direction:column;gap:6px">
@@ -111,16 +132,14 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
     </div>
   </div>
 </main>
-<section id="screen">
-  <div class="top"><span id="screenTitle">Screen</span><button id="hideScreen" title="Hide">✕</button></div>
-  <img id="shot" alt="Latest screenshot">
-  <div class="cap" id="shotCap"></div>
-</section>
+${STAGE_HTML}
 <div id="zoom"><img id="zoomImg" alt=""></div>
 <script>
 const $ = (id) => document.getElementById(id);
 const token = new URLSearchParams(location.search).get("t");
 let ws, state = null, busy = false, live = null, streaming = null;
+// While the model streams: tool cards being written (by call index, not run yet), the thinking block, the status bar.
+let writing = [], thinkCard = null, act = null;
 
 function connect() {
   ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws?t=" + token);
@@ -154,10 +173,11 @@ function note(text, cls = "note") { add(div("msg " + cls, text)); }
 const VERBS = { read_file: "Read", write_file: "Write", edit_file: "Edit", list_files: "List", grep: "Search", bash: "Run",
   android_run: "Build & run on phone", android_screen: "Look at phone", android_tap: "Tap", android_type: "Type", android_swipe: "Swipe",
   android_key: "Press", android_logcat: "Read phone log", android_devices: "List devices", android_connect: "Connect phone",
-  desktop_screenshot: "Look at desktop", desktop_click: "Click", desktop_type: "Type", desktop_key: "Press", desktop_scroll: "Scroll", desktop_open: "Open" };
+  desktop_screenshot: "Look at desktop", desktop_click: "Click", desktop_type: "Type", desktop_key: "Press", desktop_scroll: "Scroll", desktop_open: "Open",
+  preview: "Preview", start_server: "Start", use_template: "Start from template" };
 function label(name, args) {
   let a = {}; try { a = JSON.parse(args || "{}"); } catch {}
-  const main = a.path ?? a.command ?? a.pattern ?? a.keys ?? a.key ?? a.target ?? a.direction ?? (a.text !== undefined ? JSON.stringify(a.text) : undefined) ??
+  const main = a.template ?? a.path ?? a.url ?? a.command ?? a.pattern ?? a.keys ?? a.key ?? a.target ?? a.direction ?? (a.text !== undefined ? JSON.stringify(a.text) : undefined) ??
     (a.element !== undefined ? "element " + a.element : a.x !== undefined ? a.x + "," + a.y : a.crashes ? "crashes" : a.project_dir ?? a.apk ?? "");
   return [VERBS[name] || name, String(main)];
 }
@@ -177,29 +197,119 @@ function toolCard(name, args, result) {
   return add(d);
 }
 
+// The status bar under the transcript, Claude Code style: what, how much, how long.
+const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+let spinFrame = 0;
+const clock = (ms) => { const s = Math.floor(ms / 1000); return s < 60 ? s + "s" : Math.floor(s / 60) + "m" + String(s % 60).padStart(2, "0") + "s"; };
+function activity(a) { act = a && Object.assign({ at: Date.now(), elapsedMs: 0 }, a); drawActivity(); }
+function drawActivity() {
+  const bar = $("activity");
+  bar.classList.toggle("on", !!(busy && act));
+  if (!busy || !act) return;
+  const ms = act.elapsedMs + Date.now() - act.at;
+  const meta = [];
+  if (act.lines > 1) meta.push(act.lines + " lines");
+  if (act.tokens && act.phase !== "waiting") { meta.push(act.tokens + " tokens"); if (act.generatingMs >= 2000) meta.push((act.tokens / (act.generatingMs / 1000)).toFixed(1) + " tok/s"); }
+  meta.push(clock(ms));
+  $("actSpin").textContent = SPIN[spinFrame++ % SPIN.length];
+  $("actWhat").textContent = act.title || "Working";
+  $("actMeta").textContent = meta.join(" · ");
+  $("actTail").textContent = act.tail || "";
+}
+setInterval(drawActivity, 100);
+
+function progress(m) {
+  if (m.phase !== "thinking" && thinkCard) {
+    thinkCard.querySelector("summary").textContent = "Thought for " + clock(thinkCard.ms);
+    thinkCard = null;
+  }
+  if (m.phase === "waiting") abandonWriting();
+  if (m.phase === "done") return activity({ title: "Working" });
+  const tail = (m.preview || "").split("\\n").filter((l) => l.trim()).pop() || "";
+  activity({ phase: m.phase, title: m.title, tokens: m.tokens, elapsedMs: m.elapsedMs, generatingMs: m.generatingMs || 0, lines: m.lines, tail: m.phase === "tool" ? "" : tail.trim().slice(-160) });
+  if (m.phase === "thinking") {
+    if (!thinkCard) { streaming = null; thinkCard = add(document.createElement("details")); thinkCard.className = "think"; thinkCard.innerHTML = "<summary></summary><pre></pre>"; }
+    thinkCard.ms = m.elapsedMs;
+    thinkCard.querySelector("summary").textContent = "Thinking… " + m.tokens + " tokens";
+    const pre = thinkCard.querySelector("pre"); pre.textContent = m.preview; pre.scrollTop = pre.scrollHeight;
+  }
+  if (m.phase === "tool" && m.tool) {
+    let d = writing[m.tool.index];
+    if (!d) {
+      streaming = null;
+      d = writing[m.tool.index] = add(document.createElement("details"));
+      d.className = "tool run live"; d.open = d.auto = true;
+      d.innerHTML = "<summary><b></b> <span class=arg></span><span class=meta></span></summary><pre></pre>";
+    }
+    const [verb, ...rest] = m.title.split(" ");
+    d.tool = m.tool.name;
+    d.querySelector("b").textContent = verb;
+    d.querySelector(".arg").textContent = rest.join(" ").slice(0, 160);
+    d.querySelector(".meta").textContent = (m.lines > 1 ? m.lines + " lines · " : "") + m.tokens + " tokens · " + clock(m.elapsedMs);
+    const pre = d.querySelector("pre"); const stick = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+    pre.textContent = m.preview; if (stick) pre.scrollTop = pre.scrollHeight;
+    const log = $("log"); if (log.scrollHeight - log.scrollTop - log.clientHeight < 200) log.scrollTop = log.scrollHeight;
+  }
+}
+// Calls that were written but never ran (bad arguments, or the turn stopped).
+function abandonWriting() {
+  for (const d of writing) if (d) { d.classList.remove("run", "live"); d.classList.add("skipped"); d.querySelector(".meta").textContent = "not run"; }
+  writing = [];
+}
+
 function on(m) {
+  stage.on(m);
   switch (m.type) {
     case "state": return render(m);
+    case "progress": return progress(m);
     case "token":
       if (!streaming) streaming = add(div("msg")), streaming.raw = "";
       streaming.raw += m.text;
       streaming.innerHTML = md(streaming.raw);
       return;
-    case "toolStart": streaming = null; live = toolCard(m.name, m.args); return;
+    case "toolStart": {
+      streaming = null;
+      const [verb, arg] = label(m.name, m.args);
+      activity({ title: verb + " " + arg.slice(0, 80) });
+      // The card that showed the call being written becomes the card that runs it.
+      let i = writing.findIndex((d) => d && d.tool === m.name);
+      if (i < 0) i = writing.findIndex(Boolean);
+      if (i < 0) { live = toolCard(m.name, m.args); return; }
+      live = writing[i]; writing[i] = undefined;
+      if (!writing.some(Boolean)) writing = [];
+      live.classList.remove("live");
+      live.querySelector("b").textContent = verb;
+      live.querySelector(".arg").textContent = arg.slice(0, 160);
+      live.title = m.name + " " + (m.args || "");
+      return;
+    }
     case "toolEnd":
-      if (live) { live.classList.remove("run"); live.querySelector("pre").innerHTML = ansi(m.result); live = null; }
+      if (live) {
+        live.classList.remove("run");
+        const meta = live.querySelector(".meta"); if (meta) meta.textContent = "";
+        live.querySelector("pre").innerHTML = ansi(m.result);
+        if (live.auto) live.open = false;
+        live = null;
+      }
+      activity({ title: "Working" });
       return;
     case "note": return note(m.text);
-    case "image": return showShot(m.images[m.images.length - 1], m.tool);
+    case "image": return stage.shot(m.images[m.images.length - 1], m.tool);
     case "ask": return askCard(m);
-    case "busy": busy = m.busy; $("stopBtn").disabled = !busy; $("sendBtn").disabled = busy; if (!busy) streaming = null; return;
+    case "busy":
+      busy = m.busy; $("stopBtn").disabled = !busy; $("sendBtn").disabled = busy;
+      if (!busy) { streaming = null; thinkCard = null; abandonWriting(); }
+      activity(busy ? { title: "Starting" } : null);
+      return;
     case "done": streaming = null; return;
+    case "templated": return templated(m);
     case "error": return note(m.text, "msg err");
   }
 }
 
 function askCard(m) {
   streaming = null;
+  activity({ title: "Waiting for your OK" });
   const d = add(div("ask"));
   d.innerHTML = '<div class="q">' + esc(m.question) + "</div>" + (m.preview ? "<pre>" + ansi(m.preview) + "</pre>" : "") +
     '<div class="btns"><button class="primary" data-a="yes">Allow</button><button data-a="always">Always allow</button><button class="danger" data-a="no">Deny</button></div>';
@@ -211,12 +321,7 @@ function askCard(m) {
   if (document.hidden && "Notification" in window && Notification.permission === "granted") new Notification("Maxx needs your OK", { body: m.question });
 }
 
-function showShot(src, tool) {
-  $("screen").classList.add("on");
-  $("shot").src = src;
-  $("screenTitle").textContent = tool.startsWith("desktop") ? "Desktop" : "Phone";
-  $("shotCap").textContent = tool + " · " + new Date().toLocaleTimeString();
-}
+${STAGE_JS}
 
 function render(s) {
   state = s;
@@ -258,9 +363,10 @@ function render(s) {
   $("stopBtn").disabled = !busy; $("sendBtn").disabled = busy;
   // Transcript, redrawn from the agent's history whenever a turn ends or a session opens
   if (!busy) {
-    const log = $("log"); log.innerHTML = ""; live = null; streaming = null;
+    const log = $("log"); log.innerHTML = ""; live = null; streaming = null; writing = []; thinkCard = null;
     if (!cur) { log.innerHTML = '<div class="empty"><h2>Pick a project</h2>Open a folder on the left, or choose one of your recent sessions.</div>'; return; }
     if (!cur.history.length) log.innerHTML = '<div class="empty"><h2>' + esc(cur.cwd.split(/[\\\\/]/).filter(Boolean).pop() || "") + '</h2>Ask for something: "make a tip calculator app and test it on my phone", "why does the build fail?"</div>';
+    if (!cur.history.length && s.templates) $("log").querySelector(".empty").appendChild(starters(s.templates));
     const results = cur.history.filter((h) => h.role === "tool").map((h) => h.text);
     let ri = 0;
     for (const h of cur.history) {
@@ -272,6 +378,34 @@ function render(s) {
     }
     $("log").scrollTop = $("log").scrollHeight;
   }
+}
+
+// New sessions offer starter projects: a small model does far better changing
+// a project that already builds than writing one from nothing.
+function starters(list) {
+  const box = div("starters");
+  box.prepend(div("status", "Or start from a template that already works:"));
+  box.firstChild.style.gridColumn = "1 / -1";
+  for (const t of list) {
+    const b = document.createElement("button");
+    b.className = "starter";
+    b.innerHTML = '<span class="icon">' + esc(t.icon) + "</span><b>" + esc(t.name) + "</b><span>" + esc(t.about) + "</span>";
+    b.onclick = () => { box.querySelectorAll("button").forEach((x) => x.disabled = true); send({ type: "template", id: t.id }); };
+    box.appendChild(b);
+  }
+  return box;
+}
+function templated(m) {
+  const e = document.querySelector("#log .empty") || add(div("empty"));
+  e.innerHTML = "<h2>✓ " + esc(m.name) + " is ready</h2>" + esc(m.files.length + " files in " + m.cwd) + ". It builds as it is, so ask Maxx to change it:";
+  const ideas = div("ideas");
+  for (const idea of m.try) {
+    const c = div("chip", idea);
+    c.onclick = () => { $("input").value = idea; $("input").focus(); };
+    ideas.appendChild(c);
+  }
+  e.appendChild(ideas);
+  $("input").focus();
 }
 
 function submit() {
@@ -293,8 +427,6 @@ $("pickBtn").onclick = () => send({ type: "pick" });
 $("newBtn").onclick = () => send({ type: "new" });
 $("model").onchange = (e) => state && state.current && send({ type: "settings", model: e.target.value });
 $("mode").onchange = (e) => send({ type: "settings", mode: e.target.value });
-$("hideScreen").onclick = () => $("screen").classList.remove("on");
-$("shot").onclick = () => { $("zoomImg").src = $("shot").src; $("zoom").style.display = "flex"; };
 $("zoom").onclick = () => $("zoom").style.display = "none";
 connect();
 </script>

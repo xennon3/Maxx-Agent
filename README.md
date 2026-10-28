@@ -63,6 +63,27 @@ app window.
 
    Or build a single binary with `bun run build` and put `dist/maxx` on your PATH.
 
+## Starter templates: `maxx new`
+
+Small local models are much better at changing a project that already builds than at writing Gradle
+files from nothing, so new projects can start from a template:
+
+| id | what you get | run it |
+|---|---|---|
+| `android-compose` | Kotlin + Jetpack Compose app, one screen, Gradle wrapper with `gradlew.bat` | `.\gradlew.bat assembleDebug` |
+| `html-game` | Snake on a canvas, plain JavaScript, speed and colors under "Tweak me" in game.js | open index.html |
+| `python-script` | argparse CLI with unittest tests, standard library only | `python main.py file.txt` |
+| `web-app` | notes app: HTML/CSS/JS page + JSON API on a standard-library Python server | `python app.py` |
+
+```powershell
+maxx new                      # list them
+maxx new html-game snake      # create ./snake
+```
+
+In the app window, a new session offers the same templates as cards. The model has a `use_template`
+tool too, so "make me a snake game" starts from the working one. Every template writes a MAXX.md
+that tells the model where things live and how to build and test.
+
 ## Phone and desktop: `--with android,desktop`
 
 Maxx can build an Android app, put it on your phone, look at it and poke it, and it can see and
@@ -157,10 +178,34 @@ Claude Code app:
 - **Chat:** streamed replies, collapsible tool cards ("Edit src/App.kt", "Tap Calculate"), and
   permission prompts with the diff inline and **Allow / Always allow / Deny** buttons. **Stop**
   ends the current turn.
+- **Live progress:** while the model works, a status bar under the chat says what it is doing
+  and for how long ("Reading the 9.2k-token prompt · 48s", "Thinking", "Writing src/App.kt ·
+  41 lines · 312 tokens · 4.1 tok/s · 1m12s"), and the file being written fills its tool card as
+  it streams. Reasoning goes into a collapsed "Thought for 42s" block. The terminal shows the same
+  status line with a spinner.
 - **Header:** model picker (from LM Studio), permission mode, 📱 Android / 🖥 Desktop toolset
   toggles, *New* session.
-- **Screen panel:** the latest phone or desktop screenshot with its numbered boxes, live while
-  Maxx tests; click to enlarge.
+- **Stage panel** (the icons on the right edge), for running and testing what Maxx builds, like
+  Claude's artifacts:
+  - **◧ Preview** shows the project's web pages. The first `.html` file Maxx writes opens by
+    itself, and every later edit reloads it. Pick a page from the menu, or type a dev server
+    URL. *Phone size* frames it at 390 px. The console strip collects the page's `console` output
+    and errors, and *Ask Maxx to fix* puts them in the message box.
+  - **▶ Run** runs project commands in the background, like terminal tabs: one-click chips for
+    `package.json` scripts, Gradle, Cargo, Go, pytest and `make`, plus anything you type (kept
+    per project in `.maxx/run.json`). Output streams live. When a dev server prints its URL it
+    opens in Preview, and a failed command gets an *ask Maxx to fix* link with the end of its
+    output.
+  - **📱 Screen** shows the latest phone or desktop screenshot. *Live phone* mirrors a connected
+    Android phone at about two frames a second: click to tap, drag to swipe, plus Back / Home /
+    Recents.
+
+  The model gets two tools of its own in the app window: `preview` opens a page in the panel and
+  returns its title, visible text and console errors (so even a text-only model can tell if its
+  page works), and `start_server` starts a dev server in the Run tab and returns its URL.
+  Previewed pages are served from a second random port with its own token, so a page's scripts
+  can't reach Maxx itself. `bun sim/stage-demo.ts` drives the panel in a headless browser and
+  saves screenshots to `sim/out/stage/`.
 
 It runs in Edge's app mode (no tabs or address bar) on `127.0.0.1` only, behind a random token
 in the link, so other sites and other machines can't drive it. Closing the console window quits.
@@ -227,6 +272,7 @@ src/
   vision.ts        native / proxy / off delivery of screenshots to a model
   replay.ts        maxx replay
   sessions.ts      saved sessions per project
+  progress.ts      live status while the model streams: partial JSON, status lines
   ui/              maxx ui: local server, the page, Windows launch helpers
 sim/               the simulated EVO-X2 (bun sim/run.ts)
   devices/         adb, the Windows PowerShell helper, screen coordinates, the command runner
@@ -236,6 +282,10 @@ sim/               the simulated EVO-X2 (bun sim/run.ts)
 - **Tool-call rescue.** Local models sometimes write a tool call as text instead of a real
   `tool_calls` entry. `llm.ts` recognizes `<tool_call>` JSON (Hermes/Qwen), `<function=...>` XML
   (Qwen3-Coder) and fenced JSON, and runs them anyway.
+- **Live progress.** A slow model writing a whole file in one `write_file` call is minutes of
+  silence. `llm.ts` reports every chunk: reading the prompt, thinking, or which tool call is being
+  written, with its arguments parsed as they arrive (`progress.ts` reads incomplete JSON). Tool
+  calls written as `<tool_call>` text are hidden from the output and shown the same way.
 - **Errors go back to the model.** Bad JSON, schema failures, unknown tools and denied calls all
   come back as tool results, so the model corrects itself. Three bad calls in a row stop the turn.
 - **Forgiving edits.** `edit_file` tries an exact match, then a whitespace-insensitive line match

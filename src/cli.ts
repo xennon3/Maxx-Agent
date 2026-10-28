@@ -3,7 +3,7 @@ import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { Agent, type AgentIO } from "./loop.ts";
 import { Permissions, type Mode, type Answer } from "./permissions.ts";
-import { join } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { doctor, doctorDevices } from "./doctor.ts";
 import type { LLMConfig } from "./llm.ts";
 import { TOOLSETS } from "./tools/index.ts";
@@ -12,7 +12,9 @@ import { textOf } from "./context.ts";
 import { recordTo } from "./devices/run.ts";
 import { replay } from "./replay.ts";
 import { startUI } from "./ui/server.ts";
+import { describe, SPINNER, statusLine, type StreamProgress } from "./progress.ts";
 import { launchedFromExplorer } from "./ui/launch.ts";
+import { TEMPLATES, findTemplate, scaffold } from "./templates/index.ts";
 import { ago, findSession, newSessionId, formatList, listProjects, listSessions, loadSession, saveSession, type Session } from "./sessions.ts";
 
 const C = { dim: "\x1b[2m", cyan: "\x1b[36m", yellow: "\x1b[33m", bold: "\x1b[1m", reset: "\x1b[0m" };
@@ -29,6 +31,7 @@ usage:
   maxx doctor vision          check that the model (or --vision-model) can read an image
   maxx replay <file.jsonl>    re-run the phone/desktop actions of an earlier session
   maxx sessions [--all]       list saved sessions for this project (or every project)
+  maxx new [template] [dir]   start a project from a working template (no template: list them)
 
 options:
   --base-url <url>   OpenAI-compatible server (default $MAXX_BASE_URL or http://localhost:1234/v1)
@@ -81,6 +84,20 @@ if (positionals[0] === "sessions") {
   process.exit(0);
 }
 
+if (positionals[0] === "new") {
+  const [, id, folder] = positionals;
+  if (!id) {
+    console.log("templates:\n" + TEMPLATES.map((t) => `  ${t.icon} ${C.bold}${t.id.padEnd(16)}${C.reset} ${t.about}`).join("\n") + `\n\nusage: maxx new <template> [dir]`);
+    process.exit(0);
+  }
+  const t = findTemplateOrDie(id);
+  const dir = resolve(folder ?? t.folder);
+  const files = await scaffold(t, dir).catch((e) => die((e as Error).message));
+  const rel = relative(process.cwd(), dir) || ".";
+  console.log(`${C.bold}${t.name}${C.reset} created in ${rel} (${files.length} files). Next:\n  cd ${rel}\n  maxx\n${C.dim}Try: ${t.try.map((x) => `"${x}"`).join(", ")}${C.reset}`);
+  process.exit(0);
+}
+
 const baseURL = values["base-url"] ?? process.env.MAXX_BASE_URL ?? "http://localhost:1234/v1";
 
 // `maxx ui`, or double-clicking maxx.exe: the app window instead of the terminal.
@@ -93,6 +110,8 @@ if (positionals[0] === "ui" || (fromExplorer && !positionals.length && !values.p
   } catch {
     ui = await startUI({ baseURL, port: 0, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context) });
   }
+  // Dev servers started from the Run panel go down with Maxx.
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(sig, () => (ui.stop(), process.exit(0)));
   console.log(`${C.bold}maxx${C.reset} is running at ${ui.link}\n${C.dim}The window opened on its own; if not, open that link. Close this window (or Ctrl-C) to quit.${C.reset}`);
   await new Promise(() => {});
 }
@@ -113,15 +132,74 @@ const cwd = process.cwd();
 const permissions = await new Permissions(cwd, mode).load();
 const rl = createInterface({ input: process.stdin, output: process.stdout });
 
+// A Claude Code style status line while the model works but shows nothing:
+// reading the prompt, thinking, or writing a tool call. It is redrawn in place
+// and wiped before anything else prints.
+const status = {
+  p: null as StreamProgress | null,
+  at: 0,
+  drawn: false,
+  // Is the cursor at the start of a line? The status line only ever takes a line of its own.
+  bol: true,
+  timer: null as ReturnType<typeof setInterval> | null,
+  frame: 0,
+  set(p: StreamProgress) {
+    if (!process.stdout.isTTY) return;
+    if (p.phase === "done" || p.phase === "text") return this.stop();
+    this.p = p;
+    this.at = Date.now();
+    this.timer ??= setInterval(() => this.draw(), 100);
+  },
+  draw() {
+    if (!this.p) return;
+    // Time keeps counting between chunks, which is when it matters most.
+    const p = { ...this.p, elapsedMs: this.p.elapsedMs + Date.now() - this.at };
+    const a = describe(p);
+    const cols = process.stdout.columns || 100;
+    let line = `${SPINNER[this.frame++ % SPINNER.length]} ${statusLine(p, a)}`;
+    const last = (a.preview.split("\n").filter((l) => l.trim()).pop() ?? "").replace(/\s+/g, " ").trim();
+    if (last) line += ` │ ${last}`;
+    if (line.length > cols - 1) line = line.slice(0, cols - 2) + "…";
+    const pre = line.indexOf(" │ ");
+    const colored = pre < 0 ? `${C.cyan}${line}${C.reset}` : `${C.cyan}${line.slice(0, pre)}${C.reset}${C.dim}${line.slice(pre)}${C.reset}`;
+    if (!this.drawn && !this.bol) process.stdout.write("\n");
+    process.stdout.write(`\r\x1b[2K${colored}`);
+    this.drawn = true;
+    this.bol = true;
+  },
+  clear() {
+    if (this.drawn) process.stdout.write("\r\x1b[2K");
+    this.drawn = false;
+  },
+  write(t: string) {
+    this.clear();
+    process.stdout.write(t);
+    if (t) this.bol = t.endsWith("\n");
+  },
+  say(text: string) {
+    this.stop();
+    console.log(text);
+    this.bol = true;
+  },
+  stop() {
+    this.clear();
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    this.p = null;
+  },
+};
+
 const io: AgentIO = {
-  token: (t) => process.stdout.write(t),
-  toolStart: (name, args) => console.log(`\n${C.cyan}> ${name}${C.reset} ${C.dim}${args.slice(0, 160)}${C.reset}`),
+  token: (t) => status.write(t),
+  progress: (p) => status.set(p),
+  toolStart: (name, args) => status.say(`${status.bol ? "" : "\n"}${C.cyan}> ${name}${C.reset} ${C.dim}${args.slice(0, 160)}${C.reset}`),
   toolEnd: (_name, result) => {
     const lines = result.split("\n");
-    console.log(C.dim + lines.slice(0, 6).map((l) => "  " + l).join("\n") + (lines.length > 6 ? `\n  ... ${lines.length - 6} more lines` : "") + C.reset);
+    status.say(C.dim + lines.slice(0, 6).map((l) => "  " + l).join("\n") + (lines.length > 6 ? `\n  ... ${lines.length - 6} more lines` : "") + C.reset);
   },
-  note: (text) => console.log(`${C.yellow}${text}${C.reset}`),
+  note: (text) => status.say(`${C.yellow}${text}${C.reset}`),
   async ask(question, preview) {
+    status.stop();
     if (preview) console.log(preview);
     for (;;) {
       const a = (await rl.question(`${C.bold}${question}${C.reset} [y]es / [n]o / [a]lways: `)).trim().toLowerCase();
@@ -204,6 +282,7 @@ for (;;) {
 
 async function turn(text: string) {
   controller = new AbortController();
+  status.bol = true;
   try {
     await agent.send(text, controller.signal);
     process.stdout.write("\n");
@@ -211,6 +290,7 @@ async function turn(text: string) {
     const err = e as Error;
     console.log(`\n${C.yellow}${err.name === "AbortError" ? "(stopped)" : "error: " + err.message}${C.reset}`);
   } finally {
+    status.stop();
     controller = null;
     await save();
   }
@@ -293,4 +373,12 @@ function die(msg: string): never {
     Bun.spawnSync(["cmd.exe", "/c", "pause >nul"], { stdin: "inherit", stdout: "inherit" });
   }
   process.exit(1);
+}
+
+function findTemplateOrDie(id: string) {
+  try {
+    return findTemplate(id);
+  } catch (e) {
+    return die((e as Error).message);
+  }
 }
