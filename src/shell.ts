@@ -46,6 +46,6 @@ export const shell = () => (cached ??= pickShell());
 export function describeShell(s: Shell = shell()): string {
   const os = process.platform === "win32" ? "Windows" : process.platform === "darwin" ? "macOS" : "Linux";
   return s.kind === "bash"
-    ? `${os}; shell commands run in bash${os === "Windows" ? " (Git Bash: use forward slashes, /c/Users/... style paths)" : ""}`
+    ? `${os}; shell commands run in bash${os === "Windows" ? " (Git Bash: use forward slashes in paths)" : ""}`
     : `${os}; shell commands run in PowerShell (use PowerShell syntax: ; not &&, Get-ChildItem, $env:VAR)`;
 }

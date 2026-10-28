@@ -31,6 +31,11 @@ export type AgentOptions = {
 };
 
 const MAX_BAD_CALLS = 3;
+// Weak models get stuck re-running a call that already worked (mkdir five
+// times over). Count identical call + result pairs in a turn: from the third
+// the result carries a nudge, and the fifth ends the turn.
+const WARN_REPEATS = 3;
+const STOP_REPEATS = 5;
 // Screenshots are big; only the most recent few stay in the conversation.
 // Removing one rewrites an older message, which costs the server its prompt
 // cache from that point on, so prune in batches: at 4 images, back down to 2.
@@ -89,6 +94,8 @@ export class Agent {
     this.history.push({ role: "user", content: userText });
     const specs = toolSpecs(this.tools);
     let badCalls = 0;
+    const repeats = new Map<string, number>();
+    let stuck = 0;
 
     for (let step = 0; step < (this.opts.maxSteps ?? 50); step++) {
       await this.maybeCompact();
@@ -104,8 +111,15 @@ export class Agent {
       this.history.push({ role: "assistant", content: res.rescued ? null : res.content || null, tool_calls: toWire(res.toolCalls) });
       const seen: ContentPart[] = [];
       for (const call of res.toolCalls) {
-        const { result, bad, images, glance } = await this.runTool(call);
+        let { result, bad, images, glance } = await this.runTool(call);
         badCalls = bad ? badCalls + 1 : 0;
+        const key = `${call.name}|${canonicalArgs(call.arguments)}|${result}`;
+        const n = (repeats.get(key) ?? 0) + 1;
+        repeats.set(key, n);
+        if (n >= WARN_REPEATS) {
+          stuck = Math.max(stuck, n);
+          result += `\n\nNote from Maxx: you have made this exact ${call.name} call ${n} times in this turn and got the same result each time. Repeating it will not change anything. Do the next step of the task instead, or reply to the user if you are stuck.`;
+        }
         if (images?.length) this.io.image?.(call.name, images);
         const content = images?.length ? await this.deliverImages(call.name, result, images, seen, signal, glance) : result;
         this.history.push({ role: "tool", tool_call_id: call.id, content });
@@ -114,6 +128,11 @@ export class Agent {
       if (seen.length) {
         this.history.push({ role: "user", content: seen });
         this.pruneImages();
+      }
+      if (stuck >= STOP_REPEATS) {
+        const msg = "Stopped: the model kept repeating the same tool call without making progress. Try a more specific request, or a stronger model (run `maxx doctor` to check this one).";
+        this.history.push({ role: "assistant", content: msg });
+        return msg;
       }
       if (badCalls >= MAX_BAD_CALLS) {
         const msg = "Stopped: the model kept producing invalid tool calls. Try rephrasing, or run `maxx doctor` to check this model.";
@@ -216,5 +235,15 @@ export class Agent {
       ], []);
       return res.content;
     });
+  }
+}
+
+// The same arguments with different spacing or key order are the same call.
+function canonicalArgs(args: string): string {
+  try {
+    const v = JSON.parse(args || "{}");
+    return JSON.stringify(v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v);
+  } catch {
+    return args;
   }
 }
