@@ -93,6 +93,8 @@ if (positionals[0] === "ui" || (fromExplorer && !positionals.length && !values.p
   } catch {
     ui = await startUI({ baseURL, port: 0, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context) });
   }
+  // Dev servers started from the Run panel go down with Maxx.
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(sig, () => (ui.stop(), process.exit(0)));
   console.log(`${C.bold}maxx${C.reset} is running at ${ui.link}\n${C.dim}The window opened on its own; if not, open that link. Close this window (or Ctrl-C) to quit.${C.reset}`);
   await new Promise(() => {});
 }
