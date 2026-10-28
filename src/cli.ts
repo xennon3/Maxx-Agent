@@ -12,7 +12,9 @@ import { textOf } from "./context.ts";
 import { recordTo } from "./devices/run.ts";
 import { replay } from "./replay.ts";
 import { startUI } from "./ui/server.ts";
+import { describe, SPINNER, statusLine, type StreamProgress } from "./progress.ts";
 import { launchedFromExplorer } from "./ui/launch.ts";
+import { describeHelper, resolveHelper, type Helper } from "./escalate.ts";
 import { ago, findSession, newSessionId, formatList, listProjects, listSessions, loadSession, saveSession, type Session } from "./sessions.ts";
 
 const C = { dim: "\x1b[2m", cyan: "\x1b[36m", yellow: "\x1b[33m", bold: "\x1b[1m", reset: "\x1b[0m" };
@@ -39,12 +41,19 @@ options:
   --vision <v>       auto | native | off: can the model see screenshots? (default auto)
                      with --vision-model: auto describes screenshots the model asks for, always describes every one
   --vision-model <id>  a second model that looks at screenshots for a text-only main model
+  --helper <id>      a bigger model to hand the hard step to when the local one is stuck
+                     (default $MAXX_HELPER or the app's saved setting; "off" disables it)
+                     claude-* ids use the Claude API ($ANTHROPIC_API_KEY); with --helper-url, any
+                     OpenAI-compatible API ($MAXX_HELPER_KEY or $OPENAI_API_KEY); otherwise another LM Studio model
+  --helper-url <url>   OpenAI-compatible API for the helper
+  --helper-kind <k>    lmstudio | openai | anthropic (guessed from the model id and URL)
+  --helper-after <n>   failed tool calls in a row before escalating (default 3)
   -p, --prompt <s>   one-shot prompt
   -c, --continue     continue the latest session in this project
   --resume <ref>     continue a session by number (from \`maxx sessions\`), id, or words from its title
 
 in a session:
-  /help  /mode <m>  /with <sets|none>  /checkpoints  /rewind <n>  /clear  /exit
+  /help  /mode <m>  /with <sets|none>  /helper [off|on]  /checkpoints  /rewind <n>  /clear  /exit
   /sessions  /resume <ref>  /new  /title <text>   (sessions are saved per project after every turn)
   Ctrl-C stops the current turn; Ctrl-C at an empty prompt exits.`;
 
@@ -58,6 +67,10 @@ const { values, positionals } = parseArgs({
     with: { type: "string" },
     vision: { type: "string", default: "auto" },
     "vision-model": { type: "string" },
+    helper: { type: "string" },
+    "helper-url": { type: "string" },
+    "helper-kind": { type: "string" },
+    "helper-after": { type: "string" },
     prompt: { type: "string", short: "p" },
     continue: { type: "boolean", short: "c" },
     resume: { type: "string" },
@@ -93,6 +106,8 @@ if (positionals[0] === "ui" || (fromExplorer && !positionals.length && !values.p
   } catch {
     ui = await startUI({ baseURL, port: 0, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context) });
   }
+  // Dev servers started from the Run panel go down with Maxx.
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(sig, () => (ui.stop(), process.exit(0)));
   console.log(`${C.bold}maxx${C.reset} is running at ${ui.link}\n${C.dim}The window opened on its own; if not, open that link. Close this window (or Ctrl-C) to quit.${C.reset}`);
   await new Promise(() => {});
 }
@@ -113,15 +128,74 @@ const cwd = process.cwd();
 const permissions = await new Permissions(cwd, mode).load();
 const rl = createInterface({ input: process.stdin, output: process.stdout });
 
+// A Claude Code style status line while the model works but shows nothing:
+// reading the prompt, thinking, or writing a tool call. It is redrawn in place
+// and wiped before anything else prints.
+const status = {
+  p: null as StreamProgress | null,
+  at: 0,
+  drawn: false,
+  // Is the cursor at the start of a line? The status line only ever takes a line of its own.
+  bol: true,
+  timer: null as ReturnType<typeof setInterval> | null,
+  frame: 0,
+  set(p: StreamProgress) {
+    if (!process.stdout.isTTY) return;
+    if (p.phase === "done" || p.phase === "text") return this.stop();
+    this.p = p;
+    this.at = Date.now();
+    this.timer ??= setInterval(() => this.draw(), 100);
+  },
+  draw() {
+    if (!this.p) return;
+    // Time keeps counting between chunks, which is when it matters most.
+    const p = { ...this.p, elapsedMs: this.p.elapsedMs + Date.now() - this.at };
+    const a = describe(p);
+    const cols = process.stdout.columns || 100;
+    let line = `${SPINNER[this.frame++ % SPINNER.length]} ${statusLine(p, a)}`;
+    const last = (a.preview.split("\n").filter((l) => l.trim()).pop() ?? "").replace(/\s+/g, " ").trim();
+    if (last) line += ` │ ${last}`;
+    if (line.length > cols - 1) line = line.slice(0, cols - 2) + "…";
+    const pre = line.indexOf(" │ ");
+    const colored = pre < 0 ? `${C.cyan}${line}${C.reset}` : `${C.cyan}${line.slice(0, pre)}${C.reset}${C.dim}${line.slice(pre)}${C.reset}`;
+    if (!this.drawn && !this.bol) process.stdout.write("\n");
+    process.stdout.write(`\r\x1b[2K${colored}`);
+    this.drawn = true;
+    this.bol = true;
+  },
+  clear() {
+    if (this.drawn) process.stdout.write("\r\x1b[2K");
+    this.drawn = false;
+  },
+  write(t: string) {
+    this.clear();
+    process.stdout.write(t);
+    if (t) this.bol = t.endsWith("\n");
+  },
+  say(text: string) {
+    this.stop();
+    console.log(text);
+    this.bol = true;
+  },
+  stop() {
+    this.clear();
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    this.p = null;
+  },
+};
+
 const io: AgentIO = {
-  token: (t) => process.stdout.write(t),
-  toolStart: (name, args) => console.log(`\n${C.cyan}> ${name}${C.reset} ${C.dim}${args.slice(0, 160)}${C.reset}`),
+  token: (t) => status.write(t),
+  progress: (p) => status.set(p),
+  toolStart: (name, args) => status.say(`${status.bol ? "" : "\n"}${C.cyan}> ${name}${C.reset} ${C.dim}${args.slice(0, 160)}${C.reset}`),
   toolEnd: (_name, result) => {
     const lines = result.split("\n");
-    console.log(C.dim + lines.slice(0, 6).map((l) => "  " + l).join("\n") + (lines.length > 6 ? `\n  ... ${lines.length - 6} more lines` : "") + C.reset);
+    status.say(C.dim + lines.slice(0, 6).map((l) => "  " + l).join("\n") + (lines.length > 6 ? `\n  ... ${lines.length - 6} more lines` : "") + C.reset);
   },
-  note: (text) => console.log(`${C.yellow}${text}${C.reset}`),
+  note: (text) => status.say(`${C.yellow}${text}${C.reset}`),
   async ask(question, preview) {
+    status.stop();
     if (preview) console.log(preview);
     for (;;) {
       const a = (await rl.question(`${C.bold}${question}${C.reset} [y]es / [n]o / [a]lways: `)).trim().toLowerCase();
@@ -141,7 +215,13 @@ if (values.continue || values.resume) {
 }
 const toolsets = parseSets(values.with ?? (resumed?.toolsets.join(",") || process.env.MAXX_WITH) ?? "");
 const { vision, note: visionNote } = await pickVision(llm, { flag: values.vision, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL });
-const agent = await new Agent({ llm, cwd, permissions, contextWindow: Number(values.context), toolsets, vision }, io).init();
+let helper: Helper | null = null;
+try {
+  helper = await resolveHelper({ model: values.helper, url: values["helper-url"], kind: values["helper-kind"], after: values["helper-after"] });
+} catch (e) {
+  die((e as Error).message);
+}
+const agent = await new Agent({ llm, cwd, permissions, contextWindow: Number(values.context), toolsets, vision, helper }, io).init();
 let created = new Date().toISOString();
 let title = "";
 if (resumed) await resumeInto(resumed);
@@ -181,7 +261,7 @@ if (values.prompt) {
   process.exit(0);
 }
 
-const extras = toolsets.length ? ` · with ${toolsets.join(",")} · vision ${vision.mode === "proxy" ? vision.llm.model : vision.mode}` : "";
+const extras = (toolsets.length ? ` · with ${toolsets.join(",")} · vision ${vision.mode === "proxy" ? vision.llm.model : vision.mode}` : "") + (helper ? ` · helper ${describeHelper(helper)}` : "");
 console.log(`${C.bold}maxx${C.reset} ${C.dim}${llm.model} via ${baseURL} · mode ${permissions.mode}${extras} · /help${C.reset}`);
 if (!resumed) {
   const prev = (await listSessions(cwd))[0];
@@ -204,6 +284,7 @@ for (;;) {
 
 async function turn(text: string) {
   controller = new AbortController();
+  status.bol = true;
   try {
     await agent.send(text, controller.signal);
     process.stdout.write("\n");
@@ -211,6 +292,7 @@ async function turn(text: string) {
     const err = e as Error;
     console.log(`\n${C.yellow}${err.name === "AbortError" ? "(stopped)" : "error: " + err.message}${C.reset}`);
   } finally {
+    status.stop();
     controller = null;
     await save();
   }
@@ -258,6 +340,14 @@ async function command(line: string) {
       }
       const sets = Object.entries(TOOLSETS).map(([n, t]) => `  ${agent.toolsets.includes(n) ? "*" : " "} ${n.padEnd(8)} ${t.about}`);
       return console.log(`toolsets (* = on; /with android,desktop or /with none):\n${sets.join("\n")}\nreplay of this session: ${replayFile}`);
+    }
+    case "/helper": {
+      if (arg === "off" || arg === "on") {
+        if (!helper) return console.log("no helper configured; start with --helper <model>, or set one in the app (maxx ui)");
+        agent.setHelper(arg === "off" ? null : helper);
+      }
+      const h = agent.helper;
+      return console.log(h ? `helper: ${describeHelper(h)}, after ${h.afterFailures ?? 3} failed calls in a row or a repeat loop (/helper off to stay local)` : `helper: off, everything stays on this machine${helper ? " (/helper on)" : ""}`);
     }
     case "/checkpoints": {
       const list = agent.checkpoints.list();

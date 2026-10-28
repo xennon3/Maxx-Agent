@@ -157,10 +157,34 @@ Claude Code app:
 - **Chat:** streamed replies, collapsible tool cards ("Edit src/App.kt", "Tap Calculate"), and
   permission prompts with the diff inline and **Allow / Always allow / Deny** buttons. **Stop**
   ends the current turn.
+- **Live progress:** while the model works, a status bar under the chat says what it is doing
+  and for how long ("Reading the 9.2k-token prompt · 48s", "Thinking", "Writing src/App.kt ·
+  41 lines · 312 tokens · 4.1 tok/s · 1m12s"), and the file being written fills its tool card as
+  it streams. Reasoning goes into a collapsed "Thought for 42s" block. The terminal shows the same
+  status line with a spinner.
 - **Header:** model picker (from LM Studio), permission mode, 📱 Android / 🖥 Desktop toolset
   toggles, *New* session.
-- **Screen panel:** the latest phone or desktop screenshot with its numbered boxes, live while
-  Maxx tests; click to enlarge.
+- **Stage panel** (the icons on the right edge), for running and testing what Maxx builds, like
+  Claude's artifacts:
+  - **◧ Preview** shows the project's web pages. The first `.html` file Maxx writes opens by
+    itself, and every later edit reloads it. Pick a page from the menu, or type a dev server
+    URL. *Phone size* frames it at 390 px. The console strip collects the page's `console` output
+    and errors, and *Ask Maxx to fix* puts them in the message box.
+  - **▶ Run** runs project commands in the background, like terminal tabs: one-click chips for
+    `package.json` scripts, Gradle, Cargo, Go, pytest and `make`, plus anything you type (kept
+    per project in `.maxx/run.json`). Output streams live. When a dev server prints its URL it
+    opens in Preview, and a failed command gets an *ask Maxx to fix* link with the end of its
+    output.
+  - **📱 Screen** shows the latest phone or desktop screenshot. *Live phone* mirrors a connected
+    Android phone at about two frames a second: click to tap, drag to swipe, plus Back / Home /
+    Recents.
+
+  The model gets two tools of its own in the app window: `preview` opens a page in the panel and
+  returns its title, visible text and console errors (so even a text-only model can tell if its
+  page works), and `start_server` starts a dev server in the Run tab and returns its URL.
+  Previewed pages are served from a second random port with its own token, so a page's scripts
+  can't reach Maxx itself. `bun sim/stage-demo.ts` drives the panel in a headless browser and
+  saves screenshots to `sim/out/stage/`.
 
 It runs in Edge's app mode (no tabs or address bar) on `127.0.0.1` only, behind a random token
 in the link, so other sites and other machines can't drive it. Closing the console window quits.
@@ -184,6 +208,29 @@ shows the last reply. In a session: `/sessions`, `/resume <ref>`, `/new`, `/titl
 Starting `maxx` in a folder with history shows a one-line hint to continue it. `MAXX_HOME` moves
 the store.
 
+## Brain swap: a bigger helper when the local model is stuck
+
+A small model does most steps fine and then gets stuck on one: the same call five times, or a
+build that keeps failing. With a helper set, Maxx notices (the repeat detector fires, or 3 tool
+calls fail in a row), hands just that step to a bigger model, and hands back to the local model as
+soon as one of the helper's steps works. The helper gets the whole conversation plus a short note
+on why it was called, and the local model is told the helper got it past the blocker.
+
+```sh
+maxx --helper qwen3.8-27b                     # another LM Studio model (loaded on first use)
+ANTHROPIC_API_KEY=sk-ant-... maxx --helper claude-opus-5-5           # Claude
+maxx --helper gpt-5 --helper-url https://api.openai.com/v1          # any OpenAI-compatible API ($OPENAI_API_KEY or $MAXX_HELPER_KEY)
+```
+
+In the app, the 🧠 chip in the header opens the same settings (saved in `~/.maxx/helper.json`,
+which `maxx` also reads). Each hand-off shows as a purple banner in the transcript, and the hand-back
+says how many steps and tokens the helper used. Limits: 4 helper steps per escalation and
+3 escalations per message, so a hopeless task can't run up a bill. `/helper off` stays local for
+the rest of a session.
+
+It is off until you set a helper, so nothing leaves the machine by default. With a hosted helper,
+the conversation so far (files read, command output) is sent to that API only when Maxx escalates.
+
 ## A simulated EVO-X2
 
 `bun sim/run.ts` runs the real Maxx CLI against a simulated EVO-X2: a fake LM Studio that charges
@@ -204,10 +251,12 @@ It tests the plumbing and timing, not the model's intelligence.
 | `--with` | `$MAXX_WITH` | Extra toolsets: `android`, `desktop` |
 | `--vision` | `auto` | `auto` asks LM Studio whether the model sees images; `native`, `off`; `always` (with `--vision-model`) describes every screenshot |
 | `--vision-model` | `$MAXX_VISION_MODEL` | A second model that describes screenshots for a text-only main model |
+| `--helper` | `$MAXX_HELPER` or the app's setting | A bigger model for stuck steps; `claude-*` uses the Claude API, `off` disables it |
+| `--helper-url`, `--helper-kind`, `--helper-after` | | OpenAI-compatible URL for the helper; `lmstudio`/`openai`/`anthropic`; failures before escalating (3) |
 | `-p` | | Run one prompt and exit |
 | `-c`, `--resume <ref>` | | Continue the latest, or a chosen, session in this project |
 
-In a session: `/help`, `/mode <m>`, `/with <sets|none>`, `/sessions`, `/resume <ref>`, `/new`, `/title`, `/checkpoints`, `/rewind <n>`, `/clear`, `/exit`.
+In a session: `/help`, `/mode <m>`, `/with <sets|none>`, `/helper [on|off]`, `/sessions`, `/resume <ref>`, `/new`, `/title`, `/checkpoints`, `/rewind <n>`, `/clear`, `/exit`.
 Ctrl-C stops the current turn.
 
 ## How it works
@@ -227,6 +276,7 @@ src/
   vision.ts        native / proxy / off delivery of screenshots to a model
   replay.ts        maxx replay
   sessions.ts      saved sessions per project
+  progress.ts      live status while the model streams: partial JSON, status lines
   ui/              maxx ui: local server, the page, Windows launch helpers
 sim/               the simulated EVO-X2 (bun sim/run.ts)
   devices/         adb, the Windows PowerShell helper, screen coordinates, the command runner
@@ -236,6 +286,10 @@ sim/               the simulated EVO-X2 (bun sim/run.ts)
 - **Tool-call rescue.** Local models sometimes write a tool call as text instead of a real
   `tool_calls` entry. `llm.ts` recognizes `<tool_call>` JSON (Hermes/Qwen), `<function=...>` XML
   (Qwen3-Coder) and fenced JSON, and runs them anyway.
+- **Live progress.** A slow model writing a whole file in one `write_file` call is minutes of
+  silence. `llm.ts` reports every chunk: reading the prompt, thinking, or which tool call is being
+  written, with its arguments parsed as they arrive (`progress.ts` reads incomplete JSON). Tool
+  calls written as `<tool_call>` text are hidden from the output and shown the same way.
 - **Errors go back to the model.** Bad JSON, schema failures, unknown tools and denied calls all
   come back as tool results, so the model corrects itself. Three bad calls in a row stop the turn.
 - **Forgiving edits.** `edit_file` tries an exact match, then a whitespace-insensitive line match

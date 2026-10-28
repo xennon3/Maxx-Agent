@@ -2,6 +2,9 @@
 // Streams tokens, assembles tool-call deltas, and rescues tool calls that
 // local models sometimes write into plain text instead of `tool_calls`.
 
+import { completeAnthropic } from "./anthropic.ts";
+import { parsePartialJSON, TEXT_CALL_CLOSE, TEXT_CALL_OPEN, type Phase, type StreamProgress } from "./progress.ts";
+
 export type ToolCall = { id: string; name: string; arguments: string };
 
 export type ContentPart =
@@ -30,9 +33,19 @@ export type LLMConfig = {
   model: string;
   apiKey?: string;
   temperature?: number;
+  // "anthropic" talks to Claude's Messages API instead (the escalation helper).
+  provider?: "openai" | "anthropic";
+  effort?: "low" | "medium" | "high" | "xhigh" | "max";
 };
 
-export type Completion = { content: string; toolCalls: ToolCall[]; rescued: boolean };
+export type Completion = {
+  content: string;
+  toolCalls: ToolCall[];
+  rescued: boolean;
+  // Only from hosted APIs: the model declined, and what the call used.
+  refused?: boolean;
+  usage?: { input: number; output: number };
+};
 
 export function toWire(calls: ToolCall[]): WireToolCall[] {
   return calls.map((c) => ({
@@ -48,7 +61,21 @@ export async function complete(
   tools: ToolSpec[],
   onToken: (t: string) => void = () => {},
   signal?: AbortSignal,
+  onProgress: (p: StreamProgress) => void = () => {},
 ): Promise<Completion> {
+  if (cfg.provider === "anthropic") return completeAnthropic(cfg, messages, tools, onToken, signal, onProgress);
+  const started = Date.now();
+  let tokens = 0;
+  let phase: Phase = "waiting";
+  let thinking = "";
+  let tool: StreamProgress["tool"];
+  let firstAt = 0;
+  const report = () => {
+    const now = Date.now();
+    if (tokens && !firstAt) firstAt = now;
+    onProgress({ phase, tokens, elapsedMs: now - started, generatingMs: firstAt ? now - firstAt : 0, thinking: thinking || undefined, tool });
+  };
+  report();
   const res = await fetch(`${cfg.baseURL.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
     signal,
@@ -62,6 +89,8 @@ export async function complete(
       ...(tools.length ? { tools, tool_choice: "auto" } : {}),
       temperature: cfg.temperature ?? 0.3,
       stream: true,
+      // Hosted APIs report what a call used; local servers don't need asking.
+      ...(cfg.apiKey ? { stream_options: { include_usage: true } } : {}),
     }),
   });
   if (!res.ok || !res.body) {
@@ -69,9 +98,11 @@ export async function complete(
   }
 
   let content = "";
+  let usage: Completion["usage"];
   const partial = new Map<number, ToolCall>();
   const decoder = new TextDecoder();
   let buf = "";
+  const textCalls = new TextCallWatcher();
 
   for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
     buf += decoder.decode(chunk, { stream: true });
@@ -86,10 +117,25 @@ export async function complete(
       } catch {
         continue;
       }
+      if (json.usage) usage = { input: json.usage.prompt_tokens ?? 0, output: json.usage.completion_tokens ?? 0 };
       const delta = json.choices?.[0]?.delta ?? {};
+      const before = tokens;
+      // LM Studio calls it reasoning_content, some servers reasoning.
+      const reasoning = delta.reasoning_content ?? delta.reasoning;
+      if (typeof reasoning === "string" && reasoning) {
+        thinking += reasoning;
+        phase = "thinking";
+        tokens++;
+      }
       if (typeof delta.content === "string" && delta.content) {
         content += delta.content;
-        onToken(delta.content);
+        tokens++;
+        const shown = textCalls.push(delta.content);
+        if (shown) onToken(shown);
+        if (textCalls.inside) {
+          phase = "tool";
+          tool = textCalls.progress();
+        } else if (shown.trim() || phase === "waiting") phase = "text";
       }
       for (const tc of delta.tool_calls ?? []) {
         const i = tc.index ?? 0;
@@ -98,16 +144,86 @@ export async function complete(
         if (tc.function?.name) cur.name += tc.function.name;
         if (tc.function?.arguments) cur.arguments += tc.function.arguments;
         partial.set(i, cur);
+        phase = "tool";
+        tool = { index: i, name: cur.name, args: cur.arguments };
       }
+      if (delta.tool_calls?.length) tokens++;
+      if (tokens !== before) report();
     }
   }
+  const tail = textCalls.flush();
+  if (tail) onToken(tail);
+  phase = "done";
+  report();
 
   const toolCalls = [...partial.values()].filter((c) => c.name);
-  if (toolCalls.length) return { content, toolCalls, rescued: false };
+  if (toolCalls.length) return { content, toolCalls, rescued: false, usage };
 
   const known = new Set(tools.map((t) => t.function.name));
   const rescued = rescueToolCalls(content, known);
-  return { content, toolCalls: rescued, rescued: rescued.length > 0 };
+  return { content, toolCalls: rescued, rescued: rescued.length > 0, usage };
+}
+
+// Hides `<tool_call>{...}</tool_call>` text from the live output while it
+// streams, and reports what is inside so far. The full text still goes to
+// rescueToolCalls at the end.
+export class TextCallWatcher {
+  inside = false;
+  private held = "";
+  private raw = "";
+  private count = 0;
+
+  // Returns the part of the stream that is safe to show.
+  push(piece: string): string {
+    let buf = this.held + piece;
+    this.held = "";
+    let show = "";
+    while (buf) {
+      if (this.inside) {
+        const end = buf.indexOf(TEXT_CALL_CLOSE);
+        if (end < 0) {
+          this.raw += buf;
+          break;
+        }
+        this.raw += buf.slice(0, end);
+        buf = buf.slice(end + TEXT_CALL_CLOSE.length);
+        this.inside = false;
+        this.count++;
+        continue;
+      }
+      const start = buf.indexOf(TEXT_CALL_OPEN);
+      if (start >= 0) {
+        show += buf.slice(0, start);
+        buf = buf.slice(start + TEXT_CALL_OPEN.length);
+        this.inside = true;
+        this.raw = "";
+        continue;
+      }
+      // Hold back a tail that may be the start of "<tool_call>".
+      let keep = Math.min(buf.length, TEXT_CALL_OPEN.length - 1);
+      while (keep > 0 && !TEXT_CALL_OPEN.startsWith(buf.slice(-keep))) keep--;
+      show += buf.slice(0, buf.length - keep);
+      this.held = buf.slice(buf.length - keep);
+      break;
+    }
+    return show;
+  }
+
+  flush(): string {
+    const h = this.held;
+    this.held = "";
+    return this.inside ? "" : h;
+  }
+
+  progress(): NonNullable<StreamProgress["tool"]> {
+    const obj = parsePartialJSON(this.raw) as { name?: unknown; arguments?: unknown; parameters?: unknown } | undefined;
+    const args = obj?.arguments ?? obj?.parameters;
+    return {
+      index: this.count,
+      name: typeof obj?.name === "string" ? obj.name : "",
+      args: args === undefined ? "" : typeof args === "string" ? args : JSON.stringify(args),
+    };
+  }
 }
 
 // Local models often emit tool calls as text. Recognise the common shapes:

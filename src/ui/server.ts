@@ -5,13 +5,16 @@ import type { ServerWebSocket } from "bun";
 import { Agent, type AgentIO } from "../loop.ts";
 import { Permissions, type Answer, type Mode } from "../permissions.ts";
 import type { LLMConfig } from "../llm.ts";
-import { TOOLSETS } from "../tools/index.ts";
 import { pickVision } from "../vision.ts";
 import { recordTo } from "../devices/run.ts";
 import { textOf } from "../context.ts";
 import { listProjects, listSessions, loadSession, newSessionId, saveSession } from "../sessions.ts";
 import { PAGE } from "./page.ts";
+import { describe, statusLine, throttle, type StreamProgress } from "../progress.ts";
 import { openWindow, pickFolder } from "./launch.ts";
+import { Stage } from "./stage.ts";
+import { TOOLS, TOOLSETS } from "../tools/index.ts";
+import { CLAUDE_MODELS, HELPER_DEFAULTS, loadHelper, resolveHelper, saveHelper, type Helper } from "../escalate.ts";
 
 // `maxx ui`: the agent behind a local web page. One WebSocket carries
 // everything: streamed tokens, tool cards, permission questions, screenshots.
@@ -21,7 +24,7 @@ import { openWindow, pickFolder } from "./launch.ts";
 type Client = ServerWebSocket<unknown>;
 type Out = Record<string, unknown> & { type: string };
 
-export type UIOptions = { baseURL: string; port?: number; open?: boolean; visionModel?: string; context?: number };
+export type UIOptions = { baseURL: string; port?: number; previewPort?: number; open?: boolean; visionModel?: string; context?: number };
 
 export async function startUI(opts: UIOptions) {
   const token = crypto.randomUUID().replace(/-/g, "");
@@ -42,12 +45,16 @@ export async function startUI(opts: UIOptions) {
     controller: AbortController | null;
   } | null = null;
   const pending = new Map<string, (a: Answer) => void>();
+  let stage: Stage | null = null;
 
+  const progress = throttle((p: StreamProgress) => send(progressMessage(p)), 120);
   const io: AgentIO = {
     token: (t) => send({ type: "token", text: t }),
+    progress,
     toolStart: (name, args) => send({ type: "toolStart", name, args }),
     toolEnd: (name, result) => send({ type: "toolEnd", name, result }),
     note: (text) => send({ type: "note", text }),
+    escalation: (e) => send({ type: "escalation", ...e }),
     image: (tool, images) => send({ type: "image", tool, images: images.map((i) => `data:${i.mime};base64,${i.base64}`) }),
     ask: (question, preview) =>
       new Promise<Answer>((res) => {
@@ -67,6 +74,33 @@ export async function startUI(opts: UIOptions) {
     }
   }
 
+  // What the settings form shows. The key itself never goes back to the page.
+  async function helperInfo() {
+    const h = await loadHelper();
+    const envKey = { anthropic: !!process.env.ANTHROPIC_API_KEY, openai: !!process.env.OPENAI_API_KEY };
+    return {
+      ...HELPER_DEFAULTS,
+      ...(h ? { ...h, apiKey: undefined, hasKey: !!h.apiKey } : { off: true }),
+      envKey,
+      claudeModels: CLAUDE_MODELS,
+      // Set from the environment (MAXX_HELPER) for this run, overriding the saved one.
+      fromEnv: !!process.env.MAXX_HELPER,
+    };
+  }
+
+  // Each history entry the page draws, with the escalation banners in place.
+  function transcript(agent: Agent) {
+    const out: Record<string, unknown>[] = [];
+    const marks = (i: number) => agent.marks.filter((m) => m.at === i).forEach((m) => out.push({ role: "mark", text: m.text, active: m.active }));
+    agent.history.forEach((m, i) => {
+      marks(i);
+      if (m.role === "system" || (m.role === "user" && Array.isArray(m.content))) return;
+      out.push({ role: m.role, text: textOf(m.content as any), tools: "tool_calls" in m ? m.tool_calls?.map((t) => ({ name: t.function.name, args: t.function.arguments })) : undefined });
+    });
+    agent.marks.filter((m) => m.at >= agent.history.length).forEach((m) => out.push({ role: "mark", text: m.text, active: m.active }));
+    return out;
+  }
+
   async function snapshot(): Promise<Out> {
     const projects = (await listProjects()).map((p) => ({ cwd: p.cwd, sessions: p.sessions.slice(0, 8).map(({ id, title, updated, turns, toolsets }) => ({ id, title, updated, turns, toolsets })) }));
     const s = state;
@@ -84,10 +118,10 @@ export async function startUI(opts: UIOptions) {
         mode: s.permissions.mode,
         toolsets: s.agent.toolsets,
         busy: !!s.controller,
-        history: s.agent.history
-          .filter((m) => m.role !== "system" && !(m.role === "user" && Array.isArray(m.content)))
-          .map((m) => ({ role: m.role, text: textOf(m.content as any), tools: "tool_calls" in m ? m.tool_calls?.map((t) => ({ name: t.function.name, args: t.function.arguments })) : undefined })),
+        history: transcript(s.agent),
+        helper: s.agent.helper && { model: s.agent.helper.model, kind: s.agent.helper.kind },
       },
+      helper: await helperInfo(),
     };
   }
 
@@ -109,25 +143,31 @@ export async function startUI(opts: UIOptions) {
     const permissions = await new Permissions(dir, o.mode ?? state?.permissions.mode ?? "ask").load();
     const { vision, note } = await pickVision(llm, { visionModel: opts.visionModel });
     const toolsets = o.toolsets ?? saved?.toolsets ?? [];
-    const agent = await new Agent({ llm, cwd: dir, permissions, toolsets, vision, contextWindow: opts.context }, io).init();
+    const helper = await resolveHelper({}).catch(() => null);
+    const agent = await new Agent({ llm, cwd: dir, permissions, toolsets, vision, helper, contextWindow: opts.context, tools: [...TOOLS, ...stage!.tools()] }, io).init();
     if (saved) await agent.restore(saved.id, saved.history);
     state = { cwd: dir, agent, permissions, llm, created: saved?.created ?? new Date().toISOString(), title: saved?.title ?? "", controller: null };
     recordTo(resolve(dir, ".maxx", "replays", `${agent.session}.jsonl`));
+    if (stage!.runner?.cwd !== dir) await stage!.use(dir);
     if (toolsets.length && note) io.note(note);
   }
 
   async function handle(m: any) {
+    if (await stage!.handle(m)) return;
     switch (m.type) {
       case "hello":
-        return send(await snapshot());
+        send(await snapshot());
+        return send(await stage!.info());
       case "open":
         await open(m.cwd, { session: m.session, model: m.model });
-        return send(await snapshot());
+        send(await snapshot());
+        return send(await stage!.info());
       case "pick": {
         const dir = await pickFolder();
         if (!dir) return;
         await open(dir, {});
-        return send(await snapshot());
+        send(await snapshot());
+        return send(await stage!.info());
       }
       case "new":
         if (!state) return;
@@ -145,6 +185,25 @@ export async function startUI(opts: UIOptions) {
           await state.agent.refreshSystemPrompt();
         }
         if (m.model && m.model !== state.llm.model) await open(state.cwd, { session: state.agent.session, model: m.model, toolsets: state.agent.toolsets });
+        return send(await snapshot());
+      }
+      case "helper": {
+        // A blank key keeps the saved one; the page never sees it to send it back.
+        const prev = await loadHelper();
+        const h: Helper = {
+          kind: m.kind,
+          model: String(m.model ?? "").trim(),
+          off: !!m.off,
+          ...(m.kind === "openai" && m.baseURL ? { baseURL: String(m.baseURL).trim() } : {}),
+          ...(m.apiKey ? { apiKey: String(m.apiKey).trim() } : m.clearKey || prev?.kind !== m.kind ? {} : prev?.apiKey ? { apiKey: prev.apiKey } : {}),
+          afterFailures: clamp(m.afterFailures, 1, 10, HELPER_DEFAULTS.afterFailures),
+          maxPerTurn: clamp(m.maxPerTurn, 1, 10, HELPER_DEFAULTS.maxPerTurn),
+          maxSteps: clamp(m.maxSteps, 1, 20, HELPER_DEFAULTS.maxSteps),
+        };
+        if (!["lmstudio", "openai", "anthropic"].includes(h.kind)) throw new Error("pick where the helper runs");
+        if (!h.off && !h.model) throw new Error("pick a helper model, or turn the helper off");
+        await saveHelper(h);
+        state?.agent.setHelper(h.off ? null : h);
         return send(await snapshot());
       }
       case "answer":
@@ -207,7 +266,48 @@ export async function startUI(opts: UIOptions) {
     },
   });
 
+  // Started after the UI's own port is taken, so a failed start leaves nothing behind.
+  stage = new Stage(send, () => clients.size, opts.previewPort ?? 0);
+  const quit = () => stage?.runner?.stopAll();
+  process.once("exit", quit);
+
   const link = `http://127.0.0.1:${server.port}/?t=${token}`;
   if (opts.open !== false) openWindow(link);
-  return { server, link, token, stop: () => server.stop(true) };
+  return {
+    server,
+    link,
+    token,
+    stage,
+    stop: () => {
+      process.off("exit", quit);
+      stage!.stop();
+      server.stop(true);
+    },
+  };
+}
+
+const clamp = (v: unknown, lo: number, hi: number, d: number) => {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) && n > 0 ? Math.min(hi, Math.max(lo, n)) : d;
+};
+
+// Only the tail of a long preview goes over the wire each time: the card
+// shows the end of what is being written, the way a terminal would.
+const PREVIEW_TAIL = 4000;
+
+export function progressMessage(p: StreamProgress): Out {
+  const a = describe(p);
+  const cut = a.preview.length > PREVIEW_TAIL;
+  return {
+    type: "progress",
+    phase: p.phase,
+    tokens: p.tokens,
+    elapsedMs: p.elapsedMs,
+    generatingMs: p.generatingMs,
+    title: a.title,
+    status: statusLine(p, a),
+    lines: a.lines,
+    tool: p.tool && { index: p.tool.index, name: p.tool.name },
+    preview: (cut ? "…" : "") + a.preview.slice(-PREVIEW_TAIL),
+  };
 }
