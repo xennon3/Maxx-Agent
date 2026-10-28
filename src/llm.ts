@@ -2,6 +2,7 @@
 // Streams tokens, assembles tool-call deltas, and rescues tool calls that
 // local models sometimes write into plain text instead of `tool_calls`.
 
+import { completeAnthropic } from "./anthropic.ts";
 import { parsePartialJSON, TEXT_CALL_CLOSE, TEXT_CALL_OPEN, type Phase, type StreamProgress } from "./progress.ts";
 
 export type ToolCall = { id: string; name: string; arguments: string };
@@ -32,9 +33,19 @@ export type LLMConfig = {
   model: string;
   apiKey?: string;
   temperature?: number;
+  // "anthropic" talks to Claude's Messages API instead (the escalation helper).
+  provider?: "openai" | "anthropic";
+  effort?: "low" | "medium" | "high" | "xhigh" | "max";
 };
 
-export type Completion = { content: string; toolCalls: ToolCall[]; rescued: boolean };
+export type Completion = {
+  content: string;
+  toolCalls: ToolCall[];
+  rescued: boolean;
+  // Only from hosted APIs: the model declined, and what the call used.
+  refused?: boolean;
+  usage?: { input: number; output: number };
+};
 
 export function toWire(calls: ToolCall[]): WireToolCall[] {
   return calls.map((c) => ({
@@ -52,6 +63,7 @@ export async function complete(
   signal?: AbortSignal,
   onProgress: (p: StreamProgress) => void = () => {},
 ): Promise<Completion> {
+  if (cfg.provider === "anthropic") return completeAnthropic(cfg, messages, tools, onToken, signal, onProgress);
   const started = Date.now();
   let tokens = 0;
   let phase: Phase = "waiting";
@@ -77,6 +89,8 @@ export async function complete(
       ...(tools.length ? { tools, tool_choice: "auto" } : {}),
       temperature: cfg.temperature ?? 0.3,
       stream: true,
+      // Hosted APIs report what a call used; local servers don't need asking.
+      ...(cfg.apiKey ? { stream_options: { include_usage: true } } : {}),
     }),
   });
   if (!res.ok || !res.body) {
@@ -84,6 +98,7 @@ export async function complete(
   }
 
   let content = "";
+  let usage: Completion["usage"];
   const partial = new Map<number, ToolCall>();
   const decoder = new TextDecoder();
   let buf = "";
@@ -102,6 +117,7 @@ export async function complete(
       } catch {
         continue;
       }
+      if (json.usage) usage = { input: json.usage.prompt_tokens ?? 0, output: json.usage.completion_tokens ?? 0 };
       const delta = json.choices?.[0]?.delta ?? {};
       const before = tokens;
       // LM Studio calls it reasoning_content, some servers reasoning.
@@ -141,11 +157,11 @@ export async function complete(
   report();
 
   const toolCalls = [...partial.values()].filter((c) => c.name);
-  if (toolCalls.length) return { content, toolCalls, rescued: false };
+  if (toolCalls.length) return { content, toolCalls, rescued: false, usage };
 
   const known = new Set(tools.map((t) => t.function.name));
   const rescued = rescueToolCalls(content, known);
-  return { content, toolCalls: rescued, rescued: rescued.length > 0 };
+  return { content, toolCalls: rescued, rescued: rescued.length > 0, usage };
 }
 
 // Hides `<tool_call>{...}</tool_call>` text from the live output while it

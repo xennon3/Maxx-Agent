@@ -14,6 +14,7 @@ import { replay } from "./replay.ts";
 import { startUI } from "./ui/server.ts";
 import { describe, SPINNER, statusLine, type StreamProgress } from "./progress.ts";
 import { launchedFromExplorer } from "./ui/launch.ts";
+import { describeHelper, resolveHelper, type Helper } from "./escalate.ts";
 import { ago, findSession, newSessionId, formatList, listProjects, listSessions, loadSession, saveSession, type Session } from "./sessions.ts";
 
 const C = { dim: "\x1b[2m", cyan: "\x1b[36m", yellow: "\x1b[33m", bold: "\x1b[1m", reset: "\x1b[0m" };
@@ -40,12 +41,19 @@ options:
   --vision <v>       auto | native | off: can the model see screenshots? (default auto)
                      with --vision-model: auto describes screenshots the model asks for, always describes every one
   --vision-model <id>  a second model that looks at screenshots for a text-only main model
+  --helper <id>      a bigger model to hand the hard step to when the local one is stuck
+                     (default $MAXX_HELPER or the app's saved setting; "off" disables it)
+                     claude-* ids use the Claude API ($ANTHROPIC_API_KEY); with --helper-url, any
+                     OpenAI-compatible API ($MAXX_HELPER_KEY or $OPENAI_API_KEY); otherwise another LM Studio model
+  --helper-url <url>   OpenAI-compatible API for the helper
+  --helper-kind <k>    lmstudio | openai | anthropic (guessed from the model id and URL)
+  --helper-after <n>   failed tool calls in a row before escalating (default 3)
   -p, --prompt <s>   one-shot prompt
   -c, --continue     continue the latest session in this project
   --resume <ref>     continue a session by number (from \`maxx sessions\`), id, or words from its title
 
 in a session:
-  /help  /mode <m>  /with <sets|none>  /checkpoints  /rewind <n>  /clear  /exit
+  /help  /mode <m>  /with <sets|none>  /helper [off|on]  /checkpoints  /rewind <n>  /clear  /exit
   /sessions  /resume <ref>  /new  /title <text>   (sessions are saved per project after every turn)
   Ctrl-C stops the current turn; Ctrl-C at an empty prompt exits.`;
 
@@ -59,6 +67,10 @@ const { values, positionals } = parseArgs({
     with: { type: "string" },
     vision: { type: "string", default: "auto" },
     "vision-model": { type: "string" },
+    helper: { type: "string" },
+    "helper-url": { type: "string" },
+    "helper-kind": { type: "string" },
+    "helper-after": { type: "string" },
     prompt: { type: "string", short: "p" },
     continue: { type: "boolean", short: "c" },
     resume: { type: "string" },
@@ -203,7 +215,13 @@ if (values.continue || values.resume) {
 }
 const toolsets = parseSets(values.with ?? (resumed?.toolsets.join(",") || process.env.MAXX_WITH) ?? "");
 const { vision, note: visionNote } = await pickVision(llm, { flag: values.vision, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL });
-const agent = await new Agent({ llm, cwd, permissions, contextWindow: Number(values.context), toolsets, vision }, io).init();
+let helper: Helper | null = null;
+try {
+  helper = await resolveHelper({ model: values.helper, url: values["helper-url"], kind: values["helper-kind"], after: values["helper-after"] });
+} catch (e) {
+  die((e as Error).message);
+}
+const agent = await new Agent({ llm, cwd, permissions, contextWindow: Number(values.context), toolsets, vision, helper }, io).init();
 let created = new Date().toISOString();
 let title = "";
 if (resumed) await resumeInto(resumed);
@@ -243,7 +261,7 @@ if (values.prompt) {
   process.exit(0);
 }
 
-const extras = toolsets.length ? ` · with ${toolsets.join(",")} · vision ${vision.mode === "proxy" ? vision.llm.model : vision.mode}` : "";
+const extras = (toolsets.length ? ` · with ${toolsets.join(",")} · vision ${vision.mode === "proxy" ? vision.llm.model : vision.mode}` : "") + (helper ? ` · helper ${describeHelper(helper)}` : "");
 console.log(`${C.bold}maxx${C.reset} ${C.dim}${llm.model} via ${baseURL} · mode ${permissions.mode}${extras} · /help${C.reset}`);
 if (!resumed) {
   const prev = (await listSessions(cwd))[0];
@@ -322,6 +340,14 @@ async function command(line: string) {
       }
       const sets = Object.entries(TOOLSETS).map(([n, t]) => `  ${agent.toolsets.includes(n) ? "*" : " "} ${n.padEnd(8)} ${t.about}`);
       return console.log(`toolsets (* = on; /with android,desktop or /with none):\n${sets.join("\n")}\nreplay of this session: ${replayFile}`);
+    }
+    case "/helper": {
+      if (arg === "off" || arg === "on") {
+        if (!helper) return console.log("no helper configured; start with --helper <model>, or set one in the app (maxx ui)");
+        agent.setHelper(arg === "off" ? null : helper);
+      }
+      const h = agent.helper;
+      return console.log(h ? `helper: ${describeHelper(h)}, after ${h.afterFailures ?? 3} failed calls in a row or a repeat loop (/helper off to stay local)` : `helper: off, everything stays on this machine${helper ? " (/helper on)" : ""}`);
     }
     case "/checkpoints": {
       const list = agent.checkpoints.list();

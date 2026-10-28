@@ -208,6 +208,29 @@ shows the last reply. In a session: `/sessions`, `/resume <ref>`, `/new`, `/titl
 Starting `maxx` in a folder with history shows a one-line hint to continue it. `MAXX_HOME` moves
 the store.
 
+## Brain swap: a bigger helper when the local model is stuck
+
+A small model does most steps fine and then gets stuck on one: the same call five times, or a
+build that keeps failing. With a helper set, Maxx notices (the repeat detector fires, or 3 tool
+calls fail in a row), hands just that step to a bigger model, and hands back to the local model as
+soon as one of the helper's steps works. The helper gets the whole conversation plus a short note
+on why it was called, and the local model is told the helper got it past the blocker.
+
+```sh
+maxx --helper qwen3.8-27b                     # another LM Studio model (loaded on first use)
+ANTHROPIC_API_KEY=sk-ant-... maxx --helper claude-opus-5-5           # Claude
+maxx --helper gpt-5 --helper-url https://api.openai.com/v1          # any OpenAI-compatible API ($OPENAI_API_KEY or $MAXX_HELPER_KEY)
+```
+
+In the app, the 🧠 chip in the header opens the same settings (saved in `~/.maxx/helper.json`,
+which `maxx` also reads). Each hand-off shows as a purple banner in the transcript, and the hand-back
+says how many steps and tokens the helper used. Limits: 4 helper steps per escalation and
+3 escalations per message, so a hopeless task can't run up a bill. `/helper off` stays local for
+the rest of a session.
+
+It is off until you set a helper, so nothing leaves the machine by default. With a hosted helper,
+the conversation so far (files read, command output) is sent to that API only when Maxx escalates.
+
 ## A simulated EVO-X2
 
 `bun sim/run.ts` runs the real Maxx CLI against a simulated EVO-X2: a fake LM Studio that charges
@@ -228,10 +251,12 @@ It tests the plumbing and timing, not the model's intelligence.
 | `--with` | `$MAXX_WITH` | Extra toolsets: `android`, `desktop` |
 | `--vision` | `auto` | `auto` asks LM Studio whether the model sees images; `native`, `off`; `always` (with `--vision-model`) describes every screenshot |
 | `--vision-model` | `$MAXX_VISION_MODEL` | A second model that describes screenshots for a text-only main model |
+| `--helper` | `$MAXX_HELPER` or the app's setting | A bigger model for stuck steps; `claude-*` uses the Claude API, `off` disables it |
+| `--helper-url`, `--helper-kind`, `--helper-after` | | OpenAI-compatible URL for the helper; `lmstudio`/`openai`/`anthropic`; failures before escalating (3) |
 | `-p` | | Run one prompt and exit |
 | `-c`, `--resume <ref>` | | Continue the latest, or a chosen, session in this project |
 
-In a session: `/help`, `/mode <m>`, `/with <sets|none>`, `/sessions`, `/resume <ref>`, `/new`, `/title`, `/checkpoints`, `/rewind <n>`, `/clear`, `/exit`.
+In a session: `/help`, `/mode <m>`, `/with <sets|none>`, `/helper [on|off]`, `/sessions`, `/resume <ref>`, `/new`, `/title`, `/checkpoints`, `/rewind <n>`, `/clear`, `/exit`.
 Ctrl-C stops the current turn.
 
 ## How it works

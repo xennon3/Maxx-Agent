@@ -8,6 +8,10 @@ import { describeImages, imagePart, type Vision } from "./vision.ts";
 import type { Image } from "./image.ts";
 import { newSessionId } from "./sessions.ts";
 import type { StreamProgress } from "./progress.ts";
+import { brief, describeHelper, failed, HELPER_DEFAULTS, helperLLM, type Helper } from "./escalate.ts";
+
+// The local model got stuck and a helper took over (active), or handed back.
+export type Escalation = { active: boolean; model: string; reason: string; steps?: number; usage?: { input: number; output: number }; text?: string };
 
 export type AgentIO = {
   token(t: string): void;
@@ -19,6 +23,8 @@ export type AgentIO = {
   image?(tool: string, images: Image[]): void;
   // What the model is doing while it streams (often for minutes on a CPU).
   progress?(p: StreamProgress): void;
+  // The helper model taking over a hard step, and handing back.
+  escalation?(e: Escalation): void;
 };
 
 export type AgentOptions = {
@@ -31,6 +37,8 @@ export type AgentOptions = {
   toolsets?: string[];
   vision?: Vision;
   session?: string;
+  // A bigger model for when the local one is stuck; none keeps everything local.
+  helper?: Helper | null;
 };
 
 const MAX_BAD_CALLS = 3;
@@ -52,12 +60,22 @@ export class Agent {
   private tools: Tool<any>[];
   private prompts: string[] = [];
   toolsets: string[] = [];
+  // Escalation banners, by the history length when they happened, so a redrawn transcript keeps them.
+  marks: { at: number; text: string; active: boolean }[] = [];
 
   constructor(private opts: AgentOptions, private io: AgentIO) {
     this.tools = opts.tools ?? TOOLS;
     this.session = opts.session ?? newSessionId();
     this.checkpoints = new Checkpoints(opts.cwd, this.session);
     if (opts.toolsets?.length) this.useToolsets(opts.toolsets);
+  }
+
+  get helper(): Helper | null {
+    return this.opts.helper && !this.opts.helper.off ? this.opts.helper : null;
+  }
+
+  setHelper(h: Helper | null) {
+    this.opts.helper = h;
   }
 
   get vision(): Vision {
@@ -81,6 +99,7 @@ export class Agent {
 
   async init() {
     this.history = [];
+    this.marks = [];
     await this.refreshSystemPrompt();
     return this;
   }
@@ -89,6 +108,7 @@ export class Agent {
   async restore(id: string, history: Message[]) {
     this.session = id;
     this.history = history.filter((m) => m.role !== "system");
+    this.marks = [];
     await this.refreshSystemPrompt();
   }
 
@@ -97,31 +117,70 @@ export class Agent {
     this.history.push({ role: "user", content: userText });
     const specs = toolSpecs(this.tools);
     let badCalls = 0;
-    const repeats = new Map<string, number>();
+    let failures = 0;
+    let repeats = new Map<string, number>();
     let stuck = 0;
+    // Brain swap: while `helping` is set, the helper model drives.
+    let helping: { reason: string; steps: number; usage: { input: number; output: number } } | null = null;
+    let escalations = 0;
+    const handBack = (why: string) => {
+      const h = this.helper ?? this.opts.helper!;
+      const e: Escalation = { active: false, model: h.model, reason: why, steps: helping!.steps, usage: helping!.usage };
+      helping = null;
+      repeats = new Map();
+      failures = badCalls = stuck = 0;
+      this.mark(e, `Back to ${this.opts.llm.model}: ${why}${spent(e)}`);
+    };
 
     for (let step = 0; step < (this.opts.maxSteps ?? 50); step++) {
       await this.maybeCompact();
-      const promptTokens = estimateTokens(this.history);
-      const res = await complete(this.opts.llm, this.history, specs, (t) => this.io.token(t), signal, (p) => this.io.progress?.({ ...p, promptTokens }));
+      if (helping && !this.helper) handBack("the helper was turned off");
+      const helper = helping && this.helper;
+      const llm = helper ? helperLLM(helper, this.opts.llm.baseURL) : this.opts.llm;
+      // The brief rides along with each helper request; it is not kept in history.
+      const messages: Message[] = helper ? [...this.history, { role: "user", content: [{ type: "text", text: brief(helping!.reason, this.opts.llm.model) }] }] : this.history;
+      const promptTokens = estimateTokens(messages);
+      let res;
+      try {
+        res = await complete(llm, messages, specs, (t) => this.io.token(t), signal, (p) => this.io.progress?.({ ...p, promptTokens }));
+      } catch (e) {
+        // A helper that can't be reached (no key, no credit, offline) must not end the turn.
+        if (!helping || (e as Error).name === "AbortError") throw e;
+        this.io.note(`(the helper model failed: ${(e as Error).message})`);
+        handBack("the helper could not be reached");
+        continue;
+      }
       if (res.rescued) this.io.note(`(recovered ${res.toolCalls.length} tool call(s) written as text)`);
+      if (helping && res.usage) (helping.usage.input += res.usage.input), (helping.usage.output += res.usage.output);
+      if (helping && res.refused) {
+        handBack("the helper declined this step");
+        continue;
+      }
 
       if (!res.toolCalls.length) {
         this.history.push({ role: "assistant", content: res.content });
+        if (helping) handBack("it answered");
         return res.content;
       }
 
       // A rescued call's text would confuse the model on the next turn, so store it as a real tool call.
       this.history.push({ role: "assistant", content: res.rescued ? null : res.content || null, tool_calls: toWire(res.toolCalls) });
       const seen: ContentPart[] = [];
+      let stepFailed = false;
+      let trigger = "";
       for (const call of res.toolCalls) {
         let { result, bad, images, glance } = await this.runTool(call);
         badCalls = bad ? badCalls + 1 : 0;
+        const fail = bad || failed(result);
+        failures = fail ? failures + 1 : 0;
+        stepFailed ||= fail;
         const key = `${call.name}|${canonicalArgs(call.arguments)}|${result}`;
         const n = (repeats.get(key) ?? 0) + 1;
         repeats.set(key, n);
         if (n >= WARN_REPEATS) {
           stuck = Math.max(stuck, n);
+          stepFailed = true;
+          trigger ||= `it ran the same ${call.name} call ${n} times with the same result`;
           result += `\n\nNote from Maxx: you have made this exact ${call.name} call ${n} times in this turn and got the same result each time. Repeating it will not change anything. Do the next step of the task instead, or reply to the user if you are stuck.`;
         }
         if (images?.length) this.io.image?.(call.name, images);
@@ -132,6 +191,29 @@ export class Agent {
       if (seen.length) {
         this.history.push({ role: "user", content: seen });
         this.pruneImages();
+      }
+
+      if (helping) {
+        helping.steps++;
+        const max = this.helper?.maxSteps ?? HELPER_DEFAULTS.maxSteps;
+        if (!stepFailed) {
+          handBack("the step worked");
+          this.tellLocal("A stronger helper model just took over and got past the step you were stuck on (the calls above). Carry on with the rest of the task from here.");
+          continue;
+        }
+        if (helping.steps >= max) {
+          handBack(`still stuck after ${max} helper steps`);
+          continue;
+        }
+      } else {
+        const h = this.helper;
+        trigger ||= failures >= (h?.afterFailures ?? HELPER_DEFAULTS.afterFailures) ? `${failures} failed tool calls in a row` : badCalls >= MAX_BAD_CALLS ? "it kept writing invalid tool calls" : "";
+        if (trigger && h && escalations < (h.maxPerTurn ?? HELPER_DEFAULTS.maxPerTurn)) {
+          escalations++;
+          helping = { reason: trigger, steps: 0, usage: { input: 0, output: 0 } };
+          this.mark({ active: true, model: h.model, reason: trigger }, `Stuck: ${trigger}. Handing this step to ${describeHelper(h)}`);
+          continue;
+        }
       }
       if (stuck >= STOP_REPEATS) {
         const msg = "Stopped: the model kept repeating the same tool call without making progress. Try a more specific request, or a stronger model (run `maxx doctor` to check this one).";
@@ -144,7 +226,21 @@ export class Agent {
         return msg;
       }
     }
+    if (helping) handBack("the turn hit its step limit");
     return "Stopped: reached the step limit for one turn.";
+  }
+
+  private mark(e: Escalation, text: string) {
+    this.marks.push({ at: this.history.length, text, active: e.active });
+    if (this.io.escalation) this.io.escalation({ ...e, text });
+    else this.io.note(text);
+  }
+
+  // Appends a line to the latest tool result, so the local model reads it with the output.
+  private tellLocal(text: string) {
+    const last = this.history[this.history.length - 1];
+    const tool = [...this.history].reverse().find((m) => m.role === "tool");
+    if (tool && tool.role === "tool" && (last === tool || last?.role === "user")) tool.content += `\n\n(Maxx: ${text})`;
   }
 
   private async deliverImages(tool: string, result: string, images: Image[], seen: ContentPart[], signal?: AbortSignal, glance = false): Promise<string> {
@@ -232,6 +328,7 @@ export class Agent {
     const window = this.opts.contextWindow ?? 32_768;
     if (estimateTokens(this.history) < window * 0.7) return;
     this.io.note("(compacting older turns to free context)");
+    this.marks = [];
     this.history = await compact(this.history, async (transcript) => {
       const res = await complete(this.opts.llm, [
         { role: "system", content: "You summarize coding sessions for handoff. Be terse and specific." },
@@ -241,6 +338,12 @@ export class Agent {
     });
   }
 }
+
+const spent = (e: Escalation) => {
+  const parts = [e.steps ? `${e.steps} step${e.steps > 1 ? "s" : ""}` : "", e.usage && (e.usage.input || e.usage.output) ? `${k(e.usage.input)} in / ${k(e.usage.output)} out tokens` : ""].filter(Boolean);
+  return parts.length ? ` (helper used ${parts.join(", ")})` : "";
+};
+const k = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
 
 // The same arguments with different spacing or key order are the same call.
 function canonicalArgs(args: string): string {
