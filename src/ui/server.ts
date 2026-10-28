@@ -14,6 +14,7 @@ import { describe, statusLine, throttle, type StreamProgress } from "../progress
 import { openWindow, pickFolder } from "./launch.ts";
 import { Stage } from "./stage.ts";
 import { TOOLS, TOOLSETS } from "../tools/index.ts";
+import { TEMPLATES, findTemplate, freeFolder, isEmptyFolder, scaffold } from "../templates/index.ts";
 
 // `maxx ui`: the agent behind a local web page. One WebSocket carries
 // everything: streamed tokens, tool cards, permission questions, screenshots.
@@ -81,6 +82,7 @@ export async function startUI(opts: UIOptions) {
       models: await models(),
       baseURL: opts.baseURL,
       toolsets: Object.entries(TOOLSETS).map(([name, t]) => ({ name, about: t.about })),
+      templates: TEMPLATES.map(({ id, name, icon, about, try: ideas }) => ({ id, name, icon, about, try: ideas })),
       projects,
       current: s && {
         cwd: s.cwd,
@@ -147,6 +149,20 @@ export async function startUI(opts: UIOptions) {
         state.created = new Date().toISOString();
         state.title = "";
         return send(await snapshot());
+      case "template": {
+        // A starter in the open folder when it is empty, else in a new folder
+        // inside it, which then becomes the open project.
+        if (!state) throw new Error("open a project folder first");
+        if (state.controller) throw new Error("stop the current turn first");
+        const t = findTemplate(String(m.id));
+        const dir = (await isEmptyFolder(state.cwd)) ? state.cwd : freeFolder(state.cwd, t.folder);
+        const files = await scaffold(t, dir);
+        if (dir === state.cwd) await state.agent.refreshSystemPrompt(); // picks up its MAXX.md
+        else await open(dir, { toolsets: state.agent.toolsets });
+        send(await snapshot());
+        send(await stage!.info());
+        return send({ type: "templated", id: t.id, name: t.name, cwd: dir, files, try: t.try });
+      }
       case "settings": {
         if (!state) return;
         if (m.mode) state.permissions.mode = m.mode;

@@ -3,7 +3,7 @@ import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { Agent, type AgentIO } from "./loop.ts";
 import { Permissions, type Mode, type Answer } from "./permissions.ts";
-import { join } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { doctor, doctorDevices } from "./doctor.ts";
 import type { LLMConfig } from "./llm.ts";
 import { TOOLSETS } from "./tools/index.ts";
@@ -14,6 +14,7 @@ import { replay } from "./replay.ts";
 import { startUI } from "./ui/server.ts";
 import { describe, SPINNER, statusLine, type StreamProgress } from "./progress.ts";
 import { launchedFromExplorer } from "./ui/launch.ts";
+import { TEMPLATES, findTemplate, scaffold } from "./templates/index.ts";
 import { ago, findSession, newSessionId, formatList, listProjects, listSessions, loadSession, saveSession, type Session } from "./sessions.ts";
 
 const C = { dim: "\x1b[2m", cyan: "\x1b[36m", yellow: "\x1b[33m", bold: "\x1b[1m", reset: "\x1b[0m" };
@@ -30,6 +31,7 @@ usage:
   maxx doctor vision          check that the model (or --vision-model) can read an image
   maxx replay <file.jsonl>    re-run the phone/desktop actions of an earlier session
   maxx sessions [--all]       list saved sessions for this project (or every project)
+  maxx new [template] [dir]   start a project from a working template (no template: list them)
 
 options:
   --base-url <url>   OpenAI-compatible server (default $MAXX_BASE_URL or http://localhost:1234/v1)
@@ -79,6 +81,20 @@ if (positionals[0] === "sessions") {
     if (!projects.length) console.log("(no saved sessions yet)");
     for (const p of projects) console.log(`${C.bold}${p.cwd}${C.reset}\n${formatList(p.sessions.slice(0, 5))}${p.sessions.length > 5 ? `\n     ... ${p.sessions.length - 5} more` : ""}\n`);
   } else console.log(formatList(await listSessions(process.cwd())));
+  process.exit(0);
+}
+
+if (positionals[0] === "new") {
+  const [, id, folder] = positionals;
+  if (!id) {
+    console.log("templates:\n" + TEMPLATES.map((t) => `  ${t.icon} ${C.bold}${t.id.padEnd(16)}${C.reset} ${t.about}`).join("\n") + `\n\nusage: maxx new <template> [dir]`);
+    process.exit(0);
+  }
+  const t = findTemplateOrDie(id);
+  const dir = resolve(folder ?? t.folder);
+  const files = await scaffold(t, dir).catch((e) => die((e as Error).message));
+  const rel = relative(process.cwd(), dir) || ".";
+  console.log(`${C.bold}${t.name}${C.reset} created in ${rel} (${files.length} files). Next:\n  cd ${rel}\n  maxx\n${C.dim}Try: ${t.try.map((x) => `"${x}"`).join(", ")}${C.reset}`);
   process.exit(0);
 }
 
@@ -357,4 +373,12 @@ function die(msg: string): never {
     Bun.spawnSync(["cmd.exe", "/c", "pause >nul"], { stdin: "inherit", stdout: "inherit" });
   }
   process.exit(1);
+}
+
+function findTemplateOrDie(id: string) {
+  try {
+    return findTemplate(id);
+  } catch (e) {
+    return die((e as Error).message);
+  }
 }

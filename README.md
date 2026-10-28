@@ -63,6 +63,27 @@ app window.
 
    Or build a single binary with `bun run build` and put `dist/maxx` on your PATH.
 
+## Starter templates: `maxx new`
+
+Small local models are much better at changing a project that already builds than at writing Gradle
+files from nothing, so new projects can start from a template:
+
+| id | what you get | run it |
+|---|---|---|
+| `android-compose` | Kotlin + Jetpack Compose app, one screen, Gradle wrapper with `gradlew.bat` | `.\gradlew.bat assembleDebug` |
+| `html-game` | Snake on a canvas, plain JavaScript, speed and colors under "Tweak me" in game.js | open index.html |
+| `python-script` | argparse CLI with unittest tests, standard library only | `python main.py file.txt` |
+| `web-app` | notes app: HTML/CSS/JS page + JSON API on a standard-library Python server | `python app.py` |
+
+```powershell
+maxx new                      # list them
+maxx new html-game snake      # create ./snake
+```
+
+In the app window, a new session offers the same templates as cards. The model has a `use_template`
+tool too, so "make me a snake game" starts from the working one. Every template writes a MAXX.md
+that tells the model where things live and how to build and test.
+
 ## Phone and desktop: `--with android,desktop`
 
 Maxx can build an Android app, put it on your phone, look at it and poke it, and it can see and
