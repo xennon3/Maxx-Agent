@@ -15,6 +15,10 @@ import { startUI } from "./ui/server.ts";
 import { describe, SPINNER, statusLine, type StreamProgress } from "./progress.ts";
 import { launchedFromExplorer } from "./ui/launch.ts";
 import { ago, findSession, newSessionId, formatList, listProjects, listSessions, loadSession, saveSession, type Session } from "./sessions.ts";
+import { useAndroidToolchain } from "./toolchain.ts";
+
+// Before any command runs, so Gradle and adb find Android Studio's JDK and SDK.
+useAndroidToolchain();
 
 const C = { dim: "\x1b[2m", cyan: "\x1b[36m", yellow: "\x1b[33m", bold: "\x1b[1m", reset: "\x1b[0m" };
 
