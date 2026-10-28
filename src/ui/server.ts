@@ -11,6 +11,8 @@ import { textOf, typedText } from "../context.ts";
 import { deleteSession, listProjects, loadSession, newSessionId, restoreSession, saveSession, stripAttachments } from "../sessions.ts";
 import { buildTurn, imageLimits, type Upload } from "../attach.ts";
 import { PAGE } from "./page.ts";
+import { VENDOR } from "./vendor.ts";
+import { chatDir, ensureChatDir, isChatDir } from "../chat.ts";
 import { describe, statusLine, throttle, type StreamProgress } from "../progress.ts";
 import { openWindow, pickFolder } from "./launch.ts";
 import { Stage } from "./stage.ts";
@@ -125,7 +127,10 @@ export async function startUI(opts: UIOptions) {
   }
 
   async function snapshot(): Promise<Out> {
-    const projects = (await listProjects()).map((p) => ({ cwd: p.cwd, sessions: p.sessions.slice(0, 8).map(({ id, title, updated, turns, toolsets }) => ({ id, title, updated, turns, toolsets })) }));
+    const all = (await listProjects()).map((p) => ({ cwd: p.cwd, sessions: p.sessions.slice(0, 8).map(({ id, title, updated, turns, toolsets }) => ({ id, title, updated, turns, toolsets })) }));
+    // Chat sessions get their own place in the sidebar, above the projects.
+    const projects = all.filter((p) => !isChatDir(p.cwd));
+    const chat = { cwd: chatDir(), sessions: all.find((p) => isChatDir(p.cwd))?.sessions ?? [] };
     const s = state;
     return {
       type: "state",
@@ -137,9 +142,11 @@ export async function startUI(opts: UIOptions) {
       toolsets: Object.entries(TOOLSETS).map(([name, t]) => ({ name, about: t.about })),
       templates: TEMPLATES.map(({ id, name, icon, about, try: ideas }) => ({ id, name, icon, about, try: ideas })),
       projects,
+      chat,
       voice: { whisper: describeWhisper(whisper) || null },
       current: s && {
         cwd: s.cwd,
+        chat: s.agent.chat,
         session: s.agent.session,
         model: s.llm.model,
         mode: s.permissions.mode,
@@ -171,11 +178,18 @@ export async function startUI(opts: UIOptions) {
     const llm: LLMConfig = { baseURL: opts.baseURL, model };
     const permissions = await new Permissions(dir, o.mode ?? state?.permissions.mode ?? "ask").load();
     const { vision, note } = await pickVision(llm, { visionModel: opts.visionModel });
-    const toolsets = o.toolsets ?? saved?.toolsets ?? [];
-    const helper = await resolveHelper({}).catch(() => null);
-    const agent = await new Agent({ llm, cwd: dir, permissions, toolsets, vision, helper, network, contextWindow: opts.context, tools: [...TOOLS, ...stage!.tools()] }, io).init();
+    const chat = isChatDir(dir);
+    const toolsets = chat ? [] : (o.toolsets ?? saved?.toolsets ?? []);
+    const helper = chat ? null : await resolveHelper({}).catch(() => null);
+    const agent = await new Agent(
+      chat
+        ? { llm, cwd: dir, permissions, vision, contextWindow: opts.context, chat: true, plan: false, memory: false, fixTries: 0 }
+        : { llm, cwd: dir, permissions, toolsets, vision, helper, network, contextWindow: opts.context, tools: [...TOOLS, ...stage!.tools()] },
+      io,
+    ).init();
     if (saved) await agent.restore(saved.id, saved.history);
     state = { cwd: dir, agent, permissions, llm, created: saved?.created ?? new Date().toISOString(), title: saved?.title ?? "", controller: null };
+    if (chat) return; // nothing to replay, and the stage keeps showing the last project
     recordTo(resolve(dir, ".maxx", "replays", `${agent.session}.jsonl`));
     if (stage!.runner?.cwd !== dir) await stage!.use(dir);
     if (toolsets.length && note) io.note(note);
@@ -188,7 +202,7 @@ export async function startUI(opts: UIOptions) {
     state.agent.session = newSessionId();
     state.created = new Date().toISOString();
     state.title = "";
-    recordTo(resolve(state.cwd, ".maxx", "replays", `${state.agent.session}.jsonl`));
+    if (!state.agent.chat) recordTo(resolve(state.cwd, ".maxx", "replays", `${state.agent.session}.jsonl`));
   }
 
   async function handle(m: any) {
@@ -201,6 +215,10 @@ export async function startUI(opts: UIOptions) {
         await open(m.cwd, { session: m.session, model: m.model });
         send(await snapshot());
         return send(await stage!.info());
+      case "chat":
+        // A new chat, or the saved one picked in the sidebar.
+        await open(await ensureChatDir(), { session: m.session, model: m.session ? undefined : state?.llm.model });
+        return send(await snapshot());
       case "pick": {
         const dir = await pickFolder();
         if (!dir) return;
@@ -236,6 +254,7 @@ export async function startUI(opts: UIOptions) {
         // A starter in the open folder when it is empty, else in a new folder
         // inside it, which then becomes the open project.
         if (!state) throw new Error("open a project folder first");
+        if (state.agent.chat) throw new Error("templates start projects; open a project folder first");
         if (state.controller) throw new Error("stop the current turn first");
         const t = findTemplate(String(m.id));
         const dir = (await isEmptyFolder(state.cwd)) ? state.cwd : freeFolder(state.cwd, t.folder);
@@ -390,6 +409,8 @@ export async function startUI(opts: UIOptions) {
         return srv.upgrade(req) ? undefined : new Response("upgrade failed", { status: 400 });
       }
       if (url.pathname === "/upload" && req.method === "POST") return upload(req, url);
+      const lib = url.pathname.match(/^\/vendor\/(\w+)\.js$/)?.[1];
+      if (lib && VENDOR[lib]) return new Response(VENDOR[lib], { headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "max-age=86400" } });
       if (url.pathname === "/") return new Response(PAGE, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
       return new Response("not found", { status: 404 });
     },

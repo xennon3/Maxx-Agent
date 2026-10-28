@@ -14,6 +14,7 @@ import { addLesson, rememberTool, swapLesson, MEMORY_PROMPT } from "./memory.ts"
 import { detectCheck, excerpt, quickCheck, type CheckResult } from "./fixit.ts";
 import { bash } from "./tools/bash.ts";
 import { NETWORK_PROMPT } from "./network.ts";
+import { chatPrompt } from "./chat.ts";
 import { brief, describeHelper, HELPER_DEFAULTS, helperLLM, type Helper } from "./escalate.ts";
 
 // The local model got stuck and a helper took over (active), or handed back.
@@ -56,6 +57,8 @@ export type AgentOptions = {
   helper?: Helper | null;
   // May the model install packages and download files? Off unless turned on.
   network?: boolean;
+  // Chat mode: no tools, no project, and a prompt about drawing visuals instead.
+  chat?: boolean;
 };
 
 const MAX_BAD_CALLS = 3;
@@ -116,6 +119,7 @@ export class Agent {
 
   // Switch tool groups; the system prompt is rewritten in place, history kept.
   useToolsets(names: string[]) {
+    if (this.opts.chat) return;
     const { tools, prompts } = withToolsets(names);
     this.tools = [...this.baseTools(), ...tools];
     this.prompts = prompts;
@@ -123,7 +127,12 @@ export class Agent {
     if (this.vision.mode === "off" && names.length) this.prompts.push("You cannot see images in this session; screenshots arrive as element lists only.");
   }
 
+  get chat(): boolean {
+    return !!this.opts.chat;
+  }
+
   private baseTools(): Tool<any>[] {
+    if (this.opts.chat) return [];
     const extra: Tool<any>[] = [];
     if (this.opts.plan !== false) extra.push(planTool(() => this.plan, (s) => this.setPlan(s)));
     if (this.opts.memory !== false) extra.push(rememberTool);
@@ -137,7 +146,7 @@ export class Agent {
 
   async refreshSystemPrompt() {
     const notes = [this.opts.plan !== false ? PLAN_PROMPT : "", this.opts.memory !== false ? MEMORY_PROMPT : "", NETWORK_PROMPT[this.network ? "on" : "off"]].filter(Boolean).join(" ");
-    const content = await systemPrompt(this.opts.cwd, notes ? [notes, ...this.prompts] : this.prompts);
+    const content = this.opts.chat ? chatPrompt() : await systemPrompt(this.opts.cwd, notes ? [notes, ...this.prompts] : this.prompts);
     if (this.history[0]?.role === "system") this.history[0] = { role: "system", content };
     else this.history.unshift({ role: "system", content });
   }
