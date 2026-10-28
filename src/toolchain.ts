@@ -33,7 +33,7 @@ export function sdkDirs(env: Env = process.env, home = homedir()): string[] {
 export type Found = { javaHome?: string; sdk?: string; changed: string[] };
 
 // Returns what it set, so the caller can say so; never overrides a working setting.
-export function useAndroidToolchain(env: Env = process.env, exists = existsSync, platform: NodeJS.Platform = process.platform): Found {
+export function useAndroidToolchain(env: Env = process.env, exists: (path: string) => boolean = existsSync, platform: NodeJS.Platform = process.platform): Found {
   const java = platform === "win32" ? "java.exe" : "java";
   const changed: string[] = [];
   const javaHome = javaHomes(env).find((d) => exists(join(d, "bin", java)));
