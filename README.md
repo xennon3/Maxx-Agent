@@ -159,8 +159,27 @@ Claude Code app:
   ends the current turn.
 - **Header:** model picker (from LM Studio), permission mode, 📱 Android / 🖥 Desktop toolset
   toggles, *New* session.
-- **Screen panel:** the latest phone or desktop screenshot with its numbered boxes, live while
-  Maxx tests; click to enlarge.
+- **Stage panel** (the icons on the right edge), for running and testing what Maxx builds, like
+  Claude's artifacts:
+  - **◧ Preview** shows the project's web pages. The first `.html` file Maxx writes opens by
+    itself, and every later edit reloads it. Pick a page from the menu, or type a dev server
+    URL. *Phone size* frames it at 390 px. The console strip collects the page's `console` output
+    and errors, and *Ask Maxx to fix* puts them in the message box.
+  - **▶ Run** runs project commands in the background, like terminal tabs: one-click chips for
+    `package.json` scripts, Gradle, Cargo, Go, pytest and `make`, plus anything you type (kept
+    per project in `.maxx/run.json`). Output streams live. When a dev server prints its URL it
+    opens in Preview, and a failed command gets an *ask Maxx to fix* link with the end of its
+    output.
+  - **📱 Screen** shows the latest phone or desktop screenshot. *Live phone* mirrors a connected
+    Android phone at about two frames a second: click to tap, drag to swipe, plus Back / Home /
+    Recents.
+
+  The model gets two tools of its own in the app window: `preview` opens a page in the panel and
+  returns its title, visible text and console errors (so even a text-only model can tell if its
+  page works), and `start_server` starts a dev server in the Run tab and returns its URL.
+  Previewed pages are served from a second random port with its own token, so a page's scripts
+  can't reach Maxx itself. `bun sim/stage-demo.ts` drives the panel in a headless browser and
+  saves screenshots to `sim/out/stage/`.
 
 It runs in Edge's app mode (no tabs or address bar) on `127.0.0.1` only, behind a random token
 in the link, so other sites and other machines can't drive it. Closing the console window quits.
