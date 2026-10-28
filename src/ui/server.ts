@@ -19,6 +19,7 @@ import { Stage } from "./stage.ts";
 import { TOOLS, TOOLSETS } from "../tools/index.ts";
 import { TEMPLATES, findTemplate, freeFolder, isEmptyFolder, scaffold } from "../templates/index.ts";
 import { resolveNetwork, saveNetwork } from "../network.ts";
+import { parseBrevity, resolveBrevity, saveBrevity } from "../brevity.ts";
 import { CLAUDE_MODELS, HELPER_DEFAULTS, loadHelper, resolveHelper, saveHelper, type Helper } from "../escalate.ts";
 import { htmlFiles } from "./preview.ts";
 import * as A from "../devices/adb.ts";
@@ -32,11 +33,13 @@ import { FIX_ROUNDS, describeWhisper, failed, findWhisper, fixPrompt, planRebuil
 type Client = ServerWebSocket<unknown>;
 type Out = Record<string, unknown> & { type: string };
 
-export type UIOptions = { baseURL: string; port?: number; previewPort?: number; open?: boolean; visionModel?: string; context?: number; whisper?: string; whisperModel?: string; network?: string };
+export type UIOptions = { baseURL: string; port?: number; previewPort?: number; open?: boolean; visionModel?: string; context?: number; whisper?: string; whisperModel?: string; network?: string; brevity?: string };
 
 export async function startUI(opts: UIOptions) {
   // Installs and downloads: the header's 🌐 switch, saved for next time.
   let network = await resolveNetwork(opts.network);
+  // How much Maxx says: the header's ✂ switch, saved too.
+  let brevity = await resolveBrevity(opts.brevity);
   const token = crypto.randomUUID().replace(/-/g, "");
   const clients = new Set<Client>();
   const send = (m: Out) => {
@@ -158,6 +161,7 @@ export async function startUI(opts: UIOptions) {
       },
       helper: await helperInfo(),
       network,
+      brevity,
     };
   }
 
@@ -183,8 +187,8 @@ export async function startUI(opts: UIOptions) {
     const helper = chat ? null : await resolveHelper({}).catch(() => null);
     const agent = await new Agent(
       chat
-        ? { llm, cwd: dir, permissions, vision, network, contextWindow: opts.context, chat: true, plan: false, memory: false, fixTries: 0 }
-        : { llm, cwd: dir, permissions, toolsets, vision, helper, network, contextWindow: opts.context, tools: [...TOOLS, ...stage!.tools()] },
+        ? { llm, cwd: dir, permissions, vision, network, brevity, contextWindow: opts.context, chat: true, plan: false, memory: false, fixTries: 0 }
+        : { llm, cwd: dir, permissions, toolsets, vision, helper, network, brevity, contextWindow: opts.context, tools: [...TOOLS, ...stage!.tools()] },
       io,
     ).init();
     if (saved) await agent.restore(saved.id, saved.history);
@@ -299,6 +303,14 @@ export async function startUI(opts: UIOptions) {
         await saveNetwork(network);
         await state?.agent.setNetwork(network);
         return send(await snapshot());
+      case "brevity": {
+        const level = parseBrevity(String(m.level ?? ""));
+        if (!level) throw new Error("brevity is brief, normal or detailed");
+        brevity = level;
+        await saveBrevity(brevity);
+        await state?.agent.setBrevity(brevity);
+        return send(await snapshot());
+      }
       case "answer":
         pending.get(m.id)?.(m.answer);
         pending.delete(m.id);

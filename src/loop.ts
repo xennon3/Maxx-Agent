@@ -14,6 +14,7 @@ import { addLesson, rememberTool, swapLesson, MEMORY_PROMPT } from "./memory.ts"
 import { detectCheck, excerpt, quickCheck, type CheckResult } from "./fixit.ts";
 import { bash } from "./tools/bash.ts";
 import { NETWORK_PROMPT } from "./network.ts";
+import { BREVITY_PROMPT, DEFAULT_BREVITY, type Brevity } from "./brevity.ts";
 import { lookupPrompt, WEB_TOOLS } from "./web.ts";
 import { mcpHub } from "./mcp.ts";
 import { chatPrompt } from "./chat.ts";
@@ -59,6 +60,8 @@ export type AgentOptions = {
   helper?: Helper | null;
   // May the model install packages and download files? Off unless turned on.
   network?: boolean;
+  // How much the model says (default brief); only the prompt changes.
+  brevity?: Brevity;
   // Chat mode: no tools, no project, and a prompt about drawing visuals instead.
   chat?: boolean;
   // The look-up tools offered while network access is on (default: web search, web fetch and MCP servers).
@@ -127,6 +130,15 @@ export class Agent {
     await this.refreshSystemPrompt();
   }
 
+  get brevity(): Brevity {
+    return this.opts.brevity ?? DEFAULT_BREVITY;
+  }
+
+  async setBrevity(level: Brevity) {
+    this.opts.brevity = level;
+    await this.refreshSystemPrompt();
+  }
+
   get vision(): Vision {
     return this.opts.vision ?? { mode: "native" };
   }
@@ -175,7 +187,9 @@ export class Agent {
 
   async refreshSystemPrompt() {
     const notes = [this.opts.plan !== false ? PLAN_PROMPT : "", this.opts.memory !== false ? MEMORY_PROMPT : "", NETWORK_PROMPT[this.network ? "on" : "off"], this.lookupNote()].filter(Boolean).join(" ");
-    const content = this.opts.chat ? chatPrompt(new Date(), this.lookupNote()) : await systemPrompt(this.opts.cwd, notes ? [notes, ...this.prompts] : this.prompts);
+    const style = BREVITY_PROMPT[this.brevity];
+    // Last, so it is what the model read most recently.
+    const content = this.opts.chat ? chatPrompt(new Date(), this.lookupNote(), style) : await systemPrompt(this.opts.cwd, [...(notes ? [notes] : []), ...this.prompts, ...(style ? [style] : [])]);
     if (this.history[0]?.role === "system") this.history[0] = { role: "system", content };
     else this.history.unshift({ role: "system", content });
   }

@@ -1,5 +1,6 @@
 import { STAGE_CSS, STAGE_HTML, STAGE_JS } from "./stage-page.ts";
 import { VIS_CSS, VIS_JS } from "./visuals-page.ts";
+import { BREVITY_LABEL } from "../brevity.ts";
 import { VOICE_CSS, VOICE_HINT, VOICE_HTML, VOICE_JS } from "./voice-page.ts";
 
 // The whole web UI in one string, so the compiled maxx.exe carries it.
@@ -181,6 +182,7 @@ ${VIS_CSS}
     </select>
     <span id="sets" class="projonly"></span>
     <span class="chip" id="netBtn" title="Let Maxx look things up on the web (and in the MCP servers in ~/.maxx/mcp.json), install packages (pip, npm...) and download files">🌐 Network: off</span>
+    <span class="chip" id="briefBtn" title="How much Maxx says. Click to switch: Brief (short answers, no padding), Normal, Detailed (explanations and examples)">✂ Brief</span>
     <span class="chip helper projonly" id="helperBtn" title="A bigger model Maxx calls when the local one is stuck">🧠 Helper: off</span>
     <button id="newBtn" title="Start a new session">New</button>
   </header>
@@ -228,6 +230,7 @@ ${STAGE_HTML}
 <div id="drop">Drop files to attach them to your message</div>
 <div id="toast"><span id="toastText"></span><button id="toastBtn">Undo</button></div>
 <script>
+const BREVITY_LABEL = ${JSON.stringify(BREVITY_LABEL)};
 const $ = (id) => document.getElementById(id);
 const token = new URLSearchParams(location.search).get("t");
 let ws, state = null, busy = false, live = null, streaming = null;
@@ -596,6 +599,9 @@ function render(s) {
   const nb = $("netBtn");
   nb.classList.toggle("on", !!s.network);
   nb.textContent = s.network ? "🌐 Network: on" : "🌐 Network: off";
+  const bb = $("briefBtn");
+  bb.textContent = BREVITY_LABEL[s.brevity] || BREVITY_LABEL.brief;
+  bb.classList.toggle("on", s.brevity === "brief");
   const hb = $("helperBtn"), hs = s.helper;
   const helperOn = hs && !hs.off && hs.model;
   hb.classList.toggle("on", !!helperOn);
@@ -757,6 +763,10 @@ function helperFields() {
     "When Maxx escalates, the conversation so far (files it read, command output) is sent to that API and billed to your key. Nothing is sent while the local model is doing fine.";
 }
 $("helperBtn").onclick = helperForm;
+$("briefBtn").onclick = () => {
+  const order = Object.keys(BREVITY_LABEL);
+  send({ type: "brevity", level: order[(order.indexOf((state && state.brevity) || "brief") + 1) % order.length] });
+};
 $("netBtn").onclick = () => {
   const on = !(state && state.network);
   if (on && !confirm("Let Maxx use the internet?\\n\\nIt can then look up things it isn't sure about (web search, library docs), install packages (pip, npm...) and download files. Searches go to DuckDuckGo and the MCP servers in ~/.maxx/mcp.json. With 'Ask before acting', every install still asks first.")) return;
