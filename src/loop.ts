@@ -19,6 +19,8 @@ import { lookupPrompt, WEB_TOOLS } from "./web.ts";
 import { mcpHub } from "./mcp.ts";
 import { chatPrompt } from "./chat.ts";
 import { brief, describeHelper, HELPER_DEFAULTS, helperLLM, type Helper } from "./escalate.ts";
+import { mapBudget, projectMap, projectMapTool } from "./projectmap.ts";
+import type { Board } from "./agentmode.ts";
 
 // The local model got stuck and a helper took over (active), or handed back.
 export type Escalation = { active: boolean; model: string; reason: string; steps?: number; usage?: { input: number; output: number }; text?: string };
@@ -66,6 +68,8 @@ export type AgentOptions = {
   chat?: boolean;
   // The look-up tools offered while network access is on (default: web search, web fetch and MCP servers).
   online?: () => Promise<Online>;
+  // Tokens of project map in the system prompt and the project_map tool (default: 5% of the context; 0 = off).
+  mapTokens?: number;
 };
 
 export type Online = { tools: Tool<any>[]; notes: string[]; servers: string[] };
@@ -103,6 +107,10 @@ export class Agent {
   plan: Step[] = [];
   // Escalation banners, by the history length when they happened, so a redrawn transcript keeps them.
   marks: { at: number; text: string; active: boolean }[] = [];
+  // The last check the fix-it loop ran in the latest turn (null: none ran).
+  lastCheck: CheckResult | null = null;
+  // Agent mode's task board, while a goal runs and after.
+  board: Board | null = null;
 
   constructor(private opts: AgentOptions, private io: AgentIO) {
     this.tools = this.baseTools();
@@ -158,11 +166,48 @@ export class Agent {
     return !!this.opts.chat;
   }
 
+  get mapTokens(): number {
+    return this.opts.chat ? 0 : (this.opts.mapTokens ?? mapBudget(this.opts.contextWindow ?? 32_768));
+  }
+
+  get llm(): LLMConfig {
+    return this.opts.llm;
+  }
+
+  get cwd(): string {
+    return this.opts.cwd;
+  }
+
+  get permissions(): Permissions {
+    return this.opts.permissions;
+  }
+
+  get contextWindow(): number {
+    return this.opts.contextWindow ?? 32_768;
+  }
+
+  clearPlan() {
+    this.setPlan([]);
+  }
+
+  // A one-off request outside the conversation (Agent mode's planner, the
+  // screenshot judge), with the same progress display as a turn.
+  async think(messages: Message[], signal?: AbortSignal, llm: LLMConfig = this.opts.llm): Promise<string> {
+    const promptTokens = estimateTokens(messages);
+    const res = await complete(llm, messages, [], () => {}, signal, (p) => this.io.progress?.({ ...p, promptTokens }));
+    return res.content.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+  }
+
+  note(text: string) {
+    this.io.note(text);
+  }
+
   private baseTools(): Tool<any>[] {
     if (this.opts.chat) return this.online.tools;
     const extra: Tool<any>[] = [];
     if (this.opts.plan !== false) extra.push(planTool(() => this.plan, (s) => this.setPlan(s)));
     if (this.opts.memory !== false) extra.push(rememberTool);
+    if (this.mapTokens > 0) extra.push(projectMapTool(() => this.mapTokens));
     return [...(this.opts.tools ?? TOOLS), ...this.online.tools, ...extra];
   }
 
@@ -189,7 +234,9 @@ export class Agent {
     const notes = [this.opts.plan !== false ? PLAN_PROMPT : "", this.opts.memory !== false ? MEMORY_PROMPT : "", NETWORK_PROMPT[this.network ? "on" : "off"], this.lookupNote()].filter(Boolean).join(" ");
     const style = BREVITY_PROMPT[this.brevity];
     // Last, so it is what the model read most recently.
-    const content = this.opts.chat ? chatPrompt(new Date(), this.lookupNote(), style) : await systemPrompt(this.opts.cwd, [...(notes ? [notes] : []), ...this.prompts, ...(style ? [style] : [])]);
+    // The map as it was when the session started; project_map gives a fresh one.
+    const map = !this.opts.chat && this.mapTokens > 0 ? await projectMap(this.opts.cwd, this.mapTokens).catch(() => "") : "";
+    const content = this.opts.chat ? chatPrompt(new Date(), this.lookupNote(), style) : await systemPrompt(this.opts.cwd, [...(notes ? [notes] : []), ...this.prompts, ...(map ? [`${map}\n(This map is from the start of the session; call project_map for a fresh one.)`] : []), ...(style ? [style] : [])]);
     if (this.history[0]?.role === "system") this.history[0] = { role: "system", content };
     else this.history.unshift({ role: "system", content });
   }
@@ -198,6 +245,7 @@ export class Agent {
     this.history = [];
     this.setPlan([]);
     this.marks = [];
+    this.board = null;
     await this.goOnline();
     await this.refreshSystemPrompt();
     return this;
@@ -214,8 +262,10 @@ export class Agent {
 
   // One user turn: loop until the model answers without calling tools.
   // A turn with attached images comes as parts (see attach.ts).
-  async send(userText: string | ContentPart[], signal?: AbortSignal): Promise<string> {
+  // Agent mode gives each task its own step budget.
+  async send(userText: string | ContentPart[], signal?: AbortSignal, o: { maxSteps?: number } = {}): Promise<string> {
     this.history.push({ role: "user", content: userText });
+    this.lastCheck = null;
     if (Array.isArray(userText)) this.pruneImages();
     const specs = toolSpecs(this.tools);
     let badCalls = 0;
@@ -241,7 +291,7 @@ export class Agent {
     let blocked: Missing | undefined;
     let blockedSteps = 0;
 
-    for (let step = 0; step < (this.opts.maxSteps ?? 50); step++) {
+    for (let step = 0; step < (o.maxSteps ?? this.opts.maxSteps ?? 50); step++) {
       await this.maybeCompact();
       if (helping && !this.helper) handBack("the helper was turned off");
       const helper = helping && this.helper;
@@ -377,6 +427,7 @@ export class Agent {
       const files = [...changed];
       changed.clear();
       const r = await this.check(files, signal);
+      if (r) this.lastCheck = r;
       if (r && !r.ok) {
         if (fixes >= tries) {
           this.io.note(`(${r.what} still fails after ${tries} tries; over to you)`);
