@@ -30,7 +30,8 @@ export class Checkpoints {
 
   private async ready(): Promise<boolean> {
     if (this.enabled !== null) return this.enabled;
-    if ((await this.git(["rev-parse", "--is-inside-work-tree"])).ok) return (this.enabled = true);
+    // A folder the enclosing repository ignores (a project under build/ or out/) gets its own, too.
+    if ((await this.git(["rev-parse", "--is-inside-work-tree"])).ok && !(await this.git(["check-ignore", "-q", "."])).ok) return (this.enabled = true);
     if (!Bun.which("git")) return (this.enabled = false);
     const dir = join(this.cwd, ".maxx", "git");
     this.shadow = [`--git-dir=${dir}`, `--work-tree=${this.cwd}`];

@@ -171,7 +171,8 @@ export async function runGoal(agent: Agent, goal: string, events: GoalEvents, o:
     board.tasks = (planned.length ? planned : [{ text: goal, check: "" }]).map((t) => ({ ...t, status: "todo" as const, tries: 0 }));
     board.state = "running";
     emit();
-    agent.history.push({ role: "user", content: asReport(`Maxx: Agent mode started on the goal "${goal}". Tasks:\n${formatBoard(board)}`) });
+    // The goal as the user's turn (it titles the session) and the tasks as the answer to it.
+    agent.history.push({ role: "user", content: `🤖 ${goal}` }, { role: "assistant", content: `Agent mode: I split this into ${board.tasks.length} task${board.tasks.length > 1 ? "s" : ""} and will work through them one by one.\n${formatBoard(board)}` });
 
     for (; board.current < board.tasks.length; board.current++) {
       const task = board.tasks[board.current]!;
@@ -189,9 +190,7 @@ export async function runGoal(agent: Agent, goal: string, events: GoalEvents, o:
         let answer = await agent.send(asReport(taskPrompt(board, fresh, retry)), o.signal, { maxSteps: s.stepsPerTask });
         let r = outcome(answer, agent.lastCheck);
         if (r.ok && s.judge) {
-          task.status = "checking";
-          emit();
-          const j = await judgeTask(agent, board, task, before, events, o);
+          const j = await judgeTask(agent, board, task, before, events, o, emit);
           if (j && !j.pass) task.note = `screenshot judge: ${j.why}`;
           for (let fix = 0; j && !j.pass && fix < s.judgeFixes && r.ok; fix++) {
             task.status = "doing";
@@ -199,9 +198,7 @@ export async function runGoal(agent: Agent, goal: string, events: GoalEvents, o:
             answer = await agent.send(asReport(`Maxx checked a screenshot of the result. The vision model says: FAIL: ${j.why}\nFix this, then reply with one line starting with DONE.`), o.signal, { maxSteps: s.stepsPerTask });
             r = outcome(answer, agent.lastCheck);
             if (!r.ok) break;
-            task.status = "checking";
-            emit();
-            const again = await judgeTask(agent, board, task, before, events, o);
+            const again = await judgeTask(agent, board, task, before, events, o, emit);
             if (!again) break;
             Object.assign(j, again);
             task.note = again.pass ? undefined : `screenshot judge: ${again.why}`;
@@ -209,6 +206,7 @@ export async function runGoal(agent: Agent, goal: string, events: GoalEvents, o:
         }
         if (r.ok) {
           task.status = "done";
+          if (!task.note?.startsWith("screenshot")) task.note = task.tries > 1 ? `done on try ${task.tries}` : undefined;
           task.files = before ? (await agent.checkpoints.changed(before)).length : undefined;
           emit();
           break;
@@ -250,12 +248,14 @@ export async function runGoal(agent: Agent, goal: string, events: GoalEvents, o:
 }
 
 // Screenshot what the task changed and ask the vision model about it. Null: nothing to look at.
-async function judgeTask(agent: Agent, board: Board, task: Task, before: string | null, events: GoalEvents, o: GoalOptions): Promise<Verdict | null> {
+async function judgeTask(agent: Agent, board: Board, task: Task, before: string | null, events: GoalEvents, o: GoalOptions, emit: () => void): Promise<Verdict | null> {
   const llm = judgeLLM(agent.llm, agent.vision);
   if (!llm || !before) return null;
   const changed = await agent.checkpoints.changed(before);
   const surface = await pickSurface({ cwd: agent.cwd, changed, android: agent.toolsets.includes("android"), ...o.surfaces }).catch(() => null);
   if (!surface) return null;
+  task.status = "checking";
+  emit();
   try {
     agent.note(`(Agent mode: checking a screenshot of ${surface.label})`);
     const image = await surface.shoot(o.signal);
