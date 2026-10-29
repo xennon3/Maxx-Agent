@@ -22,7 +22,8 @@ export class Checkpoints {
   }
 
   private async git(args: string[], env: Record<string, string> = {}) {
-    const proc = Bun.spawn(["git", ...this.shadow, ...args], { cwd: this.cwd, stdout: "pipe", stderr: "pipe", env: { ...process.env, ...env } });
+    // Byte-exact snapshots: Git for Windows turns LF into CRLF on restore by default.
+    const proc = Bun.spawn(["git", "-c", "core.autocrlf=false", "-c", "core.safecrlf=false", ...this.shadow, ...args], { cwd: this.cwd, stdout: "pipe", stderr: "pipe", env: { ...process.env, ...env } });
     const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
     await proc.exited;
     return { ok: proc.exitCode === 0, out: out.trim() || err.trim() };

@@ -203,3 +203,18 @@ test.skipIf(!chromium)("the screenshot judge sends a FAIL back as a fix, then pa
   expect(JSON.stringify(judged[0].messages)).toContain("data:image/");
   expect(await Bun.file(join(dir, "index.html")).text()).toBe("<h1>hello</h1>");
 }, 60_000);
+
+test("a rewind gives back the exact bytes, even where git converts line endings", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "maxx-crlf-"));
+  Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
+  Bun.spawnSync(["git", "config", "core.autocrlf", "true"], { cwd: dir });
+  await Bun.write(join(dir, "lf.txt"), "one\n");
+  await Bun.write(join(dir, "crlf.txt"), "one\r\n");
+  const c = new Checkpoints(dir, "s");
+  const sha = (await c.snapshot("before"))!;
+  await Bun.write(join(dir, "lf.txt"), "two\n");
+  await Bun.write(join(dir, "crlf.txt"), "two\r\n");
+  expect((await c.rewind(sha)).ok).toBe(true);
+  expect(await Bun.file(join(dir, "lf.txt")).text()).toBe("one\n");
+  expect(await Bun.file(join(dir, "crlf.txt")).text()).toBe("one\r\n");
+});
