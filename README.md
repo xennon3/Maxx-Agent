@@ -291,6 +291,33 @@ In a session, `/delete [ref]` (no ref: this one) and `/undelete` do the same, an
 Starting `maxx` in a folder with history shows a one-line hint to continue it. `MAXX_HOME` moves
 the store.
 
+## Agent mode: give it a goal, watch the task board
+
+Turn on **🤖 Agent** in the app window (or run `maxx --agent "..."`, or `/agent ...` in a session) and give Maxx a goal instead of a step: "build a tip calculator web app that looks good on a phone". Maxx then:
+
+1. **Plans.** The model splits the goal into a few tasks, each with a check ("the page shows a total"). They appear on a task board pinned above the chat.
+2. **Snapshots.** Before each task Maxx takes a snapshot of the folder (a shadow git commit; a folder that is not a git repository gets a private one in `.maxx/git`).
+3. **Works and checks.** The model does the task with its usual tools, the fix-it loop runs the build, and the task only counts as done when the model says DONE and the last check passed.
+4. **Looks.** When a task changed something you can see, the **screenshot judge** takes a picture (the page in a headless Edge or Chrome at phone size, or the phone over adb) and asks the vision model whether it matches what was asked. A FAIL goes back to the model as a fix. A small judge is often wrong, so its verdict never rewinds work by itself.
+5. **Rewinds.** A task that fails (STUCK, the step limit, a build that still fails) is rewound to its snapshot and tried again with a note on what went wrong, so the model tries a different way instead of piling fixes on a mess. The failed try is kept as a checkpoint (`/checkpoints`).
+6. **Stops** when every task is done, or when one still fails after its tries, with the files back as they were before that task.
+
+File edits need no approval while a goal runs (every task can be rewound); commands still follow the permission mode. The helper model, the error coach and the fix-it loop all work inside each task as usual.
+
+**The project map.** Maxx keeps a short index of the project's files and the functions, classes and Compose screens in each, cut to a token budget. The model gets it in its system prompt, in Agent mode's planner and first task, and through the `project_map` tool, so it does not spend its context listing folders.
+
+**Budgets grow with the model.** Every limit is a setting, and the defaults follow `--context`:
+
+| | 16K (a 4B model on a laptop) | 32K | 64K and up (a big model on the EVO) |
+|---|---|---|---|
+| Most tasks | 6 | 8 | 12 |
+| Steps per try | 20 | 35 | 60 |
+| Tries per task | 2 | 2 | 3 |
+| Judge fix rounds | 1 | 2 | 2 |
+| Project map | 5% of the context (819 tokens at 16K, up to 8000) | | |
+
+Change them with the ⚙ next to 🤖 Agent (saved in `~/.maxx/agent.json`; only what differs from the defaults is saved, so the rest keeps following the context) or with `--max-tasks`, `--task-steps`, `--task-tries`, `--judge on|off` and `--map-tokens`. `MAXX_BROWSER` picks the browser the judge uses.
+
 ## Helping small models recover
 
 A 4B model on a laptop CPU loses its way more often than it lacks knowledge. Four helpers, all on

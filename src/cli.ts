@@ -23,6 +23,7 @@ import { describeHelper, resolveHelper, type Helper } from "./escalate.ts";
 import { useAndroidToolchain } from "./toolchain.ts";
 import { parseSwitch, resolveNetwork, saveNetwork } from "./network.ts";
 import { BREVITY, parseBrevity, resolveBrevity, saveBrevity } from "./brevity.ts";
+import { agentSettings, cleanSettings, loadAgentSettings, runGoal, type Board } from "./agentmode.ts";
 
 // Before any command runs, so Gradle and adb find Android Studio's JDK and SDK.
 useAndroidToolchain();
@@ -35,6 +36,8 @@ usage:
   maxx [options]              start an interactive session in the current directory
   maxx ui [--port n]          open the app window (also what double-clicking maxx.exe does)
   maxx -p "fix the tests"     run one prompt and exit
+  maxx --agent "build a tip calculator web app"
+                              Agent mode: split the goal into tasks and work through them alone
   maxx doctor                 check that the model makes valid tool calls
   maxx doctor android         check adb, the JDK and the connected phone
   maxx doctor desktop         check screenshots and UI Automation on Windows
@@ -78,11 +81,22 @@ options:
                      else whisper-cli on PATH with a model in ~/.maxx/whisper)
   --whisper-model <f>  ggml model file for whisper-cli (default $MAXX_WHISPER_MODEL)
   -p, --prompt <s>   one-shot prompt
+  --agent <goal>     run one goal in Agent mode and exit (in a session: /agent <goal>)
+                     Each task starts from a snapshot; a failed task is rewound and tried another
+                     way; edits need no approval (commands still follow --mode). Budgets default
+                     from --context (saved ones in ~/.maxx/agent.json, or the app's 🤖 settings):
+  --max-tasks <n>    most tasks a goal is split into (default 6 at 16K context, 12 at 64K+)
+  --task-steps <n>   model steps per try at a task (default 20 at 16K, 60 at 64K+)
+  --task-tries <n>   tries per task before Agent mode stops (default 2, 3 at 64K+)
+  --judge <on|off>   screenshot web pages (headless Edge/Chrome) and the phone after UI changes
+                     and let the vision model check them (default on; $MAXX_BROWSER picks the browser)
+  --map-tokens <n>   size of the project map of files and functions the model gets (default 5%
+                     of --context; 0 turns it off)
   -c, --continue     continue the latest session in this project
   --resume <ref>     continue a session by number (from \`maxx sessions\`), id, or words from its title
 
 in a session:
-  /help  /mode <m>  /with <sets|none>  /plan  /helper [off|on]  /network [on|off]  /brevity [brief|normal|detailed]  /checkpoints  /rewind <n>  /clear  /exit
+  /agent <goal>  /help  /mode <m>  /with <sets|none>  /plan  /helper [off|on]  /network [on|off]  /brevity [brief|normal|detailed]  /checkpoints  /rewind <n>  /clear  /exit
   /sessions  /resume <ref>  /new  /title <text>   (sessions are saved per project after every turn)
   /delete <ref>  /undelete     delete a session (this one if no ref), bring it back
   /attach <file...>            send files with your next message: images to the vision model, text inline
@@ -109,6 +123,12 @@ const { values, positionals } = parseArgs({
     network: { type: "string" },
     brevity: { type: "string" },
     prompt: { type: "string", short: "p" },
+    agent: { type: "string" },
+    "max-tasks": { type: "string" },
+    "task-steps": { type: "string" },
+    "task-tries": { type: "string" },
+    judge: { type: "string" },
+    "map-tokens": { type: "string" },
     continue: { type: "boolean", short: "c" },
     resume: { type: "string" },
     all: { type: "boolean" },
@@ -184,7 +204,7 @@ if (positionals[0] === "doctor" && positionals[1] === "web") process.exit((await
 if (positionals[0] === "mcp") process.exit(await mcpCommand(positionals.slice(1)).catch((e) => (console.error(String((e as Error).message)), 1)));
 if (positionals[0] === "doctor" && positionals[1] === "voice") process.exit((await doctorVoice({ whisper: voice.whisper, model: voice.whisperModel })) ? 0 : 1);
 
-if (positionals[0] === "ui" || (fromExplorer && !positionals.length && !values.prompt)) {
+if (positionals[0] === "ui" || (fromExplorer && !positionals.length && !values.prompt && !values.agent)) {
   const port = values.port ? Number(values.port) : 4317;
   let ui;
   try {
@@ -316,13 +336,22 @@ try {
 }
 const network = await resolveNetwork(values.network).catch((e) => die((e as Error).message));
 const brevity = await resolveBrevity(values.brevity).catch((e) => die((e as Error).message));
-const agent = await new Agent({ llm, cwd, permissions, contextWindow: Number(values.context), toolsets, vision, check, fixTries, plan: !values["no-plan"], helper, network, brevity }, io).init();
+// Agent mode budgets: the context window's defaults, then saved choices, then flags.
+const judgeFlag = values.judge === undefined ? undefined : parseSwitch(values.judge);
+if (values.judge !== undefined && judgeFlag === undefined) die("--judge is on or off");
+const goalSettings = agentSettings(Number(values.context), {
+  ...(await loadAgentSettings()),
+  ...cleanSettings({ maxTasks: values["max-tasks"], stepsPerTask: values["task-steps"], tries: values["task-tries"], mapTokens: values["map-tokens"], judge: judgeFlag }),
+});
+const agent = await new Agent({ llm, cwd, permissions, contextWindow: Number(values.context), toolsets, vision, check, fixTries, plan: !values["no-plan"], helper, network, brevity, mapTokens: goalSettings.mapTokens }, io).init();
 let created = new Date().toISOString();
 let title = "";
 if (resumed) await resumeInto(resumed);
 let replayFile = "";
 // Declared before the -p path below, which runs a turn right away.
 let controller: AbortController | null = null;
+// The Agent mode board as last printed.
+let shownBoard = "";
 setReplayFile();
 
 function setReplayFile() {
@@ -350,8 +379,8 @@ async function save() {
 }
 if (toolsets.length && visionNote) io.note(visionNote);
 
-if (values.prompt) {
-  await turn(values.prompt);
+if (values.prompt || values.agent) {
+  await (values.agent ? goal(values.agent) : turn(values.prompt!));
   rl.close();
   process.exit(0);
 }
@@ -393,6 +422,32 @@ async function turn(text: string) {
   } catch (e) {
     const err = e as Error;
     console.log(`\n${C.yellow}${err.name === "AbortError" ? "(stopped)" : "error: " + err.message}${C.reset}`);
+  } finally {
+    status.stop();
+    controller = null;
+    await save();
+  }
+}
+
+// The task board, printed again whenever a task moves.
+function printBoard(b: Board) {
+  const icon = (i: number) => { const t = b.tasks[i]!; return t.status === "done" ? "✓" : t.status === "failed" ? "✗" : t.status === "checking" ? "👁" : t.status === "doing" ? "▸" : "○"; };
+  const head = b.state === "planning" ? "planning…" : b.state === "running" ? `task ${b.current + 1} of ${b.tasks.length}` : b.note ?? b.state;
+  const text = [`${C.bold}🤖 ${b.goal}${C.reset} ${C.dim}${head}${C.reset}`, ...b.tasks.map((t, i) => `  ${icon(i)} ${i + 1}. ${t.text}${t.tries > 1 ? ` (try ${t.tries})` : ""}${t.note ? `${C.dim} · ${t.note}${C.reset}` : ""}`)].join("\n");
+  if (text === shownBoard) return;
+  shownBoard = text;
+  status.say(`${status.bol ? "" : "\n"}${text}`);
+}
+
+async function goal(text: string) {
+  controller = new AbortController();
+  status.bol = true;
+  shownBoard = "";
+  try {
+    const b = await runGoal(agent, text, { board: printBoard }, { settings: goalSettings, signal: controller.signal });
+    if (b.note) io.note(b.note);
+  } catch (e) {
+    console.log(`\n${C.yellow}error: ${(e as Error).message}${C.reset}`);
   } finally {
     status.stop();
     controller = null;
@@ -471,6 +526,12 @@ async function command(line: string) {
       }
       const sets = Object.entries(TOOLSETS).map(([n, t]) => `  ${agent.toolsets.includes(n) ? "*" : " "} ${n.padEnd(8)} ${t.about}`);
       return console.log(`toolsets (* = on; /with android,desktop or /with none):\n${sets.join("\n")}\nreplay of this session: ${replayFile}`);
+    }
+    case "/agent": {
+      const g = line.slice(cmd!.length).trim();
+      if (g) return goal(g);
+      const s = goalSettings;
+      return console.log(`Agent mode: /agent <goal>. Up to ${s.maxTasks} tasks, ${s.stepsPerTask} steps per try, ${s.tries} tries per task, screenshot judge ${s.judge ? "on" : "off"}, project map ${s.mapTokens} tokens.`);
     }
     case "/plan": return agent.plan.length ? io.plan!(agent.plan) : console.log("(no plan yet; the model writes one for bigger tasks)");
     case "/helper": {

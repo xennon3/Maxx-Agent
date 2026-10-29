@@ -23,6 +23,8 @@ import { parseBrevity, resolveBrevity, saveBrevity } from "../brevity.ts";
 import { CLAUDE_MODELS, HELPER_DEFAULTS, loadHelper, resolveHelper, saveHelper, type Helper } from "../escalate.ts";
 import { htmlFiles } from "./preview.ts";
 import * as A from "../devices/adb.ts";
+import { agentDefaults, agentSettings, cleanSettings, loadAgentSettings, runGoal, saveAgentSettings } from "../agentmode.ts";
+import { findBrowser } from "../judge.ts";
 import { FIX_ROUNDS, describeWhisper, failed, findWhisper, fixPrompt, planRebuild, speakable, transcribe, type TurnCall } from "./voice.ts";
 
 // `maxx ui`: the agent behind a local web page. One WebSocket carries
@@ -65,6 +67,9 @@ export async function startUI(opts: UIOptions) {
   const whisper = findWhisper({ whisper: opts.whisper, model: opts.whisperModel });
   // The tool calls of the current turn, for the rebuild after a spoken request.
   let turn: TurnCall[] = [];
+  // Agent mode budgets the user changed (the rest follow the context window).
+  let goalSaved = await loadAgentSettings();
+  const browser = !!findBrowser();
 
   const progress = throttle((p: StreamProgress) => send(progressMessage(p)), 120);
   const io: AgentIO = {
@@ -156,12 +161,14 @@ export async function startUI(opts: UIOptions) {
         toolsets: s.agent.toolsets,
         busy: !!s.controller,
         plan: s.agent.plan,
+        board: s.agent.board,
         history: transcript(s.agent),
         helper: s.agent.helper && { model: s.agent.helper.model, kind: s.agent.helper.kind },
       },
       helper: await helperInfo(),
       network,
       brevity,
+      agentMode: { settings: agentSettings(contextWindow, goalSaved), defaults: agentDefaults(contextWindow), saved: goalSaved, context: contextWindow, browser },
     };
   }
 
@@ -188,7 +195,7 @@ export async function startUI(opts: UIOptions) {
     const agent = await new Agent(
       chat
         ? { llm, cwd: dir, permissions, vision, network, brevity, contextWindow: opts.context, chat: true, plan: false, memory: false, fixTries: 0 }
-        : { llm, cwd: dir, permissions, toolsets, vision, helper, network, brevity, contextWindow: opts.context, tools: [...TOOLS, ...stage!.tools()] },
+        : { llm, cwd: dir, permissions, toolsets, vision, helper, network, brevity, contextWindow: opts.context, tools: [...TOOLS, ...stage!.tools()], mapTokens: agentSettings(contextWindow, goalSaved).mapTokens },
       io,
     ).init();
     if (saved) await agent.restore(saved.id, saved.history);
@@ -311,6 +318,11 @@ export async function startUI(opts: UIOptions) {
         await state?.agent.setBrevity(brevity);
         return send(await snapshot());
       }
+      case "agentSettings":
+        // Saving the defaults back unchanged keeps following them when the context changes.
+        goalSaved = m.reset ? {} : cleanSettings(m.settings ?? {});
+        await saveAgentSettings(goalSaved);
+        return send(await snapshot());
       case "answer":
         pending.get(m.id)?.(m.answer);
         pending.delete(m.id);
@@ -330,10 +342,24 @@ export async function startUI(opts: UIOptions) {
           files.push({ ...u, mode: f.mode === "save" ? "save" : "attach" });
         }
         for (const f of m.files ?? []) uploads.delete(String(f.id));
+        if (m.agent && s.agent.chat) throw new Error("Agent mode works on a project; open a project folder first");
+        if (m.agent && files.length) throw new Error("Agent mode takes a goal in words; send attachments as a normal message");
         const controller = (s.controller = new AbortController());
         send({ type: "busy", busy: true });
         turn = [];
         try {
+          if (m.agent) {
+            const b = await runGoal(s.agent, String(m.text ?? ""), { board: (board) => send({ type: "board", board }), image: (tool, images) => io.image!(tool, images) }, {
+              settings: agentSettings(contextWindow, goalSaved),
+              signal: controller.signal,
+              surfaces: {
+                previewUrl: (p) => stage!.preview.url(p),
+                serverUrl: () => (stage!.runner?.list() ?? []).filter((p) => p.status === "running" && p.url).at(-1)?.url,
+              },
+            });
+            send({ type: "done", text: b.note ?? "" });
+            return;
+          }
           const built = await buildTurn(String(m.text ?? ""), files, { cwd: s.cwd, contextWindow, vision: s.agent.vision, signal: controller.signal });
           for (const n of built.notes) io.note(n);
           let answer = await s.agent.send(built.content, controller.signal);

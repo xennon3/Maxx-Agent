@@ -131,6 +131,38 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
 .plan .step.done .box { color: var(--ok); }
 .plan .step.next { font-weight: 600; }
 .plan .step.next .box { color: var(--accent); }
+.board { display: none; margin: 10px 16px 0; padding: 8px 12px; border: 1px solid var(--line); border-left: 3px solid #1971c2; border-radius: var(--radius); background: var(--panel); font-size: 13px; max-width: 860px; }
+.board.on { display: block; max-height: 42vh; overflow: auto; }
+.board .head { display: flex; gap: 8px; align-items: baseline; font-weight: 600; }
+.board .head .goal { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board .head .state { color: var(--mute); font-weight: 400; flex: none; }
+.board .bar { height: 3px; background: var(--line); border-radius: 2px; margin: 6px 0 4px; overflow: hidden; }
+.board .bar i { display: block; height: 100%; background: #1971c2; transition: width .3s; }
+.board.stuck { border-left-color: var(--bad); } .board.stuck .bar i { background: var(--bad); }
+.board.done { border-left-color: var(--ok); } .board.done .bar i { background: var(--ok); }
+.board .task { display: flex; gap: 8px; padding: 1px 0; }
+.board .task .box { flex: none; width: 1.3em; text-align: center; color: var(--mute); }
+.board .task .n { flex: 1; min-width: 0; }
+.board .task .sub { display: block; color: var(--mute); font-size: 12px; }
+.board .task.done { color: var(--mute); } .board .task.done .box { color: var(--ok); }
+.board .task.doing, .board .task.checking { font-weight: 600; } .board .task.doing .box { color: #1971c2; }
+.board .task.failed .box, .board .task.failed .sub { color: var(--bad); }
+.board .task .tries { color: var(--mute); font-weight: 400; font-size: 12px; flex: none; }
+.board .note { color: var(--mute); margin-top: 4px; }
+.chip.agent.on { background: #1971c2; border-color: #1971c2; }
+.chip.gear { padding: 4px 8px; }
+body.agent .composer textarea { border-color: #1971c2; }
+#agentDlg { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); padding: 0; width: min(460px, calc(100vw - 32px)); }
+#agentDlg::backdrop { background: rgba(0,0,0,.35); }
+#agentDlg form { display: flex; flex-direction: column; gap: 10px; padding: 16px; }
+#agentDlg h3 { margin: 0; }
+#agentDlg label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--mute); }
+#agentDlg label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--ink); }
+#agentDlg .row { display: flex; gap: 8px; }
+#agentDlg .row label { flex: 1; }
+#agentDlg .hint { font-size: 12px; color: var(--mute); margin: 0; }
+#agentDlg .btns { display: flex; gap: 8px; justify-content: flex-end; }
+#agentDlg .btns .left { margin-right: auto; }
 .tool.check summary b { color: var(--ok); }
 .tool.check.bad summary b { color: var(--bad); }
 .mark { max-width: 860px; align-self: center; font-size: 12.5px; padding: 4px 12px; border-radius: 999px; border: 1px dashed var(--line); color: var(--mute); }
@@ -183,9 +215,11 @@ ${VIS_CSS}
     <span id="sets" class="projonly"></span>
     <span class="chip" id="netBtn" title="Let Maxx look things up on the web (and in the MCP servers in ~/.maxx/mcp.json), install packages (pip, npm...) and download files">🌐 Network: off</span>
     <span class="chip" id="briefBtn" title="How much Maxx says. Click to switch: Brief (short answers, no padding), Normal, Detailed (explanations and examples)">✂ Brief</span>
+    <span class="chip agent projonly" id="agentBtn" title="Agent mode: give Maxx a goal. It splits it into tasks and works through them on its own, checking each one and rewinding any that fail.">🤖 Agent</span><span class="chip gear projonly" id="agentCfg" title="Agent mode settings">⚙</span>
     <span class="chip helper projonly" id="helperBtn" title="A bigger model Maxx calls when the local one is stuck">🧠 Helper: off</span>
     <button id="newBtn" title="Start a new session">New</button>
   </header>
+  <div class="board" id="board"></div>
   <div class="plan" id="plan"></div>
   <div id="log"></div>
   <div class="activity" id="activity"><span class="spin" id="actSpin">⠋</span><span class="what" id="actWhat"></span><span class="meta" id="actMeta"></span><span class="tail" id="actTail"></span></div>
@@ -225,6 +259,22 @@ ${STAGE_HTML}
   </div>
   <p class="hint" id="hPrivacy"></p>
   <div class="btns"><button value="cancel" formnovalidate>Cancel</button><button class="primary" id="hSave" value="save">Save</button></div>
+</form></dialog>
+<dialog id="agentDlg"><form method="dialog" id="agentForm">
+  <h3>🤖 Agent mode</h3>
+  <p class="hint">Give Maxx a goal with 🤖 Agent on. It splits the goal into tasks and works through them alone: a snapshot before each task, a check after it, and a rewind and a different approach when a task fails. File edits need no approval while it runs; commands still follow the permission setting.</p>
+  <div class="row">
+    <label>Most tasks <input id="aTasks" type="number" min="1" max="30"></label>
+    <label>Steps per try <input id="aSteps" type="number" min="3" max="200" title="Tool calls the model may make on one try at a task"></label>
+    <label>Tries per task <input id="aTries" type="number" min="1" max="5" title="A failed try is rewound before the next"></label>
+  </div>
+  <div class="row">
+    <label>Project map tokens <input id="aMap" type="number" min="0" max="20000" title="Size of the list of files and functions the model gets; 0 turns it off"></label>
+    <label>Judge fix rounds <input id="aFixes" type="number" min="0" max="5" title="Times a FAIL from the screenshot judge goes back to the model"></label>
+  </div>
+  <label class="check"><input type="checkbox" id="aJudge"> Screenshot judge: after a task changes what you see, screenshot it and let the vision model check it</label>
+  <p class="hint" id="aHint"></p>
+  <div class="btns"><button class="left" id="aReset" value="reset" formnovalidate>Defaults</button><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="save">Save</button></div>
 </form></dialog>
 <div id="zoom"><img id="zoomImg" alt=""></div>
 <div id="drop">Drop files to attach them to your message</div>
@@ -297,6 +347,24 @@ function drawPlan(steps) {
   const done = steps.filter((x) => x.done).length, next = steps.findIndex((x) => !x.done);
   box.innerHTML = '<div class="head">Plan <span>' + done + " of " + steps.length + " done</span></div>" +
     steps.map((x, i) => '<div class="step' + (x.done ? " done" : i === next ? " next" : "") + '"><span class="box">' + (x.done ? "✓" : i === next ? "▸" : "○") + "</span><span>" + esc(x.text) + "</span></div>").join("");
+}
+// Agent mode's task board: the goal, a progress bar, and each task's state.
+function drawBoard(b) {
+  const box = $("board");
+  box.classList.toggle("on", !!(b && b.tasks));
+  if (!b) return box.innerHTML = "";
+  const done = b.tasks.filter((t) => t.status === "done").length, n = b.tasks.length;
+  box.className = "board on " + b.state;
+  const state = b.state === "planning" ? "planning…" : b.state === "running" ? "task " + Math.min(b.current + 1, n) + " of " + n : b.state === "done" ? "done" : b.state === "stuck" ? "stuck" : "stopped";
+  const icon = { done: "✓", doing: "▸", checking: "👁", failed: "✗", todo: "○" };
+  box.innerHTML = '<div class="head"><span>🤖</span><span class="goal"></span><span class="state">' + state + "</span></div>" +
+    '<div class="bar"><i style="width:' + (n ? Math.round((done / n) * 100) : 0) + '%"></i></div>' +
+    b.tasks.map((t) => '<div class="task ' + t.status + '"><span class="box">' + icon[t.status] + '</span><span class="n">' + esc(t.text) +
+      (t.check && t.status !== "done" ? '<span class="sub">✔ when ' + esc(t.check) + "</span>" : "") + (t.note ? '<span class="sub">' + esc(t.note) + "</span>" : "") +
+      "</span>" + (t.tries > 1 ? '<span class="tries">try ' + t.tries + "</span>" : "") + "</div>").join("") +
+    (b.note && b.state !== "running" ? '<div class="note">' + esc(b.note) + "</div>" : "");
+  box.querySelector(".goal").textContent = b.goal;
+  box.querySelector(".goal").title = b.goal;
 }
 function toolCard(name, args, result) {
   const d = document.createElement("details");
@@ -408,6 +476,7 @@ function on(m) {
       return;
     case "note": return note(m.text);
     case "plan": return drawPlan(m.steps);
+    case "board": return drawBoard(m.board);
     case "escalation":
       helperLive = m.active ? m.model : null;
       $("activity").classList.toggle("helper", !!helperLive);
@@ -596,6 +665,8 @@ function render(s) {
     sets.appendChild(c);
   }
   drawPlan(cur && cur.plan);
+  drawBoard(cur && cur.board);
+  drawAgent();
   const nb = $("netBtn");
   nb.classList.toggle("on", !!s.network);
   nb.textContent = s.network ? "🌐 Network: on" : "🌐 Network: off";
@@ -712,7 +783,7 @@ async function submit() {
   files = []; drawFiles();
   userMsg(text, sending.map((f) => f.name));
   $("input").value = "";
-  send(Object.assign({ type: "send", text, files: sending.map((f) => ({ id: f.id, mode: f.mode })) }, voice.flags()));
+  send(Object.assign({ type: "send", text, files: sending.map((f) => ({ id: f.id, mode: f.mode })), agent: agentOn() }, voice.flags()));
   if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
 }
 
@@ -763,6 +834,38 @@ function helperFields() {
     "When Maxx escalates, the conversation so far (files it read, command output) is sent to that API and billed to your key. Nothing is sent while the local model is doing fine.";
 }
 $("helperBtn").onclick = helperForm;
+// Agent mode: a switch remembered in this browser, and its budgets in ~/.maxx/agent.json.
+let agentMode = false;
+try { agentMode = localStorage.getItem("maxx.agent") === "1"; } catch {}
+const agentOn = () => agentMode && !!(state && state.current && !state.current.chat);
+function drawAgent() {
+  const on = agentOn();
+  $("agentBtn").classList.toggle("on", on);
+  document.body.classList.toggle("agent", on);
+  if (state && state.current && !state.current.chat) $("input").placeholder = on ? "Give Maxx a goal, e.g. \u201cbuild a tip calculator web app and check it works\u201d. It plans the tasks and works through them on its own." : PROJECT_HINT;
+}
+$("agentBtn").onclick = () => { agentMode = !agentMode; try { localStorage.setItem("maxx.agent", agentMode ? "1" : "0"); } catch {} drawAgent(); };
+const AGENT_FIELDS = { aTasks: "maxTasks", aSteps: "stepsPerTask", aTries: "tries", aMap: "mapTokens", aFixes: "judgeFixes" };
+function agentForm(values) {
+  const a = (state && state.agentMode) || {};
+  const v = values || a.settings || {};
+  for (const [id, k] of Object.entries(AGENT_FIELDS)) $(id).value = v[k];
+  $("aJudge").checked = !!v.judge;
+  const ctx = a.context ? Math.round(a.context / 1024) + "K" : "the";
+  $("aHint").textContent = "Defaults follow the " + ctx + " context window (start Maxx with --context to change it), so a bigger model on a bigger machine gets more steps, tries and map." +
+    (a.browser ? "" : " No Edge or Chrome found, so the judge can only check the phone.");
+}
+$("agentCfg").onclick = () => { agentForm(); $("agentDlg").showModal(); };
+$("agentForm").onsubmit = (e) => {
+  const how = e.submitter && e.submitter.value;
+  if (how === "reset") { e.preventDefault(); return agentForm((state && state.agentMode && state.agentMode.defaults) || {}); }
+  if (how !== "save") return;
+  // Only what differs from the defaults is saved, so the rest keeps following the context window.
+  const d = (state && state.agentMode && state.agentMode.defaults) || {}, out = {};
+  for (const [id, k] of Object.entries(AGENT_FIELDS)) { const n = Number($(id).value); if ($(id).value !== "" && n !== d[k]) out[k] = n; }
+  if ($("aJudge").checked !== !!d.judge) out.judge = $("aJudge").checked;
+  send({ type: "agentSettings", settings: out });
+};
 $("briefBtn").onclick = () => {
   const order = Object.keys(BREVITY_LABEL);
   send({ type: "brevity", level: order[(order.indexOf((state && state.brevity) || "brief") + 1) % order.length] });
