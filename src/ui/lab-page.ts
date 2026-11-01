@@ -6,7 +6,9 @@
 // so nothing needs installing). Plain strings spliced into page.ts; no
 // backticks or dollar-braces in the JS below.
 
-export const LAB_CSS = /* css */ `
+import { SIM_CSS, SIM_JS } from "./sim-page.ts";
+
+export const LAB_CSS = SIM_CSS + /* css */ `
 #rview { display: none; flex: 1; min-height: 0; }
 body.research #rview { display: grid; grid-template-columns: minmax(0, 1fr) 300px; }
 body.research { grid-template-columns: 260px 1fr; }
@@ -95,12 +97,15 @@ export const LAB_VIEW = `<section id="rview">
       <h2>🔬 Research lab<span class="sp"></span><button id="labInstBtn" title="What Maxx can measure from here">🧰 Instruments</button><button id="labCfg" title="Research lab settings">⚙</button></h2>
       <p>Ask something that evidence can answer. Maxx sharpens the question, gathers data from the web and your instruments, writes rival hypotheses that must cite their evidence, tests each with a script in a sandbox, fact-checks every claim and number, lets a skeptic attack it, and writes a lab notebook.</p>
       <textarea id="rq" placeholder="e.g. Does my desk get warmer while the PC runs, and is the fan what I hear?"></textarea>
+      <div class="rbranch" id="rbranch"></div>
       <div class="row"><span class="grow" id="rsettings"></span><button class="danger" id="rstop" disabled>Stop</button><button class="go" id="rgo">Start study</button></div>
       <div class="rrules"><span>📏 measured</span><span>✔ checked on its page</span><span>🔁 confirmed by another site</span><span>💬 opinion</span><span>⚠ unconfirmed</span><span>⚖ disputed</span><span>✗ fabricated</span></div>
     </div>
     <div class="study" id="lab"></div>
-    <div class="rtabs" id="rtabs"><button data-t="notebook">📒 Notebook</button><button data-t="claims">⚖ Claims</button><button data-t="evidence">📡 Evidence</button><button data-t="log">🗒 Instrument log</button></div>
+    <div class="rtabs" id="rtabs"><button data-t="notebook">📒 Notebook</button><button data-t="claims">⚖ Claims</button><button data-t="evidence">📡 Evidence</button><button data-t="sim">🧪 Virtual lab</button><button data-t="log">🗒 Instrument log</button></div>
     <div id="rpane"></div>
+    <div id="rplay"></div>
+    <div class="rdisc" id="rdisc"></div>
     <div class="rpast" id="rpast"></div>
   </div>
   <div id="rfeed"><div class="fh">Lab feed · approvals and notes</div></div>
@@ -121,6 +126,9 @@ export const LAB_HTML = `<dialog id="labDlg"><form method="dialog" id="labForm">
   </div>
   <div class="row"><label>Serial listen (s) <input id="lSer" type="number" min="1" max="300" title="How long a COM port is read when the plan does not say"></label></div>
   <label class="check"><input type="checkbox" id="lSkep"> Skeptic review before the conclusion (by the vision model when it is a different model, for a real second opinion)</label>
+  <label class="check"><input type="checkbox" id="lSims"> Virtual labs: Maxx designs (or reuses) a simulation for the study and sweeps its parameters</label>
+  <label class="check"><input type="checkbox" id="lDeb"> Debate arena: the two leading hypotheses argue it out, scored only on cited evidence</label>
+  <label class="check"><input type="checkbox" id="lHor"> Look ahead: gap map, dated predictions, experiments to try, and what would change Maxx's mind</label>
   <h4 style="margin:12px 0 4px">Instruments</h4>
   <div id="labInst" class="hint">Looking…</div>
   <details style="margin-top:8px"><summary class="hint">Add your own instrument</summary><p class="hint">Any command that prints readings becomes an instrument. Put it in <code id="labFile"></code>:</p><pre>{ "instruments": [
@@ -130,7 +138,7 @@ export const LAB_HTML = `<dialog id="labDlg"><form method="dialog" id="labForm">
   <div class="btns"><button class="left" id="lReset" value="reset" formnovalidate>Defaults</button><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="save">Save</button></div>
 </form></dialog>`;
 
-export const LAB_JS = /* js */ `
+export const LAB_JS = SIM_JS + /* js */ `
 const LAB_TOKEN = new URLSearchParams(location.search).get("t") || "";
 const inResearch = () => !!(state && state.current && state.current.research);
 let rtab = "claims";
@@ -146,9 +154,10 @@ function drawResearch() {
   $("where").textContent = "🔬 Research";
   $("where").title = "Studies are saved in " + ((state.research && state.research.cwd) || "~/.maxx/research");
   const st = (state.labMode && state.labMode.settings) || {};
-  $("rsettings").textContent = (st.rounds || 2) + " rounds · up to " + (st.hypotheses || 3) + " hypotheses · " + (st.readings || 5) + " readings per round · " + (st.parallel || 1) + " test" + (st.parallel > 1 ? "s" : "") + " at once · skeptic " + (st.skeptic === false ? "off" : "on") + " · 🌐 web " + (state.network ? "on" : "off (turn on Network above)");
+  $("rsettings").textContent = (st.rounds || 2) + " rounds · up to " + (st.hypotheses || 3) + " hypotheses · " + (st.readings || 5) + " readings per round · " + (st.parallel || 1) + " test" + (st.parallel > 1 ? "s" : "") + " at once · skeptic " + (st.skeptic === false ? "off" : "on") + " · 🧪 labs " + (st.sims === false ? "off" : "on") + " · ⚔ debate " + (st.debate === false ? "off" : "on") + " · 🌐 web " + (state.network ? "on" : "off (turn on Network above)");
   $("rgo").disabled = busy; $("rstop").disabled = !busy;
   drawPast();
+  drawDiscover();
 }
 function drawPast() {
   const list = (state && state.research && state.research.studies) || [];
@@ -176,7 +185,8 @@ $("rgo").onclick = () => {
   if (!text || busy) return;
   lastStudy = null; drawLab(null); $("rpane").innerHTML = "";
   userMsg("🔬 " + text, []);
-  send({ type: "send", text, files: [], lab: true });
+  send({ type: "send", text, files: [], lab: true, parent: pendingParent || undefined });
+  setParent(null);
 };
 $("rq").onkeydown = (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("rgo").onclick(); } };
 $("rstop").onclick = () => send({ type: "stop" });
@@ -190,7 +200,16 @@ function drawPane() {
   $("rtabs").classList.toggle("on", !!s);
   if (!s) return pane.innerHTML = "";
   const ended = ["done", "stopped", "failed"].includes(s.state);
-  $("rtabs").querySelectorAll("button").forEach((b) => { b.classList.toggle("on", b.dataset.t === rtab); if (b.dataset.t === "notebook") b.disabled = !ended; });
+  $("rtabs").querySelectorAll("button").forEach((b) => { b.classList.toggle("on", b.dataset.t === rtab); if (b.dataset.t === "notebook") b.disabled = !ended; if (b.dataset.t === "sim") b.disabled = !s.lab; });
+  if (rtab === "sim" && s.lab) {
+    // Drawn once: redrawing would restart the simulation on every update.
+    if (simOpen && simOpen.where === "pane" && simOpen.study === s.id) return;
+    pane.innerHTML = '<p class="sub">Opening the virtual lab…</p>';
+    simOpen = { where: "pane", study: s.id, slug: s.lab.slug, runs: [], loading: true };
+    send({ type: "simLab", study: s.id });
+    return;
+  }
+  if (simOpen && simOpen.where === "pane") simOpen = null;
   if (rtab === "notebook" && ended) {
     const src = "/lab/" + LAB_TOKEN + "/" + encodeURIComponent(s.id) + "/report.html";
     if (!pane.querySelector("iframe") || pane.querySelector("iframe").dataset.src !== src) pane.innerHTML = '<iframe title="Lab notebook" data-src="' + src + '" src="' + src + '"></iframe><p class="sub"><a href="' + src + '" target="_blank">Open in its own window</a></p>';
@@ -218,22 +237,26 @@ function drawLab(s) {
   const evs = s.evidence.map((e) => '<span class="ev' + (e.error ? " bad" : "") + '" title="' + esc((e.error || e.text || "").slice(0, 600)) + '">' + e.icon + " " + e.id + " " + esc(e.title) + "</span>").join("");
   const hys = s.hypotheses.map((h) => {
     const a = Math.round(h.prior), b = Math.round(h.posterior == null ? h.prior : h.posterior);
-    return '<div class="hy ' + h.status + '"><span class="ic">' + H_ICON[h.status] + '</span><span class="id">' + h.id + '</span><span class="t">' + esc(h.text) + (h.speculative ? '<span class="pill" title="Cites no evidence, so its prior is capped at 35%">speculative</span>' : "") + (h.wildcard ? '<span class="pill" title="A new perspective added in a later round">wildcard</span>' : "") + (h.why ? '<span class="why">' + esc(h.why) + "</span>" : h.status === "testing" ? '<span class="why">writing and running a test' + (h.tries > 1 ? " (try " + h.tries + ")" : "") + "…</span>" : "") + "</span>" +
+    return '<div class="hy ' + h.status + '"><span class="ic">' + H_ICON[h.status] + '</span><span class="id">' + h.id + '</span><span class="t">' + esc(h.text) + (h.speculative ? '<span class="pill" title="Cites no evidence, so its prior is capped at 35%">speculative</span>' : "") + (h.wildcard ? '<span class="pill" title="A new perspective added in a later round">wildcard</span>' : "") + (h.kind && h.kind !== "rival" && !(h.wildcard && h.kind === "wildcard") ? '<span class="pill" title="' + (h.kind === "flipped" ? "One of the topic's assumptions, turned around" : h.kind === "borrowed" ? "An explanation borrowed from another field" : "A strange idea that still makes a testable prediction") + '">' + h.kind + (h.field ? " from " + esc(h.field) : "") + "</span>" : "") + (h.why ? '<span class="why">' + esc(h.why) + "</span>" : h.status === "testing" ? '<span class="why">writing and running a test' + (h.tries > 1 ? " (try " + h.tries + ")" : "") + "…</span>" : "") + "</span>" +
       '<span class="meter" title="' + a + "% before, " + b + '% after"><b class="' + (b >= a ? "up" : "down") + '" style="left:' + Math.min(a, b) + "%;width:" + Math.abs(b - a) + '%"></b><i style="left:' + a + '%"></i>' + (h.posterior == null ? "" : '<i class="post" style="left:' + b + '%"></i>') + "</span>" +
       '<span class="pc">' + (h.trail && h.trail.length > 1 ? h.trail.map((x) => Math.round(x) + "%").join(" → ") : a + "%" + (h.posterior == null ? "" : " → " + b + "%")) + "</span></div>";
   }).join("");
-  const report = ended && LAB_TOKEN ? '<a href="#" id="rnb">📒 Read the lab notebook</a>' : "";
+  const report = (ended && LAB_TOKEN ? '<a href="#" id="rnb">📒 Read the lab notebook</a>' : "") + (s.lab ? ' <a href="#" id="rsimgo">🧪 Play with the lab</a>' : "") + (ended ? ' <button id="rbr" title="Start a new study that grows from this one">🌱 Branch from this</button>' : "");
   const a = s.audit;
   const audit = a ? '<span class="audit ' + (a.ok ? "ok" : "bad") + '">' + (a.ok ? "✔ Fact check passed: " + a.numbers + " numbers traced to the evidence" : "⚠ Fact check: " + [a.unsupported.length ? a.unsupported.length + " number(s) not in the evidence" : "", a.fakeCitations.length ? a.fakeCitations.length + " citation(s) to nothing" : "", a.uncited.length ? a.uncited.length + " uncited finding(s)" : ""].filter(Boolean).join(", ")) + (a.revised ? " (after one revision)" : "") + "</span>" : "";
   const st = ended ? s.state : (s.rounds > 1 && s.round ? "round " + s.round + " of " + s.rounds + " · " : "") + (PHASES[at] ? PHASES[at][1].slice(2).toLowerCase() + "…" : "");
   box.innerHTML = '<div class="head"><span>🔬</span><span class="q"></span><span class="st">' + esc(st) + "</span></div>" +
     (s.sharpened && s.sharpened !== s.question ? '<div class="sharp">→ ' + esc(s.sharpened) + "</div>" : "") +
-    '<div class="pipe">' + pipe + "</div>" + (evs ? '<div class="evs">' + evs + "</div>" : "") + (s.claims && s.claims.length ? '<div class="tally">Claims: ' + esc(tallyOf(s.claims)) + "</div>" : "") + hys +
+    '<div class="pipe">' + pipe + "</div>" + (evs ? '<div class="evs">' + evs + "</div>" : "") + (s.claims && s.claims.length ? '<div class="tally">Claims: ' + esc(tallyOf(s.claims)) + "</div>" : "") + hys + labExtras(s) +
     '<div class="foot">' + (recording ? '<span class="rec">● ' + esc(recording) + "</span>" : "") + (s.confidence != null ? '<span class="conf">Confidence ' + s.confidence + "%</span>" : "") + audit + (ended && s.note ? "<span>" + esc(s.note) + "</span>" : "") + report + "</div>";
   box.querySelector(".q").textContent = s.question;
   box.querySelector(".q").title = s.question;
   const nb = box.querySelector("#rnb");
   if (nb) nb.onclick = (e) => { e.preventDefault(); rtab = "notebook"; drawPane(); };
+  const sg = box.querySelector("#rsimgo");
+  if (sg) sg.onclick = (e) => { e.preventDefault(); rtab = "sim"; drawPane(); };
+  const br = box.querySelector("#rbr");
+  if (br) br.onclick = () => studyThis("", { id: s.id, question: s.sharpened || s.question });
 }
 let lastStudy = null;
 let studyEnded = false;
@@ -310,6 +333,14 @@ function labForm(values) {
   const v = values || (state && state.labMode && state.labMode.settings) || {};
   for (const [id, k] of Object.entries(LAB_FIELDS)) $(id).value = v[k];
   $("lSkep").checked = v.skeptic !== false;
+  $("lSims").checked = v.sims !== false;
+  $("lDeb").checked = v.debate !== false;
+  $("lHor").checked = v.horizon !== false;
+}
+function onSimLab(m) {
+  if (m.study && lastStudy && m.study === lastStudy.id && rtab === "sim") return drawPlayground("pane", m);
+  if (simOpen && simOpen.where === "pane") return;
+  drawPlayground("play", m);
 }
 function drawInstruments(m) {
   const ICONS = { web: "🌐", serial: "🔌", camera: "📷", mic: "🎙", file: "📄", command: "🧰" };
@@ -326,7 +357,7 @@ $("labForm").onsubmit = (e) => {
   if (how !== "save") return;
   const d = (state && state.labMode && state.labMode.defaults) || {}, out = {};
   for (const [id, k] of Object.entries(LAB_FIELDS)) { const n = Number($(id).value); if ($(id).value !== "" && n !== d[k]) out[k] = n; }
-  if ($("lSkep").checked !== (d.skeptic !== false)) out.skeptic = $("lSkep").checked;
+  for (const [id, k] of [["lSkep", "skeptic"], ["lSims", "sims"], ["lDeb", "debate"], ["lHor", "horizon"]]) if ($(id).checked !== (d[k] !== false)) out[k] = $(id).checked;
   send({ type: "labSettings", settings: out });
 };
 `;
