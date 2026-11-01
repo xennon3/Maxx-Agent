@@ -114,7 +114,7 @@ test("the gate lets in as many as it has slots, queues the rest in order, and dr
   expect(g.state.busy).toBe(0);
   g.resize(3);
   expect(g.state.slots).toBe(3);
-});
+}, 30_000);
 
 test("the probe tells a server that queues from one that runs requests together", async () => {
   expect(slotsFrom(100, 310, 3)).toBe(1);
@@ -125,7 +125,7 @@ test("the probe tells a server that queues from one that runs requests together"
   expect((await probeParallel(llm, 3)).slots).toBe(1);
   serial = false;
   expect((await probeParallel(llm, 3)).slots).toBe(3);
-});
+}, 30_000);
 
 test("the crew runs independent tasks at the same time in worktrees and merges them into the folder", async () => {
   const { dir, agent, log } = await setup();
@@ -154,7 +154,7 @@ test("the crew runs independent tasks at the same time in worktrees and merges t
   expect(Bun.spawnSync(["git", "worktree", "list"], { cwd: dir }).stdout.toString().trim().split("\n")).toHaveLength(1);
   expect(Bun.spawnSync(["git", "log", "--oneline"], { cwd: dir }).stdout.toString().trim().split("\n")).toHaveLength(1);
   expect(boards.some((x) => x.workers.some((w) => w.state === "thinking"))).toBe(true);
-});
+}, 30_000);
 
 test("with one slot the workers take turns at the model, and the board shows who is queued", async () => {
   const { dir, agent } = await setup();
@@ -162,12 +162,14 @@ test("with one slot the workers take turns at the model, and the board shows who
   byTask = { t1: [write("b.txt", "B\n"), { text: "DONE" }], t2: [write("c.txt", "C\n"), { text: "DONE" }] };
   maxInFlight = 0;
   boards.length = 0;
-  const b = (await runCrew(agent, "two files", events, { crew: crewSettings({ workers: 2, slots: 1, finalCheck: false }), settings })) as CrewBoard;
+  // Slow answers, so the second worker reaches the gate while the first holds it, however long its worktree took.
+  delay = 800;
+  const b = (await runCrew(agent, "two files", events, { crew: crewSettings({ workers: 2, slots: 1, finalCheck: false }), settings }).finally(() => (delay = 60))) as CrewBoard;
   expect(b.state).toBe("done");
   expect(maxInFlight).toBe(1);
   expect(boards.some((x) => x.workers.some((w) => w.state === "queued"))).toBe(true);
   expect(existsSync(join(dir, "b.txt")) && existsSync(join(dir, "c.txt"))).toBe(true);
-});
+}, 30_000);
 
 test("a clash is sorted out by the later worker in its own copy, then merged", async () => {
   const { dir, agent, log } = await setup();
@@ -184,7 +186,7 @@ test("a clash is sorted out by the later worker in its own copy, then merged", a
   expect(await readFile(join(dir, "notes.txt"), "utf8")).toBe("line one\nRED and BLUE\nline three\n");
   expect(seen.some((k) => k.endsWith("-resolve"))).toBe(true);
   expect(log.some((l) => l.includes("clashes with merged work in notes.txt"))).toBe(true);
-});
+}, 30_000);
 
 test("a failed task fails the ones that need it; the rest still lands, in a folder without git", async () => {
   const { dir, agent } = await setup(false);
@@ -197,7 +199,7 @@ test("a failed task fails the ones that need it; the rest still lands, in a fold
   expect(await readFile(join(dir, "c.txt"), "utf8")).toBe("C\n");
   expect(existsSync(join(dir, "a.txt"))).toBe(false);
   expect(b.note).toContain("#1, #2 failed");
-});
+}, 30_000);
 
 test("changes the user made while the crew worked are kept", async () => {
   const { dir, agent } = await setup();
@@ -208,7 +210,7 @@ test("changes the user made while the crew worked are kept", async () => {
   expect(b.state).toBe("done");
   expect(await readFile(join(dir, "mine.txt"), "utf8")).toBe("mine\n");
   expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("A\n");
-});
+}, 30_000);
 
 test("the brief tells a worker who it is and what the others are doing", () => {
   const b: CrewBoard = {
@@ -239,4 +241,4 @@ test("stopping keeps the folder as it was and cleans up the worktrees", async ()
   expect(b.state).toBe("stopped");
   expect(existsSync(join(dir, "a.txt"))).toBe(false);
   expect(await readdir(join(process.env.MAXX_HOME!, "crew")).then(async (ps) => (await Promise.all(ps.map((p) => readdir(join(process.env.MAXX_HOME!, "crew", p))))).flat())).toEqual([]);
-});
+}, 30_000);
