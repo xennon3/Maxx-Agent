@@ -197,6 +197,26 @@ body.agent .composer textarea { border-color: #1971c2; }
 .sw.big { display: flex; border-radius: 6px; overflow: hidden; min-height: 28px; border: 1px solid var(--line); }
 .sw.big i { flex: 1; height: auto; min-height: 28px; }
 .sw.big:empty { border-style: dashed; }
+#rulesDlg { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); padding: 0; width: min(560px, calc(100vw - 32px)); }
+#rulesDlg::backdrop { background: rgba(0,0,0,.35); }
+#rulesDlg form { display: flex; flex-direction: column; gap: 10px; padding: 16px; }
+#rulesDlg h3 { margin: 0; }
+#rulesDlg .hint { font-size: 12px; color: var(--mute); margin: 0; }
+#rulesDlg label.check { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+#rulesDlg .btns { display: flex; gap: 8px; justify-content: flex-end; }
+#ruleList { display: flex; flex-direction: column; gap: 6px; max-height: 50vh; overflow: auto; }
+#ruleList .rule { display: flex; gap: 6px; align-items: center; }
+#ruleList .rule input { flex: 1; min-width: 0; }
+#ruleList .rule .x { flex: none; font-size: 12px; color: var(--mute); min-width: 2.6em; text-align: right; }
+#ruleList .rule .x:empty { display: none; }
+#undoBtn:disabled { opacity: .45; cursor: default; }
+#ruleList .rule .x.strong { color: var(--accent); font-weight: 700; }
+#ruleList .rule button { flex: none; padding: 2px 8px; }
+#ruleList .none { color: var(--mute); font-size: 13px; padding: 6px 0; }
+.chip.rules.on { background: #2b8a3e; border-color: #2b8a3e; color: #fff; }
+.msg.learned { border-left: 3px solid #2b8a3e; padding-left: 10px; color: var(--ink); }
+.ask .why { display: flex; gap: 8px; padding: 0 12px 10px; }
+.ask .why input { flex: 1; min-width: 0; }
 #palDlg { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); padding: 0; width: min(620px, calc(100vw - 32px)); }
 #palDlg::backdrop { background: rgba(0,0,0,.35); }
 #palDlg form { display: flex; flex-direction: column; gap: 10px; padding: 16px; }
@@ -249,6 +269,7 @@ ${VIS_CSS}
     <span class="chip" id="netBtn" title="Let Maxx look things up on the web (and in the MCP servers in ~/.maxx/mcp.json), install packages (pip, npm...) and download files">🌐 Network: off</span>
     <span class="chip" id="briefBtn" title="How much Maxx says. Click to switch: Brief (short answers, no padding), Normal, Detailed (explanations and examples)">✂ Brief</span>
     <span class="chip" id="palBtn" title="The colors Maxx designs with: charts, diagrams, pages, apps and games. You can also say it in a message: “make it in synthwave colors”">🎨 Colors: auto</span>
+    <span class="chip rules projonly" id="rulesBtn" title="Rules Maxx learned when you corrected it (saying “no, use…”, denying a step with a reason, fixing its code by hand, or undoing a turn). They live in this project's MAXX.md.">📏 Rules</span>
     <span class="chip agent projonly" id="agentBtn" title="Agent mode: give Maxx a goal. It splits it into tasks and works through them on its own, checking each one and rewinding any that fail.">🤖 Agent</span><span class="chip gear projonly" id="agentCfg" title="Agent mode settings">⚙</span>
     <span class="chip helper projonly" id="helperBtn" title="A bigger model Maxx calls when the local one is stuck">🧠 Helper: off</span>
     <button id="newBtn" title="Start a new session">New</button>
@@ -267,6 +288,7 @@ ${VIS_CSS}
       <div style="display:flex;flex-direction:column;gap:6px">
         <button class="primary" id="sendBtn">Send</button>
         <button class="danger" id="stopBtn" disabled>Stop</button>
+        <button id="undoBtn" class="projonly" disabled title="Put every file back as it was before Maxx's last turn. Then say what you wanted instead, and Maxx learns a rule from it.">↶ Undo</button>
       </div>
     </div>
   </div>
@@ -281,6 +303,14 @@ ${STAGE_HTML}
   <p class="hint">One color grows into five: add analogous, complementary, triad, split, tetrad or mono after it.</p>
   <input type="file" id="palFile" accept="image/*" hidden>
   <div class="btns"><button class="left" value="auto" formnovalidate title="No palette: the model picks its own colors">Auto</button><button value="random" title="A fresh palette that still hangs together">🎲 Surprise me</button><button type="button" id="palImgBtn" title="Pull the main colors out of a picture, a logo or a screenshot">🖼 From an image</button><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="save">Use these</button></div>
+</form></dialog>
+<dialog id="rulesDlg"><form method="dialog" id="rulesForm">
+  <h3>📏 Rules from your corrections</h3>
+  <p class="hint">When you correct Maxx (“no, use pnpm”, Deny with a reason, fixing its code by hand, or ↶ Undo), it writes one short rule here so it doesn't make the same mistake again. xN means you corrected it N times. They are saved in this project's MAXX.md and go to the model at the start of every session.</p>
+  <div id="ruleList"></div>
+  <div class="ruleadd" style="display:flex;gap:6px"><input id="ruleNew" style="flex:1" autocomplete="off" placeholder="Add your own rule: “Keep all colors in src/theme.ts.”"><button type="button" id="ruleAdd">Add</button></div>
+  <label class="check"><input type="checkbox" id="learnOn"> Learn new rules when I correct Maxx</label>
+  <div class="btns"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="save">Save</button></div>
 </form></dialog>
 <dialog id="helperDlg"><form method="dialog" id="helperForm">
   <h3>🧠 Helper model</h3>
@@ -526,6 +556,10 @@ function on(m) {
       activity({ title: "Working" });
       return;
     case "note": return note(m.text);
+    case "learned": {
+      note(m.text, "learned");
+      return toast("📏 " + m.rule.text, "Undo", () => send({ type: "forgetRule", text: m.rule.text }));
+    }
     case "plan": return drawPlan(m.steps);
     case "board": return drawBoard(m.board);
     case "escalation":
@@ -539,7 +573,7 @@ function on(m) {
     case "question": return questionCard(m);
     case "questionDone": return questionDone(m);
     case "busy":
-      busy = m.busy; $("stopBtn").disabled = !busy; $("sendBtn").disabled = busy;
+      busy = m.busy; $("stopBtn").disabled = !busy; $("sendBtn").disabled = busy; if (busy) $("undoBtn").disabled = true;
       if (!busy) { helperLive = null; $("activity").classList.remove("helper"); }
       if (!busy) { streaming = null; thinkCard = null; abandonWriting(); }
       activity(busy ? { title: "Starting" } : null);
@@ -723,12 +757,18 @@ function askCard(m) {
   activity({ title: "Waiting for your OK" });
   const d = add(div("ask"));
   d.innerHTML = '<div class="q">' + esc(m.question) + "</div>" + (m.preview ? "<pre>" + ansi(m.preview) + "</pre>" : "") +
-    '<div class="btns"><button class="primary" data-a="yes">Allow</button><button data-a="always">Always allow</button><button class="danger" data-a="no">Deny</button></div>';
-  d.querySelectorAll("button").forEach((b) => b.onclick = () => {
-    send({ type: "answer", id: m.id, answer: b.dataset.a });
+    '<div class="btns"><button class="primary" data-a="yes">Allow</button><button data-a="always">Always allow</button><button class="danger" data-a="no">Deny</button></div>' +
+    '<div class="why"><input placeholder="Why not? (optional: Maxx reads it and learns a rule; Enter denies)" autocomplete="off"></div>';
+  const why = d.querySelector(".why input");
+  const answer = (a) => {
+    const reason = a === "no" ? why.value.trim() : "";
+    send({ type: "answer", id: m.id, answer: a, why: reason });
     d.classList.add("answered");
-    d.querySelector(".btns").textContent = b.dataset.a === "no" ? "Denied" : b.dataset.a === "always" ? "Always allowed" : "Allowed";
-  });
+    d.querySelector(".btns").textContent = a === "no" ? "Denied" + (reason ? ": " + reason : "") : a === "always" ? "Always allowed" : "Allowed";
+    d.querySelector(".why").remove();
+  };
+  d.querySelectorAll("button").forEach((b) => b.onclick = () => answer(b.dataset.a));
+  why.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); answer("no"); } };
   if (document.hidden && "Notification" in window && Notification.permission === "granted") new Notification("Maxx needs your OK", { body: m.question });
 }
 
@@ -785,6 +825,10 @@ function render(s) {
   const pb = $("palBtn"), pal = s.palette;
   pb.classList.toggle("on", !!pal);
   pb.innerHTML = "🎨 " + (pal ? esc(pal.name) + swatchHtml(pal.colors.slice(0, 8), "sw") : "Colors: auto");
+  const rb = $("rulesBtn"), rules = (cur && cur.rules) || [];
+  rb.classList.toggle("on", !!s.learn);
+  rb.textContent = "📏 Rules" + (rules.length ? ": " + rules.length : "") + (s.learn ? "" : " (off)");
+  $("undoBtn").disabled = !(cur && cur.canUndo) || !!(cur && cur.busy);
   const hb = $("helperBtn"), hs = s.helper;
   const helperOn = hs && !hs.off && hs.model;
   hb.classList.toggle("on", !!helperOn);
@@ -801,7 +845,7 @@ function render(s) {
     const results = cur.history.filter((h) => h.role === "tool").map((h) => h.text);
     let ri = 0;
     for (const h of cur.history) {
-      if (h.role === "mark") add(div("mark" + (h.active ? " up" : ""), (h.active ? "🧠 " : "↩ ") + h.text));
+      if (h.role === "mark") add(h.learned ? div("msg learned", h.text) : div("mark" + (h.active ? " up" : ""), (h.active ? "🧠 " : "↩ ") + h.text));
       else if (h.role === "user") userMsg(h.text, h.files);
       else if (h.role === "note") note(h.text.split("\\n")[0]);
       else if (h.role === "assistant") {
@@ -1017,6 +1061,37 @@ $("palBtn").onclick = () => {
   palPreview();
   $("palDlg").showModal();
 };
+// The rules dialog: edit in place, remove, add; Save sends the whole list.
+let ruleDraft = [];
+function drawRules() {
+  const list = $("ruleList"); list.innerHTML = "";
+  if (!ruleDraft.length) list.appendChild(div("none", "No rules yet. Correct Maxx when it gets something wrong and it writes one here."));
+  ruleDraft.forEach((r, i) => {
+    const row = div("rule");
+    const x = div("x" + (r.times > 2 ? " strong" : ""), r.times > 1 ? "x" + r.times : "");
+    x.title = r.times > 1 ? "You corrected this " + r.times + " times" : "";
+    const inp = document.createElement("input"); inp.value = r.text; inp.oninput = () => { r.text = inp.value; };
+    const del = document.createElement("button"); del.type = "button"; del.textContent = "✕"; del.title = "Remove this rule";
+    del.onclick = () => { ruleDraft.splice(i, 1); drawRules(); };
+    row.append(x, inp, del); list.appendChild(row);
+  });
+}
+$("rulesBtn").onclick = () => {
+  ruleDraft = (((state && state.current && state.current.rules) || [])).map((r) => ({ ...r }));
+  $("learnOn").checked = !!(state && state.learn);
+  $("ruleNew").value = "";
+  drawRules();
+  $("rulesDlg").showModal();
+};
+const addRuleDraft = () => { const t = $("ruleNew").value.trim(); if (!t) return; ruleDraft.push({ text: t, times: 1 }); $("ruleNew").value = ""; drawRules(); };
+$("ruleAdd").onclick = addRuleDraft;
+$("ruleNew").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); addRuleDraft(); } };
+$("rulesForm").onsubmit = (e) => {
+  if (!e.submitter || e.submitter.value !== "save") return;
+  if ($("ruleNew").value.trim()) addRuleDraft();
+  send({ type: "rules", learn: $("learnOn").checked, rules: ruleDraft.filter((r) => r.text.trim()) });
+};
+$("undoBtn").onclick = () => send({ type: "undoTurn" });
 function swatchHtml(colors, cls) { return '<span class="' + cls + '">' + colors.map((c) => '<i style="background:' + esc(c) + '"></i>').join("") + "</span>"; }
 function palPreview() {
   const hexes = ($("palSpec").value.match(/#[0-9a-f]{6}\\b|#[0-9a-f]{3}\\b|\\b[0-9a-f]{6}\\b/gi) || []).map((h) => "#" + h.replace("#", ""));

@@ -3,7 +3,10 @@ import { mkdir } from "node:fs/promises";
 import type { Tool } from "./tools/types.ts";
 
 export type Mode = "ask" | "auto-edit" | "yolo";
-export type Answer = "yes" | "no" | "always";
+// "no: <why>" is a denial with the user's reason, which the model reads and Maxx learns from.
+export type Answer = "yes" | "no" | "always" | `no: ${string}`;
+export const isNo = (a: Answer) => a === "no" || a.startsWith("no:");
+export const whyNo = (a: Answer) => (a.startsWith("no:") ? a.slice(3).trim() : "");
 
 type Settings = { allow: string[] };
 

@@ -23,6 +23,7 @@ import { describeHelper, resolveHelper, type Helper } from "./escalate.ts";
 import { useAndroidToolchain } from "./toolchain.ts";
 import { parseSwitch, resolveNetwork, saveNetwork } from "./network.ts";
 import { BREVITY, parseBrevity, resolveBrevity, saveBrevity } from "./brevity.ts";
+import { loadRules, resolveLearn, saveLearn, saveRules, tidyRules } from "./learn.ts";
 import { describePalette, parsePalette, presetList, resolvePalette, savePalette, swatches } from "./palette.ts";
 import { agentSettings, cleanSettings, loadAgentSettings, runGoal, type Board } from "./agentmode.ts";
 
@@ -77,6 +78,9 @@ options:
                      setting, which starts off); installs still ask first in ask mode
   --brevity <level>  how much Maxx says: brief (default), normal or detailed; saved with
                      /brevity or the app's ✂ switch (default $MAXX_BREVITY or the saved setting)
+  --learn <on|off>   learn a rule for MAXX.md when you correct Maxx ("no, use pnpm", a denial
+                     with a reason, a hand fix, /undo); /rules to review them (default on,
+                     $MAXX_LEARN or the saved setting)
   --palette <p>      the colors Maxx designs with (charts, diagrams, pages, games): a preset
                      (sunset, synthwave, pico, colorblind... see /palette list), hex colors
                      "#264653 #2a9d8f #e9c46a", one color and a harmony "#ff6600 triad", a coolors.co
@@ -104,7 +108,7 @@ options:
   --resume <ref>     continue a session by number (from \`maxx sessions\`), id, or words from its title
 
 in a session:
-  /agent <goal>  /help  /mode <m>  /with <sets|none>  /plan  /helper [off|on]  /network [on|off]  /brevity [brief|normal|detailed]  /palette [name|#hex...|random|auto|list]  /checkpoints  /rewind <n>  /clear  /exit
+  /agent <goal>  /help  /mode <m>  /with <sets|none>  /plan  /helper [off|on]  /network [on|off]  /brevity [brief|normal|detailed]  /palette [name|#hex...|random|auto|list]  /rules [on|off|add <rule>|rm <n>]  /undo  /checkpoints  /rewind <n>  /clear  /exit
   /sessions  /resume <ref>  /new  /title <text>   (sessions are saved per project after every turn)
   /delete <ref>  /undelete     delete a session (this one if no ref), bring it back
   /attach <file...>            send files with your next message: images to the vision model, text inline
@@ -130,6 +134,7 @@ const { values, positionals } = parseArgs({
     "helper-after": { type: "string" },
     network: { type: "string" },
     brevity: { type: "string" },
+    learn: { type: "string" },
     palette: { type: "string" },
     prompt: { type: "string", short: "p" },
     agent: { type: "string" },
@@ -219,9 +224,9 @@ if (positionals[0] === "ui" || (fromExplorer && !positionals.length && !values.p
   const port = values.port ? Number(values.port) : 4317;
   let ui;
   try {
-    ui = await startUI({ baseURL, model: values.model ?? process.env.MAXX_MODEL, port, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, brevity: values.brevity, palette: values.palette, ...voice });
+    ui = await startUI({ baseURL, model: values.model ?? process.env.MAXX_MODEL, port, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, brevity: values.brevity, learn: values.learn, palette: values.palette, ...voice });
   } catch {
-    ui = await startUI({ baseURL, model: values.model ?? process.env.MAXX_MODEL, port: 0, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, brevity: values.brevity, palette: values.palette, ...voice });
+    ui = await startUI({ baseURL, model: values.model ?? process.env.MAXX_MODEL, port: 0, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, brevity: values.brevity, learn: values.learn, palette: values.palette, ...voice });
   }
   // Dev servers started from the Run panel go down with Maxx.
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(sig, () => (ui.stop(), process.exit(0)));
@@ -320,9 +325,12 @@ const io: AgentIO = {
     status.stop();
     if (preview) console.log(preview);
     for (;;) {
-      const a = (await rl.question(`${C.bold}${question}${C.reset} [y]es / [n]o / [a]lways: `)).trim().toLowerCase();
+      const raw = (await rl.question(`${C.bold}${question}${C.reset} [y]es / [n]o / [a]lways  (or "n <why>", and Maxx learns from it): `)).trim();
+      const a = raw.toLowerCase();
       if (a === "y" || a === "yes" || a === "") return "yes";
       if (a === "n" || a === "no") return "no";
+      const why = raw.match(/^no?[\s,:.-]+(.+)$/i)?.[1]?.trim();
+      if (why) return `no: ${why}`;
       if (a === "a" || a === "always") return "always";
     }
   },
@@ -366,6 +374,7 @@ try {
 }
 const network = await resolveNetwork(values.network).catch((e) => die((e as Error).message));
 const brevity = await resolveBrevity(values.brevity).catch((e) => die((e as Error).message));
+const learn = await resolveLearn(values.learn).catch((e) => die((e as Error).message));
 const palette = await resolvePalette(values.palette).catch((e) => die((e as Error).message));
 // Agent mode budgets: the context window's defaults, then saved choices, then flags.
 const judgeFlag = values.judge === undefined ? undefined : parseSwitch(values.judge);
@@ -376,7 +385,7 @@ const goalSettings = agentSettings(Number(values.context), {
   ...(await loadAgentSettings()),
   ...cleanSettings({ maxTasks: values["max-tasks"], stepsPerTask: values["task-steps"], tries: values["task-tries"], mapTokens: values["map-tokens"], judge: judgeFlag, briefing: briefingFlag, askMinutes: values["ask-wait"] }),
 });
-const agent = await new Agent({ llm, cwd, permissions, contextWindow: Number(values.context), toolsets, vision, check, fixTries, plan: !values["no-plan"], helper, network, brevity, palette, mapTokens: goalSettings.mapTokens }, io).init();
+const agent = await new Agent({ llm, cwd, permissions, contextWindow: Number(values.context), toolsets, vision, check, fixTries, plan: !values["no-plan"], helper, network, brevity, palette, learn, mapTokens: goalSettings.mapTokens }, io).init();
 let created = new Date().toISOString();
 let title = "";
 if (resumed) await resumeInto(resumed);
@@ -614,7 +623,30 @@ async function command(line: string) {
       const list = agent.checkpoints.list();
       return console.log(list.length ? list.join("\n") : "(no checkpoints yet; one is taken before every write or command)");
     }
-    case "/rewind": return console.log(await agent.checkpoints.restore(Number(arg ?? -1)));
+    case "/rewind": {
+      const r = await agent.checkpoints.restore(Number(arg ?? -1));
+      if (r.startsWith("restored")) agent.markUndone();
+      return console.log(r);
+    }
+    case "/undo": return console.log(await agent.undoTurn());
+    case "/rules": {
+      const rest = line.slice(cmd!.length).trim();
+      const rules = await loadRules(cwd);
+      if (arg === "on" || arg === "off") {
+        agent.setLearn(arg === "on");
+        await saveLearn(arg === "on");
+      } else if (arg === "add" || arg === "rm") {
+        const what = rest.slice(arg.length).trim();
+        const n = Number(what);
+        if (arg === "rm" && !(n >= 1 && n <= rules.length)) return console.log(`usage: /rules rm <1-${rules.length || 1}>`);
+        if (arg === "add" && !what) return console.log("usage: /rules add <rule>");
+        await saveRules(cwd, arg === "rm" ? rules.filter((_, i) => i !== n - 1) : tidyRules([...rules, { text: what }]));
+        await agent.refreshSystemPrompt();
+      } else if (rest) return console.log("usage: /rules [on|off|add <rule>|rm <n>]");
+      const now = await loadRules(cwd);
+      console.log(`learning from corrections: ${agent.learning ? "on" : "off"}  (rules live in MAXX.md)`);
+      return console.log(now.length ? now.map((r, i) => `  ${i + 1}. ${r.text}${r.times > 1 ? ` ${C.dim}x${r.times}${C.reset}` : ""}`).join("\n") : "  (no rules yet: when you correct Maxx, it writes one here)");
+    }
     default: console.log(`unknown command ${cmd}; try /help`);
   }
 }

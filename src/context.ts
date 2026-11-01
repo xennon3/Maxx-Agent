@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import type { ContentPart, Message } from "./llm.ts";
 import { describeShell } from "./shell.ts";
+import { rulesIn, rulesPrompt, withRules } from "./learn.ts";
 
 // Rough but dependency-free: ~4 characters per token for code and English.
 // An image is counted as a flat ~1000 tokens, not by the length of its base64.
@@ -51,18 +52,24 @@ export async function systemPrompt(cwd: string, toolsetNotes: string[] = []): Pr
     "- When you are done, reply in plain text with a short summary of what changed. Do not call tools in that final reply.",
     "- If the user denies a tool call, respect it and ask how they want to proceed.",
     ...toolsetNotes.map((n) => "\n" + n),
-    ...memory.map((m) => `\nProject notes from ${m.file}:\n${m.text}`),
+    ...memory.notes.map((m) => `\nProject notes from ${m.file}:\n${m.text}`),
+    ...(memory.rules ? ["\n" + memory.rules] : []),
   ].join("\n");
 }
 
 // MAXX.md (which holds the lessons Maxx keeps) plus the first other agent notes file.
+// The rules learned from corrections come out of MAXX.md and go last, on their own.
 async function loadMemory(cwd: string) {
   const read = async (file: string) => {
     const f = Bun.file(join(cwd, file));
-    return (await f.exists()) ? { file, text: truncate(await f.text(), 150, 0) } : null;
+    return (await f.exists()) ? { file, text: await f.text() } : null;
   };
+  const maxx = await read("MAXX.md");
+  const rules = maxx ? rulesIn(maxx.text) : [];
+  if (maxx) maxx.text = withRules(maxx.text, []).trim();
   const other = (await read("AGENTS.md")) ?? (await read("CLAUDE.md"));
-  return [await read("MAXX.md"), other].filter((m) => m !== null);
+  const notes = [maxx, other].filter((m) => m !== null && m.text).map((m) => ({ file: m!.file, text: truncate(m!.text, 150, 0) }));
+  return { notes, rules: rulesPrompt(rules) };
 }
 
 // Replace the oldest turns with a model-written summary, keeping the system

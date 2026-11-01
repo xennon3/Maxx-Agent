@@ -86,6 +86,15 @@ export class Checkpoints {
     return commit.out;
   }
 
+  // How many snapshots this session has, and one of them (for undoing a whole turn).
+  get count() {
+    return this.steps.length;
+  }
+
+  shaAt(step: number): string | undefined {
+    return this.steps[step]?.sha;
+  }
+
   list() {
     return this.steps.map((s, i) => `${i}: ${s.sha.slice(0, 8)}  ${s.label}`);
   }
