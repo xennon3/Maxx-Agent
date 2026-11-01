@@ -186,7 +186,7 @@ test("explores every screen and finds the crash, the dead button and the exit", 
   // Delete all was never pressed.
   expect(app.inputs.some((i) => i[2] === "tap" && i[4] === "1160")).toBe(false);
 
-  const { text, images } = describeExplore(r, (p) => p.slice(cwd.length + 1));
+  const { text, images } = describeExplore(r, (p) => p.slice(cwd.length + 1).replace(/\\/g, "/"));
   expect(text).toMatch(/^Explored com\.example\.notes with \d+ actions/);
   expect(text).toContain("CRASHES");
   expect(text).toContain("reproduce: maxx replay .maxx/replays/crash-");
