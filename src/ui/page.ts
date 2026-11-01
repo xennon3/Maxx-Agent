@@ -133,6 +133,22 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
 .tool.live pre::after { content: "▍"; color: var(--accent); animation: blink 1s steps(1) infinite; }
 .tool.skipped { opacity: .6; }
 .think { max-width: 860px; color: var(--mute); }
+/* Folding: the task board, the Plan and the live code preview each fold to one line, so the current activity keeps its room. */
+.board .head, .plan .head { cursor: pointer; user-select: none; }
+.board .head:hover .caret, .plan .head:hover .caret { color: var(--accent); }
+.caret { display: inline-block; width: 1em; color: var(--mute); font-weight: 400; transition: transform .15s; }
+.min .caret { transform: rotate(-90deg); }
+.head .now { display: none; color: var(--mute); font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+.min .head .now { display: block; }
+.board.min .head .goal { flex: 0 1 auto; max-width: 35%; }
+.board.min > :not(.head):not(.bar), .plan.min > :not(.head) { display: none; }
+.board.on.min, .board.crew.on.min { max-height: none; overflow: visible; }
+.board.min .bar { margin-bottom: 0; }
+.plan.on:not(.min) { max-height: 30vh; overflow: auto; }
+.plan .head { gap: 8px; align-items: baseline; }
+.plan .head > b { flex: none; }
+.tool.live:not([open]) summary .meta::after { content: " · click to watch the code"; }
+.foldall { font-size: 12px; padding: 2px 8px; border-radius: 999px; }
 .think summary { cursor: pointer; font-size: 13px; font-style: italic; }
 .think pre { margin: 4px 0 0; padding: 6px 10px; border-left: 2px solid var(--line); font: 12px/1.45 var(--mono); white-space: pre-wrap; max-height: 240px; overflow: auto; }
 .plan { display: none; margin: 10px 16px 0; padding: 8px 12px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: var(--radius); background: var(--panel); font-size: 13px; max-width: 860px; }
@@ -147,7 +163,7 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
 .plan .step.next { font-weight: 600; }
 .plan .step.next .box { color: var(--accent); }
 .board { display: none; margin: 10px 16px 0; padding: 8px 12px; border: 1px solid var(--line); border-left: 3px solid #1971c2; border-radius: var(--radius); background: var(--panel); font-size: 13px; max-width: 860px; }
-.board.on { display: block; max-height: 42vh; overflow: auto; }
+.board.on { display: block; max-height: 34vh; overflow: auto; }
 .board .head { display: flex; gap: 8px; align-items: baseline; font-weight: 600; }
 .board .head .goal { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .board .head .state { color: var(--mute); font-weight: 400; flex: none; }
@@ -482,6 +498,15 @@ function md(text) {
     .replace(/\`([^\`\\n]+)\`/g, "<code>$1</code>")
     .replace(/\\*\\*([^*\\n]+)\\*\\*/g, "<b>$1</b>");
 }
+// What the user folded away (the task board, the Plan, the live code preview), remembered in this browser.
+const fold = { board: false, plan: false, live: false };
+for (const k in fold) try { fold[k] = localStorage.getItem("maxx.fold." + k) === "1"; } catch {}
+function setFold(k, v) { fold[k] = v; try { localStorage.setItem("maxx.fold." + k, v ? "1" : "0"); } catch {} }
+for (const k of ["board", "plan"]) $(k).addEventListener("click", (e) => {
+  if (!e.target.closest(".head")) return;
+  setFold(k, !fold[k]);
+  $(k).classList.toggle("min", fold[k]);
+});
 // The pinned checklist, Claude Code style: what is done, what is next.
 function drawPlan(steps) {
   const box = $("plan");
@@ -489,7 +514,9 @@ function drawPlan(steps) {
   box.classList.toggle("on", steps.length > 0);
   if (!steps.length) return box.innerHTML = "";
   const done = steps.filter((x) => x.done).length, next = steps.findIndex((x) => !x.done);
-  box.innerHTML = '<div class="head">Plan <span>' + done + " of " + steps.length + " done</span></div>" +
+  const nextText = next >= 0 ? "▸ " + esc(steps[next].text) : "all done";
+  box.classList.toggle("min", fold.plan);
+  box.innerHTML = '<div class="head" title="Click to fold or unfold the Plan"><b><span class="caret">▾</span>Plan</b><span class="now">' + nextText + "</span><span>" + done + " of " + steps.length + " done</span></div>" +
     steps.map((x, i) => '<div class="step' + (x.done ? " done" : i === next ? " next" : "") + '"><span class="box">' + (x.done ? "✓" : i === next ? "▸" : "○") + "</span><span>" + esc(x.text) + "</span></div>").join("");
 }
 // Agent mode's task board: the goal, a progress bar, and each task's state.
@@ -499,10 +526,11 @@ function drawBoard(b) {
   if (!b) return box.innerHTML = "";
   if (b.kind === "crew") return drawCrew(b);
   const done = b.tasks.filter((t) => t.status === "done").length, n = b.tasks.length;
-  box.className = "board on " + b.state;
+  box.className = "board on " + b.state + (fold.board ? " min" : "");
   const state = b.state === "planning" ? "planning…" : b.state === "running" ? "task " + Math.min(b.current + 1, n) + " of " + n : b.state === "done" ? "done" : b.state === "stuck" ? "stuck" : "stopped";
   const icon = { done: "✓", doing: "▸", checking: "👁", failed: "✗", todo: "○" };
-  box.innerHTML = '<div class="head"><span>🤖</span><span class="goal"></span><span class="state">' + state + "</span></div>" +
+  const cur = b.tasks.find((t) => t.status === "doing" || t.status === "checking") || b.tasks.find((t) => t.status === "todo");
+  box.innerHTML = '<div class="head" title="Click to fold or unfold the task list"><span class="caret">▾</span><span>🤖</span><span class="goal"></span><span class="now">' + (cur ? "▸ " + esc(cur.text) : "") + '</span><span class="state">' + state + "</span></div>" +
     (b.brief ? '<div class="brief">' + esc(b.brief) + "</div>" : "") +
     '<div class="bar"><i style="width:' + (n ? Math.round((done / n) * 100) : 0) + '%"></i></div>' +
     b.tasks.map((t) => '<div class="task ' + t.status + '"><span class="box">' + icon[t.status] + '</span><span class="n">' + esc(t.text) +
@@ -518,7 +546,7 @@ const WK_SAY = { idle: "idle", queued: "waiting for the model", thinking: "think
 function drawCrew(b) {
   const box = $("board");
   const done = b.tasks.filter((t) => t.status === "done").length, n = b.tasks.length;
-  box.className = "board crew on " + b.state;
+  box.className = "board crew on " + b.state + (fold.board ? " min" : "");
   const secs = Math.round((Date.now() - b.started) / 1000);
   const state = b.state === "planning" ? "planning…" : b.state === "running" ? done + " of " + n + " done · " + clock(secs * 1000) : b.state === "checking" ? "final check…" : b.state === "applying" ? "applying…" : b.state;
   const color = (name) => CREW_COLORS[Math.max(0, b.workers.findIndex((w) => w.name === name)) % CREW_COLORS.length];
@@ -534,7 +562,8 @@ function drawCrew(b) {
     (t.status === "waiting" && t.after.length ? '<span class="sub">after ' + t.after.map((a) => "#" + a).join(", ") + "</span>" : "") +
     (t.worker && t.status !== "ready" && t.status !== "waiting" ? '<span class="sub">' + esc(t.worker) + (t.tries > 1 ? " · try " + t.tries : "") + (t.files ? " · " + t.files + " files" : "") + "</span>" : "") +
     (t.status === "fixing" ? '<span class="sub">⚡ ' + esc(t.note || "sorting out a clash") + "</span>" : t.note ? '<span class="sub">' + esc(t.note) + "</span>" : "") + "</div>";
-  box.innerHTML = '<div class="head"><span>👥</span><span class="goal"></span><span class="state">' + state + "</span></div>" +
+  const busyW = b.workers.filter((w) => w.state !== "idle").map((w) => w.name + (w.task ? " #" + w.task : "")).join(", ");
+  box.innerHTML = '<div class="head" title="Click to fold or unfold the crew board"><span class="caret">▾</span><span>👥</span><span class="goal"></span><span class="now">' + (busyW ? "▸ " + esc(busyW) : "") + '</span><span class="state">' + state + "</span></div>" +
     (b.brief ? '<div class="brief">' + esc(b.brief) + "</div>" : "") +
     '<div class="bar"><i style="width:' + (n ? Math.round((done / n) * 100) : 0) + '%"></i></div>' +
     '<div class="crew-workers">' + workers + "</div>" + (models ? '<div class="crew-models">' + models + "</div>" : "") +
@@ -595,8 +624,10 @@ function progress(m) {
     if (!d) {
       streaming = null;
       d = writing[m.tool.index] = add(document.createElement("details"));
-      d.className = "tool run live"; d.open = d.auto = true;
+      d.className = "tool run live"; d.open = !fold.live; d.auto = true;
       d.innerHTML = "<summary><b></b> <span class=arg></span><span class=meta></span></summary><pre></pre>";
+      // Opening or closing a card while its code is being written sets how the next ones start.
+      d.querySelector("summary").addEventListener("click", () => setTimeout(() => { if (d.classList.contains("live")) setFold("live", !d.open); }, 0));
     }
     const [verb, ...rest] = m.title.split(" ");
     d.tool = m.tool.name;
