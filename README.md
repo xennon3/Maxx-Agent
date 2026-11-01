@@ -372,6 +372,24 @@ cites nothing is allowed but labelled speculative with its prior capped at 35%. 
 the prior, so it cannot anchor on it. The conclusion includes the strongest other view, and a fact check sends it
 back once if it has a number that is not in the evidence, a citation to nothing, or a finding with no citation.
 
+**Virtual labs.** When a simulation can shed light on the question, Maxx designs its own lab: a small JavaScript
+model (particles, agents, a circuit, heat flow, a Monte Carlo game...) written to one contract (`params`, `outputs`,
+`init`, `step`, `measure`, `draw`). It is smoke-tested in the sandbox (and fixed if it breaks), then swept across the
+parameters that tell the hypotheses apart; each sweep becomes evidence, and its result an ⚠ unverified claim, because
+a simulation shows what its assumptions imply, not what the world does. The **🧪 Virtual lab** tab runs it live: a
+slider per parameter, play/step/run-to-end, a seed, a live chart, quick sweeps, and 📌 to record runs worth keeping.
+Labs are kept in `~/.maxx/labs/<name>/` (code, metadata, every run) and later studies reuse them.
+
+**Discovery.** Each study also flips the topic's core assumptions, writes deliberately varied hypotheses (a rival, a
+wildcard, a flipped assumption, one borrowed from another field), chases sources that disagree, lets the two leading
+hypotheses debate (points score only by what they cite: measured and confirmed facts most, opinions nothing, invented
+citations less than nothing; the second model judges), and finishes with a look ahead: a gap map of what is known and
+what nobody checked, dated predictions, cheap experiments with what is on your desk, and exactly what would change its
+mind. The Research tab collects ✨ leads (odd facts, outliers, gaps, overnight anomalies; "Study this" starts a study
+that remembers where it came from), the 🔮 prediction ledger (mark them right or wrong; Maxx keeps a Brier score), the
+🧪 lab library, and the 🌙 overnight watch: leave a sensor running for hours, flag anything far outside the usual, and
+keep the PC awake on Windows while it runs. 🌱 Branch from this starts a follow-up study; the notebook draws the idea tree.
+
 Everything lands in `.maxx/research/<id>/`: `data/*.csv`, `tests/*.py`, `raw/` (photos, WAVs, serial
 logs), `instruments.jsonl`, `REPORT.md` and a self-contained `report.html` notebook. `maxx lab`
 lists the instruments, `maxx lab sketch` prints an Arduino starter sketch, and

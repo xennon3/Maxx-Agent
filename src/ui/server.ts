@@ -1,5 +1,5 @@
 import { existsSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { ServerWebSocket } from "bun";
 import { Agent, type AgentIO } from "../loop.ts";
@@ -31,6 +31,9 @@ import { findBrowser } from "../judge.ts";
 import { cleanLab, ensureResearchDir, isResearchDir, LAB_DEFAULTS, labSettings, listStudies, loadLab, loadStudy, researchDir, runStudy, saveLab } from "../lab/lab.ts";
 import { discover, ffmpegCapture, instrumentsFile, type Capture, type Captured } from "../lab/instruments.ts";
 import { ARDUINO_SKETCH } from "../lab/serial.ts";
+import { listLeads, loadPredictions, settlePrediction, trackRecord } from "../lab/discover.ts";
+import { listLabs, listRuns, loadLabCode, loadLabMeta, recordRun } from "../lab/sim.ts";
+import { runWatch, type WatchState } from "../lab/watch.ts";
 import { FIX_ROUNDS, describeWhisper, failed, findWhisper, fixPrompt, planRebuild, speakable, transcribe, type TurnCall } from "./voice.ts";
 
 // `maxx ui`: the agent behind a local web page. One WebSocket carries
@@ -115,6 +118,10 @@ export async function startUI(opts: UIOptions) {
     });
   };
   const instruments = () => discover({ network, capture });
+  // The overnight watch runs on its own, beside whatever else Maxx is doing.
+  let watch: { ctl: AbortController; state: WatchState | null } | null = null;
+  let lastWatch: WatchState | null = null;
+  const sendAll = (msg: unknown) => { for (const c of clients) c.send(JSON.stringify(msg)); };
 
   const progress = throttle((p: StreamProgress) => send(progressMessage(p)), 120);
   const io: AgentIO = {
@@ -238,10 +245,23 @@ export async function startUI(opts: UIOptions) {
       brevity,
       palette,
       palettes: presetList(),
-      research: { cwd: researchDir(), studies: await listStudies(researchDir()) },
+      research: await researchInfo(),
       labMode: { settings: labSettings(labSaved), defaults: LAB_DEFAULTS, saved: labSaved },
       agentMode: { settings: agentSettings(contextWindow, goalSaved), defaults: agentDefaults(contextWindow), saved: goalSaved, context: contextWindow, browser },
       crewMode: { settings: crewSettings(crewSaved), defaults: CREW_DEFAULTS, probed: Object.fromEntries(probed) },
+    };
+  }
+
+  async function researchInfo() {
+    const predictions = await loadPredictions();
+    return {
+      cwd: researchDir(),
+      studies: await listStudies(researchDir()),
+      leads: await listLeads(40),
+      predictions: predictions.slice(-40).reverse(),
+      record: trackRecord(predictions),
+      labs: (await listLabs()).slice(0, 30),
+      watch: watch?.state ?? lastWatch,
     };
   }
 
@@ -463,6 +483,60 @@ export async function startUI(opts: UIOptions) {
         const b64 = (x: unknown) => new Uint8Array(Buffer.from(String(x), "base64"));
         return c.res({ frames: Array.isArray(m.frames) ? m.frames.slice(0, 8).map(b64) : undefined, wav: m.wav ? b64(m.wav) : undefined, device: typeof m.device === "string" ? m.device.slice(0, 80) : undefined });
       }
+      case "simLab": {
+        // A virtual lab for the playground: a study's own, or one from the library.
+        let slug = typeof m.slug === "string" ? m.slug : "";
+        let study: string | undefined;
+        if (m.study && state) {
+          const st = await loadStudy(state.cwd, String(m.study));
+          if (!st?.lab) throw new Error("that study has no virtual lab");
+          slug = st.lab.slug;
+          study = st.id;
+        }
+        const meta = await loadLabMeta(slug);
+        const code = await loadLabCode(slug);
+        if (!meta || !code) throw new Error("that virtual lab is gone");
+        return send({ type: "simLab", slug, study, meta, code, runs: (await listRuns(slug, 80)).reverse() });
+      }
+      case "simRun": {
+        const slug = String(m.slug ?? "");
+        if (!(await loadLabMeta(slug))) throw new Error("that virtual lab is gone");
+        const num = (o: unknown) => Object.fromEntries(Object.entries(o && typeof o === "object" ? o : {}).filter(([k, v]) => /^[\w.-]{1,40}$/.test(k) && Number.isFinite(v)).slice(0, 30)) as Record<string, number>;
+        const st = m.study && state ? await loadStudy(state.cwd, String(m.study)) : null;
+        await recordRun(slug, { at: new Date().toISOString(), source: "you", params: num(m.params), seed: Math.floor(Number(m.seed) || 1), steps: Math.floor(Number(m.steps) || 0), final: num(m.final), note: typeof m.note === "string" ? m.note.slice(0, 200) : undefined }, st?.dir);
+        return send({ type: "simRuns", slug, runs: (await listRuns(slug, 80)).reverse() });
+      }
+      case "predict":
+        await settlePrediction(String(m.id), !!m.right);
+        return send(await snapshot());
+      case "watch": {
+        if (watch) throw new Error("a watch is already running; stop it first");
+        if (!state) throw new Error("open the Research tab first");
+        const inst = (await instruments()).find((i) => i.id === m.instrument);
+        if (!inst) throw new Error("that instrument is not connected");
+        if (inst.unavailable) throw new Error(`${inst.id}: ${inst.unavailable}`);
+        if (inst.kind === "web" || inst.kind === "file") throw new Error("watch a sensor: a serial port, the camera, the microphone or a custom instrument");
+        const hours = Math.max(0.05, Math.min(24, Number(m.hours) || 8));
+        const chunk = Math.max(2, Math.min(600, Number(m.chunk) || 20));
+        const args = String(m.args ?? "").slice(0, 300);
+        const agent = state.agent;
+        const how = await agent.approve("instrument", `watch:${inst.id}`, `Let Maxx watch ${inst.label} for ${hours} h?`, `🌙 ${inst.id} | ${args}\nRead every ${chunk} s for ${hours} hours and flag anything far outside the usual. Readings go to ~/.maxx/research/.maxx/watch; ${process.platform === "win32" ? "the PC is kept awake until it ends" : "keep the computer awake"}.`, inst.kind === "camera" || inst.kind === "mic");
+        if (how === "denied") throw new Error("watch not started: you said no");
+        const ctl = new AbortController();
+        const w = (watch = { ctl, state: null as WatchState | null });
+        const root = join(researchDir(), ".maxx", "watch");
+        runWatch({ inst, args, hours, chunkSeconds: chunk, root, cwd: researchDir(), signal: ctl.signal, update: (x) => ((w.state = x), sendAll({ type: "watch", watch: x })) })
+          .then((x) => (lastWatch = x))
+          .catch((e) => sendAll({ type: "error", text: `The watch failed: ${(e as Error).message}` }))
+          .finally(async () => {
+            if (watch === w) watch = null;
+            sendAll(await snapshot());
+          });
+        return;
+      }
+      case "unwatch":
+        watch?.ctl.abort();
+        return;
       case "answer":
         // Deny can carry the user's reason, which the model reads and Maxx learns a rule from.
         pending.get(m.id)?.(m.answer === "no" && typeof m.why === "string" && m.why.trim() ? `no: ${m.why.trim().slice(0, 600)}` : m.answer);
@@ -511,6 +585,7 @@ export async function startUI(opts: UIOptions) {
               settings: labSettings(labSaved),
               instruments: await instruments(),
               signal: controller.signal,
+              parent: m.parent && typeof m.parent.question === "string" ? { id: typeof m.parent.id === "string" ? m.parent.id.slice(0, 120) : undefined, question: m.parent.question.slice(0, 500) } : undefined,
             });
             send({ type: "done", text: st.note ?? "" });
             return;
@@ -667,7 +742,7 @@ export async function startUI(opts: UIOptions) {
 
   // Started after the UI's own port is taken, so a failed start leaves nothing behind.
   stage = new Stage(send, () => clients.size, opts.previewPort ?? 0);
-  const quit = () => stage?.runner?.stopAll();
+  const quit = () => (watch?.ctl.abort(), stage?.runner?.stopAll());
   process.once("exit", quit);
 
   const link = `http://127.0.0.1:${server.port}/?t=${token}`;

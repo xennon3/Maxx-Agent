@@ -665,7 +665,10 @@ function on(m) {
     case "board": return drawBoard(m.board);
     case "lab": return onStudy(m.study, m.viewing);
     case "capture": return labCapture(m);
-    case "instruments": return drawInstruments(m);
+    case "instruments": onInstrumentsForWatch(m); return drawInstruments(m);
+    case "simLab": return onSimLab(m);
+    case "simRuns": return onSimRuns(m);
+    case "watch": return onWatch(m.watch);
     case "escalation":
       helperLive = m.active ? m.model : null;
       $("activity").classList.toggle("helper", !!helperLive);
