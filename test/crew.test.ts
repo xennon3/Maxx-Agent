@@ -142,8 +142,9 @@ test("the crew runs independent tasks at the same time in worktrees and merges t
   expect(b.state).toBe("done");
   expect(b.tasks.map((t) => t.status)).toEqual(["done", "done", "done"]);
   for (const [f, c] of [["a.txt", "A\n"], ["b.txt", "B\n"], ["c.txt", "C\n"]]) expect(await readFile(join(dir, f!), "utf8")).toBe(c!);
-  // Tasks 2 and 3 only need task 1, so two workers had the model at once.
-  expect(maxInFlight).toBe(2);
+  // Tasks 2 and 3 only need task 1, so two workers had them at once. (Who reaches
+  // the model first depends on how fast git makes worktrees, slow on Windows.)
+  expect(boards.some((x) => x.tasks.filter((t) => t.id > 1 && t.worker && !["ready", "waiting", "done"].includes(t.status)).length === 2)).toBe(true);
   expect(new Set(b.tasks.slice(1).map((t) => t.worker)).size).toBe(2);
   // The later workers read what was handed in before them.
   expect(b.log[0]).toBe("#1 Ada: wrote a");
