@@ -22,6 +22,7 @@ import { mentionedPalette, paletteNote, palettePrompt, type Palette } from "./pa
 import { brief, describeHelper, HELPER_DEFAULTS, helperLLM, type Helper } from "./escalate.ts";
 import { mapBudget, projectMap, projectMapTool } from "./projectmap.ts";
 import type { Board } from "./agentmode.ts";
+import type { Study } from "./lab/lab.ts";
 import { answerText, ASK_PROMPT, askTool, MAX_QUESTIONS, type AskFn, type Question } from "./ask.ts";
 
 // The local model got stuck and a helper took over (active), or handed back.
@@ -117,6 +118,8 @@ export class Agent {
   lastCheck: CheckResult | null = null;
   // Agent mode's task board, while a goal runs and after.
   board: Board | null = null;
+  // The research lab's study, while one runs and after.
+  lab: Study | null = null;
   // How long a follow-up question waits before the model's guess is used (Agent mode); unset waits for ever.
   askWaitMs?: number;
   // Questions asked in the current turn, and the turn's stop signal (a question must not outlive it).
@@ -222,6 +225,21 @@ export class Agent {
     this.io.note(text);
   }
 
+  // Ask before something outside a tool call (the lab's instruments): the
+  // same Allow / Always / Deny card, and Always saves a rule like
+  // instrument(serial:COM3). `private` things (camera, mic) ask even when
+  // the mode never asks, unless a rule allows them.
+  async approve(name: string, key: string, question: string, preview: string, privacy = false): Promise<"you" | "saved rule" | "not needed" | "denied"> {
+    const tool = { name, risk: "exec", ruleKey: () => key } as unknown as Tool<any>;
+    const perms = this.opts.permissions;
+    const asks = privacy ? !perms.allows(tool, {}) : perms.needsPrompt(tool, {});
+    if (!asks) return perms.allows(tool, {}) ? "saved rule" : "not needed";
+    const a = await this.io.ask(question, preview);
+    if (a === "no") return "denied";
+    if (a === "always") await perms.remember(tool, {});
+    return "you";
+  }
+
   get canAsk(): boolean {
     return !!this.io.question;
   }
@@ -292,6 +310,7 @@ export class Agent {
     this.setPlan([]);
     this.marks = [];
     this.board = null;
+    this.lab = null;
     await this.goOnline();
     await this.refreshSystemPrompt();
     return this;
