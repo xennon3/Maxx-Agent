@@ -95,6 +95,9 @@ options:
   --task-tries <n>   tries per task before Agent mode stops (default 2, 3 at 64K+)
   --judge <on|off>   screenshot web pages (headless Edge/Chrome) and the phone after UI changes
                      and let the vision model check them (default on; $MAXX_BROWSER picks the browser)
+  --briefing <on|off> ask about anything the goal leaves unclear before planning (default on)
+  --ask-wait <min>   minutes a question waits in Agent mode before Maxx goes with its own guess
+                     (default 5; 0 waits for ever). Outside Agent mode questions always wait.
   --map-tokens <n>   size of the project map of files and functions the model gets (default 5%
                      of --context; 0 turns it off)
   -c, --continue     continue the latest session in this project
@@ -134,6 +137,8 @@ const { values, positionals } = parseArgs({
     "task-steps": { type: "string" },
     "task-tries": { type: "string" },
     judge: { type: "string" },
+    briefing: { type: "string" },
+    "ask-wait": { type: "string" },
     "map-tokens": { type: "string" },
     continue: { type: "boolean", short: "c" },
     resume: { type: "string" },
@@ -214,9 +219,9 @@ if (positionals[0] === "ui" || (fromExplorer && !positionals.length && !values.p
   const port = values.port ? Number(values.port) : 4317;
   let ui;
   try {
-    ui = await startUI({ baseURL, port, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, brevity: values.brevity, palette: values.palette, ...voice });
+    ui = await startUI({ baseURL, model: values.model ?? process.env.MAXX_MODEL, port, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, brevity: values.brevity, palette: values.palette, ...voice });
   } catch {
-    ui = await startUI({ baseURL, port: 0, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, brevity: values.brevity, palette: values.palette, ...voice });
+    ui = await startUI({ baseURL, model: values.model ?? process.env.MAXX_MODEL, port: 0, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, brevity: values.brevity, palette: values.palette, ...voice });
   }
   // Dev servers started from the Run panel go down with Maxx.
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(sig, () => (ui.stop(), process.exit(0)));
@@ -321,7 +326,26 @@ const io: AgentIO = {
       if (a === "a" || a === "always") return "always";
     }
   },
+  // A follow-up question: a number picks a choice, Enter alone lets Maxx go with its guess.
+  async question(q, signal) {
+    status.stop();
+    console.log(`\n${C.bold}? ${q.question}${C.reset}`);
+    q.choices.forEach((c, i) => console.log(`  ${i + 1}. ${c}${q.guess && c.toLowerCase() === q.guess.toLowerCase() ? ` ${C.dim}(Maxx's guess)${C.reset}` : ""}`));
+    const wait = q.deadline ? ` ${C.dim}(no answer in ${Math.round((q.deadline - Date.now()) / 60_000)} min and Maxx goes ahead)${C.reset}` : "";
+    const hint = q.choices.length ? `1-${q.choices.length} or your own answer` : "your answer";
+    try {
+      const a = (await rl.question(`${hint}${q.guess ? `, Enter for "${q.guess}"` : ", Enter to skip"}${wait}: `, { signal })).trim();
+      const n = /^\d$/.test(a) ? q.choices[Number(a) - 1] : undefined;
+      return n ?? (a || null);
+    } catch {
+      console.log(`\n${C.dim}(no answer${q.guess ? `; going with "${q.guess}"` : ""})${C.reset}`);
+      return null;
+    }
+  },
 };
+
+// Piped input can't answer questions, so the model isn't offered ask_user then.
+if (!process.stdin.isTTY) delete io.question;
 
 // Resuming brings back the session's turns and its toolsets (unless --with says otherwise).
 let resumed: Session | null = null;
@@ -346,9 +370,11 @@ const palette = await resolvePalette(values.palette).catch((e) => die((e as Erro
 // Agent mode budgets: the context window's defaults, then saved choices, then flags.
 const judgeFlag = values.judge === undefined ? undefined : parseSwitch(values.judge);
 if (values.judge !== undefined && judgeFlag === undefined) die("--judge is on or off");
+const briefingFlag = values.briefing === undefined ? undefined : parseSwitch(values.briefing);
+if (values.briefing !== undefined && briefingFlag === undefined) die("--briefing is on or off");
 const goalSettings = agentSettings(Number(values.context), {
   ...(await loadAgentSettings()),
-  ...cleanSettings({ maxTasks: values["max-tasks"], stepsPerTask: values["task-steps"], tries: values["task-tries"], mapTokens: values["map-tokens"], judge: judgeFlag }),
+  ...cleanSettings({ maxTasks: values["max-tasks"], stepsPerTask: values["task-steps"], tries: values["task-tries"], mapTokens: values["map-tokens"], judge: judgeFlag, briefing: briefingFlag, askMinutes: values["ask-wait"] }),
 });
 const agent = await new Agent({ llm, cwd, permissions, contextWindow: Number(values.context), toolsets, vision, check, fixTries, plan: !values["no-plan"], helper, network, brevity, palette, mapTokens: goalSettings.mapTokens }, io).init();
 let created = new Date().toISOString();
@@ -357,6 +383,9 @@ if (resumed) await resumeInto(resumed);
 let replayFile = "";
 // Declared before the -p path below, which runs a turn right away.
 let controller: AbortController | null = null;
+// Files from /attach, sent with the next message. Also declared before the -p path:
+// turn() reads it, and the compiled maxx.exe hoists it as undefined, not a TDZ error.
+let staged: Upload[] = [];
 // The Agent mode board as last printed.
 let shownBoard = "";
 setReplayFile();
@@ -412,9 +441,6 @@ for (;;) {
   }
   await turn(line);
 }
-
-// Files from /attach, sent with the next message.
-let staged: Upload[] = [];
 
 async function turn(text: string) {
   controller = new AbortController();
@@ -538,7 +564,7 @@ async function command(line: string) {
       const g = line.slice(cmd!.length).trim();
       if (g) return goal(g);
       const s = goalSettings;
-      return console.log(`Agent mode: /agent <goal>. Up to ${s.maxTasks} tasks, ${s.stepsPerTask} steps per try, ${s.tries} tries per task, screenshot judge ${s.judge ? "on" : "off"}, project map ${s.mapTokens} tokens.`);
+      return console.log(`Agent mode: /agent <goal>. Up to ${s.maxTasks} tasks, ${s.stepsPerTask} steps per try, ${s.tries} tries per task, screenshot judge ${s.judge ? "on" : "off"}, project map ${s.mapTokens} tokens, ask first ${s.briefing ? "on" : "off"}, questions wait ${s.askMinutes ? `${s.askMinutes} min` : "for ever"}.`);
     }
     case "/plan": return agent.plan.length ? io.plan!(agent.plan) : console.log("(no plan yet; the model writes one for bigger tasks)");
     case "/helper": {

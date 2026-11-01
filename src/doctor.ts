@@ -1,4 +1,4 @@
-import { complete, type LLMConfig } from "./llm.ts";
+import { complete, toWire, type LLMConfig, type Message } from "./llm.ts";
 import { toolSpecs, findTool } from "./tools/index.ts";
 import { drawMarks, toShot } from "./image.ts";
 import { imagePart } from "./vision.ts";
@@ -7,12 +7,71 @@ import * as W from "./devices/windows.ts";
 
 // Canned tool-call probes: does this model + template + server produce real,
 // valid tool calls? Run it whenever you switch models or update LM Studio.
-const PROBES = [
+export const PROBES = [
   { ask: "Show me the contents of package.json.", tool: "read_file", check: (a: any) => /package\.json$/.test(a.path) },
   { ask: "Find every place the word TODO appears in the src folder.", tool: "grep", check: (a: any) => /TODO/.test(a.pattern) },
   { ask: "Run the test suite with `bun test`.", tool: "bash", check: (a: any) => /bun test/.test(a.command) },
   { ask: "In src/app.ts, change the line `const port = 3000;` to `const port = 8080;`.", tool: "edit_file", check: (a: any) => /3000/.test(a.old_string) && /8080/.test(a.new_string) },
 ];
+
+// A careful model looks before it acts (reading src/app.ts before editing it is
+// what the agent loop wants), so a probe answers up to LOOKS look-ups from this
+// pretend project and judges the call that follows.
+const LOOKS = 2;
+const LOOKUP_TOOLS = new Set(["read_file", "list_files", "grep"]);
+const FAKE: Record<string, string> = {
+  "package.json": '{\n  "name": "demo",\n  "scripts": { "test": "bun test" }\n}',
+  "src/app.ts": '// TODO: read the port from the environment\nconst port = 3000;\n\nBun.serve({ port, fetch: () => new Response("hi") });',
+};
+const numbered = (t: string) => t.split("\n").map((l, i) => `${String(i + 1).padStart(5)}  ${l}`).join("\n");
+
+export function fakeLookup(name: string, args: any): string {
+  const path = String(args?.path ?? ".").replace(/^\.\//, "").replace(/\\/g, "/");
+  if (name === "read_file") {
+    const hit = Object.keys(FAKE).find((f) => f === path || path.endsWith("/" + f));
+    return hit ? numbered(FAKE[hit]!) : `error: ${path} does not exist`;
+  }
+  if (name === "list_files") return Object.keys(FAKE).join("\n");
+  let re: RegExp;
+  try {
+    re = new RegExp(String(args?.pattern ?? ""));
+  } catch {
+    return "error: invalid pattern";
+  }
+  const hits = Object.entries(FAKE).flatMap(([f, t]) => t.split("\n").flatMap((l, i) => (re.test(l) ? [`${f}:${i + 1}:${l}`] : [])));
+  return hits.join("\n") || "no matches";
+}
+
+export async function probe(llm: LLMConfig, p: (typeof PROBES)[number], specs = toolSpecs()): Promise<{ pass: boolean; verdict: string }> {
+  const messages: Message[] = [
+    { role: "system", content: "You are a coding agent. Use the provided tools to act; do not explain." },
+    { role: "user", content: p.ask },
+  ];
+  const looked: string[] = [];
+  for (;;) {
+    const res = await complete(llm, messages, specs);
+    const call = res.toolCalls[0];
+    const first = looked.length ? ` (after ${looked.join(", ")})` : "";
+    if (!call) return { pass: false, verdict: `FAIL  no tool call${first} (replied: ${res.content.slice(0, 80).replace(/\n/g, " ")})` };
+    let args: unknown;
+    try {
+      args = JSON.parse(call.arguments || "{}");
+    } catch {
+      return { pass: false, verdict: `FAIL  invalid arguments ${call.arguments}` };
+    }
+    if (call.name !== p.tool && LOOKUP_TOOLS.has(call.name) && looked.length < LOOKS) {
+      looked.push(call.name);
+      messages.push({ role: "assistant", content: res.content || null, tool_calls: toWire([call]) });
+      messages.push({ role: "tool", tool_call_id: call.id, content: fakeLookup(call.name, args) });
+      continue;
+    }
+    if (call.name !== p.tool) return { pass: false, verdict: `FAIL  called ${call.name}${first}, expected ${p.tool}` };
+    const parsed = findTool(call.name)!.schema.safeParse(args);
+    if (!parsed.success) return { pass: false, verdict: `FAIL  invalid arguments ${call.arguments}` };
+    if (!p.check(parsed.data)) return { pass: false, verdict: `FAIL  unexpected arguments ${call.arguments}` };
+    return { pass: true, verdict: `pass${first}${res.rescued ? " (rescued from text)" : ""}` };
+  }
+}
 
 export async function doctor(llm: LLMConfig, log = console.log): Promise<boolean> {
   log(`Probing ${llm.model} at ${llm.baseURL}\n`);
@@ -20,26 +79,10 @@ export async function doctor(llm: LLMConfig, log = console.log): Promise<boolean
   let passed = 0;
   for (const p of PROBES) {
     const started = performance.now();
-    let verdict: string;
     try {
-      const res = await complete(llm, [
-        { role: "system", content: "You are a coding agent. Use the provided tools to act; do not explain." },
-        { role: "user", content: p.ask },
-      ], specs);
-      const call = res.toolCalls[0];
-      const secs = ((performance.now() - started) / 1000).toFixed(1);
-      if (!call) verdict = `FAIL  no tool call (replied: ${res.content.slice(0, 80).replace(/\n/g, " ")})`;
-      else if (call.name !== p.tool) verdict = `FAIL  called ${call.name}, expected ${p.tool}`;
-      else {
-        const parsed = findTool(call.name)!.schema.safeParse(JSON.parse(call.arguments || "{}"));
-        if (!parsed.success) verdict = `FAIL  invalid arguments ${call.arguments}`;
-        else if (!p.check(parsed.data)) verdict = `FAIL  unexpected arguments ${call.arguments}`;
-        else {
-          passed++;
-          verdict = `pass${res.rescued ? " (rescued from text)" : ""}`;
-        }
-      }
-      log(`  ${p.tool.padEnd(10)} ${verdict}  ${secs}s`);
+      const { pass, verdict } = await probe(llm, p, specs);
+      if (pass) passed++;
+      log(`  ${p.tool.padEnd(10)} ${verdict}  ${((performance.now() - started) / 1000).toFixed(1)}s`);
     } catch (e) {
       log(`  ${p.tool.padEnd(10)} ERROR ${(e as Error).message}`);
     }
