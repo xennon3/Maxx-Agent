@@ -1,5 +1,5 @@
 import { existsSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { ServerWebSocket } from "bun";
 import { Agent, type AgentIO } from "../loop.ts";
@@ -26,6 +26,12 @@ import { htmlFiles } from "./preview.ts";
 import * as A from "../devices/adb.ts";
 import { agentDefaults, agentSettings, cleanSettings, loadAgentSettings, runGoal, saveAgentSettings } from "../agentmode.ts";
 import { findBrowser } from "../judge.ts";
+import { cleanLab, ensureResearchDir, isResearchDir, LAB_DEFAULTS, labSettings, listStudies, loadLab, loadStudy, researchDir, runStudy, saveLab } from "../lab/lab.ts";
+import { discover, ffmpegCapture, instrumentsFile, type Capture, type Captured } from "../lab/instruments.ts";
+import { ARDUINO_SKETCH } from "../lab/serial.ts";
+import { listLeads, loadPredictions, settlePrediction, trackRecord } from "../lab/discover.ts";
+import { listLabs, listRuns, loadLabCode, loadLabMeta, recordRun } from "../lab/sim.ts";
+import { runWatch, type WatchState } from "../lab/watch.ts";
 import { FIX_ROUNDS, describeWhisper, failed, findWhisper, fixPrompt, planRebuild, speakable, transcribe, type TurnCall } from "./voice.ts";
 
 // `maxx ui`: the agent behind a local web page. One WebSocket carries
@@ -75,6 +81,40 @@ export async function startUI(opts: UIOptions) {
   // Agent mode budgets the user changed (the rest follow the context window).
   let goalSaved = await loadAgentSettings();
   const browser = !!findBrowser();
+  // Research lab settings the user changed.
+  let labSaved = await loadLab();
+  // Camera and mic readings the page is taking for the lab.
+  const captures = new Map<string, { res: (c: Captured) => void; rej: (e: Error) => void }>();
+  // The lab's camera and mic go through the app window (getUserMedia), so
+  // they need nothing installed; with no window open, ffmpeg if there is one.
+  const ffmpeg = ffmpegCapture();
+  const capture: Capture = (kind, args, signal) => {
+    const client = [...clients].at(-1);
+    if (!client) {
+      if (ffmpeg) return ffmpeg(kind, args, signal);
+      return Promise.reject(new Error("the app window is closed"));
+    }
+    return new Promise<Captured>((res, rej) => {
+      const id = crypto.randomUUID();
+      const ms = ((args.frames ?? 1) * (args.every ?? 2) + (args.seconds ?? 0) + 45) * 1000;
+      const timer = setTimeout(() => done(() => rej(new Error("the window did not answer (camera or microphone blocked?)"))), ms);
+      const gone = () => done(() => rej(Object.assign(new Error("stopped"), { name: "AbortError" })));
+      const done = (f: () => void) => {
+        if (!captures.delete(id)) return;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", gone);
+        f();
+      };
+      captures.set(id, { res: (c) => done(() => res(c)), rej: (e) => done(() => rej(e)) });
+      signal?.addEventListener("abort", gone);
+      client.send(JSON.stringify({ type: "capture", id, kind, args }));
+    });
+  };
+  const instruments = () => discover({ network, capture });
+  // The overnight watch runs on its own, beside whatever else Maxx is doing.
+  let watch: { ctl: AbortController; state: WatchState | null } | null = null;
+  let lastWatch: WatchState | null = null;
+  const sendAll = (msg: unknown) => { for (const c of clients) c.send(JSON.stringify(msg)); };
 
   const progress = throttle((p: StreamProgress) => send(progressMessage(p)), 120);
   const io: AgentIO = {
@@ -157,7 +197,7 @@ export async function startUI(opts: UIOptions) {
   async function snapshot(): Promise<Out> {
     const all = (await listProjects()).map((p) => ({ cwd: p.cwd, sessions: p.sessions.slice(0, 8).map(({ id, title, updated, turns, toolsets }) => ({ id, title, updated, turns, toolsets })) }));
     // Chat sessions get their own place in the sidebar, above the projects.
-    const projects = all.filter((p) => !isChatDir(p.cwd));
+    const projects = all.filter((p) => !isChatDir(p.cwd) && !isResearchDir(p.cwd));
     const chat = { cwd: chatDir(), sessions: all.find((p) => isChatDir(p.cwd))?.sessions ?? [] };
     const s = state;
     return {
@@ -177,6 +217,7 @@ export async function startUI(opts: UIOptions) {
       current: s && {
         cwd: s.cwd,
         chat: s.agent.chat,
+        research: isResearchDir(s.cwd),
         session: s.agent.session,
         model: s.llm.model,
         mode: s.permissions.mode,
@@ -184,6 +225,7 @@ export async function startUI(opts: UIOptions) {
         busy: !!s.controller,
         plan: s.agent.plan,
         board: s.agent.board,
+        lab: s.agent.lab && { ...s.agent.lab, dir: undefined },
         history: transcript(s.agent),
         helper: s.agent.helper && { model: s.agent.helper.model, kind: s.agent.helper.kind },
       },
@@ -192,7 +234,22 @@ export async function startUI(opts: UIOptions) {
       brevity,
       palette,
       palettes: presetList(),
+      research: await researchInfo(),
+      labMode: { settings: labSettings(labSaved), defaults: LAB_DEFAULTS, saved: labSaved },
       agentMode: { settings: agentSettings(contextWindow, goalSaved), defaults: agentDefaults(contextWindow), saved: goalSaved, context: contextWindow, browser },
+    };
+  }
+
+  async function researchInfo() {
+    const predictions = await loadPredictions();
+    return {
+      cwd: researchDir(),
+      studies: await listStudies(researchDir()),
+      leads: await listLeads(40),
+      predictions: predictions.slice(-40).reverse(),
+      record: trackRecord(predictions),
+      labs: (await listLabs()).slice(0, 30),
+      watch: watch?.state ?? lastWatch,
     };
   }
 
@@ -215,7 +272,7 @@ export async function startUI(opts: UIOptions) {
     const permissions = await new Permissions(dir, o.mode ?? state?.permissions.mode ?? "ask").load();
     const { vision, note } = await pickVision(llm, { visionModel: opts.visionModel });
     const chat = isChatDir(dir);
-    const toolsets = chat ? [] : (o.toolsets ?? saved?.toolsets ?? []);
+    const toolsets = chat || isResearchDir(dir) ? [] : (o.toolsets ?? saved?.toolsets ?? []);
     const helper = chat ? null : await resolveHelper({}).catch(() => null);
     const agent = await new Agent(
       chat
@@ -359,6 +416,84 @@ export async function startUI(opts: UIOptions) {
         goalSaved = m.reset ? {} : cleanSettings(m.settings ?? {});
         await saveAgentSettings(goalSaved);
         return send(await snapshot());
+      case "research":
+        // The Research tab: its own workspace, like chat.
+        if (!state || !isResearchDir(state.cwd)) await open(await ensureResearchDir(), { model: state?.llm.model });
+        return send(await snapshot());
+      case "study": {
+        const st = state && (await loadStudy(state.cwd, String(m.id)));
+        if (!st) throw new Error("that study is gone");
+        return send({ type: "lab", study: { ...st, dir: undefined }, viewing: true });
+      }
+      case "labSettings":
+        labSaved = m.reset ? {} : cleanLab(m.settings ?? {});
+        await saveLab(labSaved);
+        return send(await snapshot());
+      case "instruments": {
+        const list = await instruments();
+        return send({ type: "instruments", list: list.map(({ id, kind, label, about, usage, gated, unavailable }) => ({ id, kind, label, about, usage, gated, unavailable })), file: instrumentsFile(), sketch: ARDUINO_SKETCH, ffmpeg: !!ffmpeg });
+      }
+      case "captured": {
+        const c = captures.get(String(m.id));
+        if (!c) return;
+        if (m.error) return c.rej(new Error(String(m.error)));
+        const b64 = (x: unknown) => new Uint8Array(Buffer.from(String(x), "base64"));
+        return c.res({ frames: Array.isArray(m.frames) ? m.frames.slice(0, 8).map(b64) : undefined, wav: m.wav ? b64(m.wav) : undefined, device: typeof m.device === "string" ? m.device.slice(0, 80) : undefined });
+      }
+      case "simLab": {
+        // A virtual lab for the playground: a study's own, or one from the library.
+        let slug = typeof m.slug === "string" ? m.slug : "";
+        let study: string | undefined;
+        if (m.study && state) {
+          const st = await loadStudy(state.cwd, String(m.study));
+          if (!st?.lab) throw new Error("that study has no virtual lab");
+          slug = st.lab.slug;
+          study = st.id;
+        }
+        const meta = await loadLabMeta(slug);
+        const code = await loadLabCode(slug);
+        if (!meta || !code) throw new Error("that virtual lab is gone");
+        return send({ type: "simLab", slug, study, meta, code, runs: (await listRuns(slug, 80)).reverse() });
+      }
+      case "simRun": {
+        const slug = String(m.slug ?? "");
+        if (!(await loadLabMeta(slug))) throw new Error("that virtual lab is gone");
+        const num = (o: unknown) => Object.fromEntries(Object.entries(o && typeof o === "object" ? o : {}).filter(([k, v]) => /^[\w.-]{1,40}$/.test(k) && Number.isFinite(v)).slice(0, 30)) as Record<string, number>;
+        const st = m.study && state ? await loadStudy(state.cwd, String(m.study)) : null;
+        await recordRun(slug, { at: new Date().toISOString(), source: "you", params: num(m.params), seed: Math.floor(Number(m.seed) || 1), steps: Math.floor(Number(m.steps) || 0), final: num(m.final), note: typeof m.note === "string" ? m.note.slice(0, 200) : undefined }, st?.dir);
+        return send({ type: "simRuns", slug, runs: (await listRuns(slug, 80)).reverse() });
+      }
+      case "predict":
+        await settlePrediction(String(m.id), !!m.right);
+        return send(await snapshot());
+      case "watch": {
+        if (watch) throw new Error("a watch is already running; stop it first");
+        if (!state) throw new Error("open the Research tab first");
+        const inst = (await instruments()).find((i) => i.id === m.instrument);
+        if (!inst) throw new Error("that instrument is not connected");
+        if (inst.unavailable) throw new Error(`${inst.id}: ${inst.unavailable}`);
+        if (inst.kind === "web" || inst.kind === "file") throw new Error("watch a sensor: a serial port, the camera, the microphone or a custom instrument");
+        const hours = Math.max(0.05, Math.min(24, Number(m.hours) || 8));
+        const chunk = Math.max(2, Math.min(600, Number(m.chunk) || 20));
+        const args = String(m.args ?? "").slice(0, 300);
+        const agent = state.agent;
+        const how = await agent.approve("instrument", `watch:${inst.id}`, `Let Maxx watch ${inst.label} for ${hours} h?`, `🌙 ${inst.id} | ${args}\nRead every ${chunk} s for ${hours} hours and flag anything far outside the usual. Readings go to ~/.maxx/research/.maxx/watch; ${process.platform === "win32" ? "the PC is kept awake until it ends" : "keep the computer awake"}.`, inst.kind === "camera" || inst.kind === "mic");
+        if (how === "denied") throw new Error("watch not started: you said no");
+        const ctl = new AbortController();
+        const w = (watch = { ctl, state: null as WatchState | null });
+        const root = join(researchDir(), ".maxx", "watch");
+        runWatch({ inst, args, hours, chunkSeconds: chunk, root, cwd: researchDir(), signal: ctl.signal, update: (x) => ((w.state = x), sendAll({ type: "watch", watch: x })) })
+          .then((x) => (lastWatch = x))
+          .catch((e) => sendAll({ type: "error", text: `The watch failed: ${(e as Error).message}` }))
+          .finally(async () => {
+            if (watch === w) watch = null;
+            sendAll(await snapshot());
+          });
+        return;
+      }
+      case "unwatch":
+        watch?.ctl.abort();
+        return;
       case "answer":
         pending.get(m.id)?.(m.answer);
         pending.delete(m.id);
@@ -371,6 +506,7 @@ export async function startUI(opts: UIOptions) {
         state?.controller?.abort();
         for (const [id, res] of pending) (res("no"), pending.delete(id));
         for (const done of [...questions.values()]) done(null);
+        for (const c of [...captures.values()]) c.rej(Object.assign(new Error("stopped"), { name: "AbortError" }));
         return;
       case "send": {
         if (!state) throw new Error("open a project folder first");
@@ -383,12 +519,23 @@ export async function startUI(opts: UIOptions) {
           files.push({ ...u, mode: f.mode === "save" ? "save" : "attach" });
         }
         for (const f of m.files ?? []) uploads.delete(String(f.id));
+        if (m.lab && files.length) throw new Error("The lab takes a question in words; send attachments as a normal message");
         if (m.agent && s.agent.chat) throw new Error("Agent mode works on a project; open a project folder first");
         if (m.agent && files.length) throw new Error("Agent mode takes a goal in words; send attachments as a normal message");
         const controller = (s.controller = new AbortController());
         send({ type: "busy", busy: true });
         turn = [];
         try {
+          if (m.lab) {
+            const st = await runStudy(s.agent, String(m.text ?? ""), { study: (study) => send({ type: "lab", study: { ...study, dir: undefined } }), image: (tool, images) => io.image!(tool, images) }, {
+              settings: labSettings(labSaved),
+              instruments: await instruments(),
+              signal: controller.signal,
+              parent: m.parent && typeof m.parent.question === "string" ? { id: typeof m.parent.id === "string" ? m.parent.id.slice(0, 120) : undefined, question: m.parent.question.slice(0, 500) } : undefined,
+            });
+            send({ type: "done", text: st.note ?? "" });
+            return;
+          }
           if (m.agent) {
             const b = await runGoal(s.agent, String(m.text ?? ""), { board: (board) => send({ type: "board", board }), image: (tool, images) => io.image!(tool, images) }, {
               settings: agentSettings(contextWindow, goalSaved),
@@ -467,6 +614,9 @@ export async function startUI(opts: UIOptions) {
     port: opts.port ?? 4317,
     async fetch(req, srv) {
       const url = new URL(req.url);
+      // The token sits in the path here, so the notebook's relative links keep it.
+      const lab = url.pathname.match(/^\/lab\/(\w+)\/([\w-]+)\/(.+)$/);
+      if (lab) return lab[1] === token ? labFile(lab[2]!, decodeURIComponent(lab[3]!)) : new Response("forbidden", { status: 403 });
       if (url.searchParams.get("t") !== token) return new Response("Open the link Maxx printed in the terminal.", { status: 403 });
       // Recorded speech (16 kHz WAV) in, text out, through the local Whisper.
       if (url.pathname === "/voice" && req.method === "POST") {
@@ -494,7 +644,8 @@ export async function startUI(opts: UIOptions) {
       return new Response("not found", { status: 404 });
     },
     websocket: {
-      maxPayloadLength: 1 << 20,
+      // Camera frames and recordings come back from the page for the lab.
+      maxPayloadLength: 16 << 20,
       open: (ws) => void clients.add(ws),
       close: (ws) => void clients.delete(ws),
       async message(ws, raw) {
@@ -506,6 +657,20 @@ export async function startUI(opts: UIOptions) {
       },
     },
   });
+
+  // A study's notebook and its files, from the open project. The token is in
+  // the path, /lab/<token>/<id>/<file>, so relative links inside report.html
+  // (data/E1-serial.csv) carry it too.
+  async function labFile(id: string, path: string): Promise<Response> {
+    if (!state) return new Response("no project open", { status: 404 });
+    const root = resolve(state.cwd, ".maxx", "research", id);
+    const file = resolve(root, path);
+    if (!file.startsWith(root + (process.platform === "win32" ? "\\" : "/"))) return new Response("not found", { status: 404 });
+    const f = Bun.file(file);
+    if (!(await f.exists())) return new Response("not found", { status: 404 });
+    const type = /\.html$/.test(file) ? "text/html; charset=utf-8" : /\.(csv|py|js|log|md|jsonl?)$/.test(file) ? "text/plain; charset=utf-8" : f.type;
+    return new Response(f, { headers: { "content-type": type, "cache-control": "no-store", "content-security-policy": "script-src 'none'" } });
+  }
 
   async function upload(req: Request, url: URL): Promise<Response> {
     const origin = req.headers.get("origin");
@@ -523,7 +688,7 @@ export async function startUI(opts: UIOptions) {
 
   // Started after the UI's own port is taken, so a failed start leaves nothing behind.
   stage = new Stage(send, () => clients.size, opts.previewPort ?? 0);
-  const quit = () => stage?.runner?.stopAll();
+  const quit = () => (watch?.ctl.abort(), stage?.runner?.stopAll());
   process.once("exit", quit);
 
   const link = `http://127.0.0.1:${server.port}/?t=${token}`;

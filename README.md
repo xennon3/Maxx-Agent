@@ -319,6 +319,67 @@ File edits need no approval while a goal runs (every task can be rewound); comma
 
 Change them with the ⚙ next to 🤖 Agent (saved in `~/.maxx/agent.json`; only what differs from the defaults is saved, so the rest keeps following the context) or with `--max-tasks`, `--task-steps`, `--task-tries`, `--judge on|off` and `--map-tokens`. `MAXX_BROWSER` picks the browser the judge uses.
 
+## Research lab: ask a question, get a lab notebook
+
+Open **🔬 Research lab** in the app's sidebar (its own tab, with past studies, the live board, the claim
+ledger, evidence, instrument log and notebook), or run `maxx --lab "question"`, or `/lab question` in a session, and ask
+something you could measure: "does my desk get warmer while the PC runs, and is the fan what I hear?".
+Maxx runs a small scientific loop, one short request per phase so small local models keep up:
+
+1. **Frame**: makes the question measurable and plans readings with the instruments it has.
+2. **Collect**: the web (with 🌐 Network on), every COM port that shows up (Arduino and other USB
+   serial boards), the camera and the microphone (through the app window, nothing to install; ffmpeg
+   in the terminal), a data file in the project, and any command you register in
+   `~/.maxx/instruments.json`. Sensors, the camera and the mic ask first (camera and mic even in
+   "never ask" mode, unless you picked Always), and every reading goes into the study's instrument log.
+3. **Hypothesize**: 2 to 6 rival explanations, each with a prediction and a prior.
+4. **Test**: one script per hypothesis (Python if installed, else JavaScript run by maxx.exe itself),
+   in the study folder, with a time limit, a clean environment and sockets blocked while network access
+   is off. A broken script goes back to the model to fix. Each verdict moves the confidence meter.
+5. **Follow up**: if something is still inconclusive, it plans more readings for another round.
+6. **Review**: a skeptic pass names the weakest link; with `--vision-model` set to a different model,
+   that model is the reviewer, a genuine second opinion.
+7. **Conclude**: answer, overall confidence, findings with `[E1]`/`[H2]` citations, caveats, next experiments.
+
+**Truth rules.** Every fact goes into a claim ledger: 📏 observed (measured here), ✔ verified (its words and
+numbers are really on the page it cites), 🔁 corroborated (another site agrees), 💬 opinion, ⚠ unverified (a
+number not on its page), ⚖ contested (sources disagree) or ✗ fabricated (cites a page never fetched). Statuses
+can change as evidence arrives, and each change is kept. Hypotheses must cite the evidence they rest on; one that
+cites nothing is allowed but labelled speculative with its prior capped at 35%. The judge of each test never sees
+the prior, so it cannot anchor on it. The conclusion includes the strongest other view, and a fact check sends it
+back once if it has a number that is not in the evidence, a citation to nothing, or a finding with no citation.
+
+**Virtual labs.** When a simulation can shed light on the question, Maxx designs its own lab: a small JavaScript
+model (particles, agents, a circuit, heat flow, a Monte Carlo game...) written to one contract (`params`, `outputs`,
+`init`, `step`, `measure`, `draw`). It is smoke-tested in the sandbox (and fixed if it breaks), then swept across the
+parameters that tell the hypotheses apart; each sweep becomes evidence, and its result an ⚠ unverified claim, because
+a simulation shows what its assumptions imply, not what the world does. The **🧪 Virtual lab** tab runs it live: a
+slider per parameter, play/step/run-to-end, a seed, a live chart, quick sweeps, and 📌 to record runs worth keeping.
+Labs are kept in `~/.maxx/labs/<name>/` (code, metadata, every run) and later studies reuse them.
+
+**Discovery.** Each study also flips the topic's core assumptions, writes deliberately varied hypotheses (a rival, a
+wildcard, a flipped assumption, one borrowed from another field), chases sources that disagree, lets the two leading
+hypotheses debate (points score only by what they cite: measured and confirmed facts most, opinions nothing, invented
+citations less than nothing; the second model judges), and finishes with a look ahead: a gap map of what is known and
+what nobody checked, dated predictions, cheap experiments with what is on your desk, and exactly what would change its
+mind. The Research tab collects ✨ leads (odd facts, outliers, gaps, overnight anomalies; "Study this" starts a study
+that remembers where it came from), the 🔮 prediction ledger (mark them right or wrong; Maxx keeps a Brier score), the
+🧪 lab library, and the 🌙 overnight watch: leave a sensor running for hours, flag anything far outside the usual, and
+keep the PC awake on Windows while it runs. 🌱 Branch from this starts a follow-up study; the notebook draws the idea tree.
+
+Everything lands in `.maxx/research/<id>/`: `data/*.csv`, `tests/*.py`, `raw/` (photos, WAVs, serial
+logs), `instruments.jsonl`, `REPORT.md` and a self-contained `report.html` notebook. `maxx lab`
+lists the instruments, `maxx lab sketch` prints an Arduino starter sketch, and
+`MAXX_FAKE_SERIAL="COM3=Arduino Uno"` adds a simulated board for trying it without hardware.
+Settings (rounds, hypotheses, tests at once, time limit...) are in the 🔬 ⚙ dialog and `~/.maxx/lab.json`.
+
+A custom instrument is any command that prints readings (`key=value`, CSV or bare numbers per line):
+
+```json
+{ "instruments": [ { "id": "station", "about": "backyard weather station",
+  "command": "python C:/tools/station.py --seconds {seconds}", "seconds": 10 } ] }
+```
+
 ## Follow-up questions
 
 When a request leaves a choice only you can make, the model calls `ask_user` instead of guessing or ending its turn with a question. The turn pauses and the app shows a card with the question, a few choices to click (Maxx's own guess is marked), a box for your own answer, and **Skip** to let Maxx go with its guess. In the terminal you type a number, your own answer, or Enter for the guess. Questions are never permission prompts, so they come up in every mode, even "Never ask". A small model may ask at most 3 per turn; after that it is told to decide. When input is piped (no one at the keyboard), the tool is not offered at all. Outside Agent mode a question waits as long as it takes; in Agent mode it waits `--ask-wait` minutes (default 5, 0 waits for ever).

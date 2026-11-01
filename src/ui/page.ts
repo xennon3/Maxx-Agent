@@ -2,6 +2,7 @@ import { STAGE_CSS, STAGE_HTML, STAGE_JS } from "./stage-page.ts";
 import { VIS_CSS, VIS_JS } from "./visuals-page.ts";
 import { BREVITY_LABEL } from "../brevity.ts";
 import { VOICE_CSS, VOICE_HINT, VOICE_HTML, VOICE_JS } from "./voice-page.ts";
+import { LAB_CSS, LAB_HTML, LAB_JS, LAB_NAV, LAB_VIEW } from "./lab-page.ts";
 
 // The whole web UI in one string, so the compiled maxx.exe carries it.
 export const PAGE = /* html */ `<!doctype html>
@@ -220,6 +221,7 @@ body.agent .composer textarea { border-color: #1971c2; }
 }
 ${STAGE_CSS}
 ${VOICE_CSS}
+${LAB_CSS}
 ${VIS_CSS}
 </style>
 </head>
@@ -233,6 +235,7 @@ ${VIS_CSS}
   <div class="openbox" id="pickRow" style="display:none"><button id="pickBtn" style="flex:1">Choose folder…</button></div>
   <div class="chathead">Chat</div>
   <div class="chatnav" id="chatnav"><button class="go" id="chatBtn" title="Everyday questions, with charts and diagrams drawn right in the chat. No project, no tools.">💬 New chat</button></div>
+  ${LAB_NAV}
   <div class="chathead">Projects</div>
   <div class="projects" id="projects"></div>
 </aside>
@@ -254,7 +257,8 @@ ${VIS_CSS}
     <button id="newBtn" title="Start a new session">New</button>
   </header>
   <div class="board" id="board"></div>
-  <div class="plan" id="plan"></div>
+    <div class="plan" id="plan"></div>
+  ${LAB_VIEW}
   <div id="log"></div>
   <div class="activity" id="activity"><span class="spin" id="actSpin">⠋</span><span class="what" id="actWhat"></span><span class="meta" id="actMeta"></span><span class="tail" id="actTail"></span></div>
   ${VOICE_HINT}
@@ -322,6 +326,7 @@ ${STAGE_HTML}
   <p class="hint" id="aHint"></p>
   <div class="btns"><button class="left" id="aReset" value="reset" formnovalidate>Defaults</button><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="save">Save</button></div>
 </form></dialog>
+${LAB_HTML}
 <div id="zoom"><img id="zoomImg" alt=""></div>
 <div id="drop">Drop files to attach them to your message</div>
 <div id="toast"><span id="toastText"></span><button id="toastBtn">Undo</button></div>
@@ -528,6 +533,12 @@ function on(m) {
     case "note": return note(m.text);
     case "plan": return drawPlan(m.steps);
     case "board": return drawBoard(m.board);
+    case "lab": return onStudy(m.study, m.viewing);
+    case "capture": return labCapture(m);
+    case "instruments": onInstrumentsForWatch(m); return drawInstruments(m);
+    case "simLab": return onSimLab(m);
+    case "simRuns": return onSimRuns(m);
+    case "watch": return onWatch(m.watch);
     case "escalation":
       helperLive = m.active ? m.model : null;
       $("activity").classList.toggle("helper", !!helperLive);
@@ -540,6 +551,7 @@ function on(m) {
     case "questionDone": return questionDone(m);
     case "busy":
       busy = m.busy; $("stopBtn").disabled = !busy; $("sendBtn").disabled = busy;
+      $("rgo").disabled = busy; $("rstop").disabled = !busy;
       if (!busy) { helperLive = null; $("activity").classList.remove("helper"); }
       if (!busy) { streaming = null; thinkCard = null; abandonWriting(); }
       activity(busy ? { title: "Starting" } : null);
@@ -775,7 +787,10 @@ function render(s) {
   }
   drawPlan(cur && cur.plan);
   drawBoard(cur && cur.board);
+  if (cur && cur.lab) { lastStudy = cur.lab; drawLab(lastStudy); drawPane(); }
+  else if (!(cur && cur.research)) { lastStudy = null; drawLab(null); drawPane(); }
   drawAgent();
+  drawResearch();
   const nb = $("netBtn");
   nb.classList.toggle("on", !!s.network);
   nb.textContent = s.network ? "🌐 Network: on" : "🌐 Network: off";
@@ -961,7 +976,11 @@ function drawAgent() {
   document.body.classList.toggle("agent", on);
   if (state && state.current && !state.current.chat) $("input").placeholder = on ? "Give Maxx a goal, e.g. \u201cbuild a tip calculator web app and check it works\u201d. It plans the tasks and works through them on its own." : PROJECT_HINT;
 }
-$("agentBtn").onclick = () => { agentMode = !agentMode; try { localStorage.setItem("maxx.agent", agentMode ? "1" : "0"); } catch {} drawAgent(); };
+$("agentBtn").onclick = () => {
+  agentMode = !agentMode;
+  try { localStorage.setItem("maxx.agent", agentMode ? "1" : "0"); } catch {}
+  drawAgent();
+};
 const AGENT_FIELDS = { aTasks: "maxTasks", aSteps: "stepsPerTask", aTries: "tries", aMap: "mapTokens", aFixes: "judgeFixes", aWait: "askMinutes" };
 function agentForm(values) {
   const a = (state && state.agentMode) || {};
@@ -985,6 +1004,7 @@ $("agentForm").onsubmit = (e) => {
   if ($("aBrief").checked !== (d.briefing !== false)) out.briefing = $("aBrief").checked;
   send({ type: "agentSettings", settings: out });
 };
+${LAB_JS}
 $("briefBtn").onclick = () => {
   const order = Object.keys(BREVITY_LABEL);
   send({ type: "brevity", level: order[(order.indexOf((state && state.brevity) || "brief") + 1) % order.length] });
