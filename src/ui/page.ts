@@ -2,7 +2,7 @@ import { STAGE_CSS, STAGE_HTML, STAGE_JS } from "./stage-page.ts";
 import { VIS_CSS, VIS_JS } from "./visuals-page.ts";
 import { BREVITY_LABEL } from "../brevity.ts";
 import { VOICE_CSS, VOICE_HINT, VOICE_HTML, VOICE_JS } from "./voice-page.ts";
-import { LAB_CHIP, LAB_CSS, LAB_HTML, LAB_JS } from "./lab-page.ts";
+import { LAB_CSS, LAB_HTML, LAB_JS, LAB_NAV, LAB_VIEW } from "./lab-page.ts";
 
 // The whole web UI in one string, so the compiled maxx.exe carries it.
 export const PAGE = /* html */ `<!doctype html>
@@ -235,6 +235,7 @@ ${VIS_CSS}
   <div class="openbox" id="pickRow" style="display:none"><button id="pickBtn" style="flex:1">Choose folder…</button></div>
   <div class="chathead">Chat</div>
   <div class="chatnav" id="chatnav"><button class="go" id="chatBtn" title="Everyday questions, with charts and diagrams drawn right in the chat. No project, no tools.">💬 New chat</button></div>
+  ${LAB_NAV}
   <div class="chathead">Projects</div>
   <div class="projects" id="projects"></div>
 </aside>
@@ -251,13 +252,13 @@ ${VIS_CSS}
     <span class="chip" id="netBtn" title="Let Maxx look things up on the web (and in the MCP servers in ~/.maxx/mcp.json), install packages (pip, npm...) and download files">🌐 Network: off</span>
     <span class="chip" id="briefBtn" title="How much Maxx says. Click to switch: Brief (short answers, no padding), Normal, Detailed (explanations and examples)">✂ Brief</span>
     <span class="chip" id="palBtn" title="The colors Maxx designs with: charts, diagrams, pages, apps and games. You can also say it in a message: “make it in synthwave colors”">🎨 Colors: auto</span>
-    <span class="chip agent projonly" id="agentBtn" title="Agent mode: give Maxx a goal. It splits it into tasks and works through them on its own, checking each one and rewinding any that fail.">🤖 Agent</span><span class="chip gear projonly" id="agentCfg" title="Agent mode settings">⚙</span>${LAB_CHIP}
+    <span class="chip agent projonly" id="agentBtn" title="Agent mode: give Maxx a goal. It splits it into tasks and works through them on its own, checking each one and rewinding any that fail.">🤖 Agent</span><span class="chip gear projonly" id="agentCfg" title="Agent mode settings">⚙</span>
     <span class="chip helper projonly" id="helperBtn" title="A bigger model Maxx calls when the local one is stuck">🧠 Helper: off</span>
     <button id="newBtn" title="Start a new session">New</button>
   </header>
   <div class="board" id="board"></div>
-  <div class="study" id="lab"></div>
-  <div class="plan" id="plan"></div>
+    <div class="plan" id="plan"></div>
+  ${LAB_VIEW}
   <div id="log"></div>
   <div class="activity" id="activity"><span class="spin" id="actSpin">⠋</span><span class="what" id="actWhat"></span><span class="meta" id="actMeta"></span><span class="tail" id="actTail"></span></div>
   ${VOICE_HINT}
@@ -532,7 +533,7 @@ function on(m) {
     case "note": return note(m.text);
     case "plan": return drawPlan(m.steps);
     case "board": return drawBoard(m.board);
-    case "lab": return onStudy(m.study);
+    case "lab": return onStudy(m.study, m.viewing);
     case "capture": return labCapture(m);
     case "instruments": return drawInstruments(m);
     case "escalation":
@@ -547,6 +548,7 @@ function on(m) {
     case "questionDone": return questionDone(m);
     case "busy":
       busy = m.busy; $("stopBtn").disabled = !busy; $("sendBtn").disabled = busy;
+      $("rgo").disabled = busy; $("rstop").disabled = !busy;
       if (!busy) { helperLive = null; $("activity").classList.remove("helper"); }
       if (!busy) { streaming = null; thinkCard = null; abandonWriting(); }
       activity(busy ? { title: "Starting" } : null);
@@ -782,9 +784,10 @@ function render(s) {
   }
   drawPlan(cur && cur.plan);
   drawBoard(cur && cur.board);
-  lastStudy = cur && cur.lab; drawLab(lastStudy);
+  if (cur && cur.lab) { lastStudy = cur.lab; drawLab(lastStudy); drawPane(); }
+  else if (!(cur && cur.research)) { lastStudy = null; drawLab(null); drawPane(); }
   drawAgent();
-  drawLabChip();
+  drawResearch();
   const nb = $("netBtn");
   nb.classList.toggle("on", !!s.network);
   nb.textContent = s.network ? "🌐 Network: on" : "🌐 Network: off";
@@ -909,7 +912,7 @@ async function submit() {
   files = []; drawFiles();
   userMsg(text, sending.map((f) => f.name));
   $("input").value = "";
-  send(Object.assign({ type: "send", text, files: sending.map((f) => ({ id: f.id, mode: f.mode })), agent: agentOn() && !labOn(), lab: labOn() }, voice.flags()));
+  send(Object.assign({ type: "send", text, files: sending.map((f) => ({ id: f.id, mode: f.mode })), agent: agentOn() }, voice.flags()));
   if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
 }
 
@@ -973,7 +976,6 @@ function drawAgent() {
 $("agentBtn").onclick = () => {
   agentMode = !agentMode;
   try { localStorage.setItem("maxx.agent", agentMode ? "1" : "0"); } catch {}
-  if (agentMode && labMode) { labMode = false; try { localStorage.setItem("maxx.lab", "0"); } catch {} drawLabChip(); }
   drawAgent();
 };
 const AGENT_FIELDS = { aTasks: "maxTasks", aSteps: "stepsPerTask", aTries: "tries", aMap: "mapTokens", aFixes: "judgeFixes", aWait: "askMinutes" };

@@ -321,7 +321,8 @@ Change them with the ⚙ next to 🤖 Agent (saved in `~/.maxx/agent.json`; only
 
 ## Research lab: ask a question, get a lab notebook
 
-Turn on **🔬 Lab** in `maxx ui` (or run `maxx --lab "question"`, or `/lab question` in a session) and ask
+Open **🔬 Research lab** in the app's sidebar (its own tab, with past studies, the live board, the claim
+ledger, evidence, instrument log and notebook), or run `maxx --lab "question"`, or `/lab question` in a session, and ask
 something you could measure: "does my desk get warmer while the PC runs, and is the fan what I hear?".
 Maxx runs a small scientific loop, one short request per phase so small local models keep up:
 
@@ -339,6 +340,14 @@ Maxx runs a small scientific loop, one short request per phase so small local mo
 6. **Review**: a skeptic pass names the weakest link; with `--vision-model` set to a different model,
    that model is the reviewer, a genuine second opinion.
 7. **Conclude**: answer, overall confidence, findings with `[E1]`/`[H2]` citations, caveats, next experiments.
+
+**Truth rules.** Every fact goes into a claim ledger: 📏 observed (measured here), ✔ verified (its words and
+numbers are really on the page it cites), 🔁 corroborated (another site agrees), 💬 opinion, ⚠ unverified (a
+number not on its page), ⚖ contested (sources disagree) or ✗ fabricated (cites a page never fetched). Statuses
+can change as evidence arrives, and each change is kept. Hypotheses must cite the evidence they rest on; one that
+cites nothing is allowed but labelled speculative with its prior capped at 35%. The judge of each test never sees
+the prior, so it cannot anchor on it. The conclusion includes the strongest other view, and a fact check sends it
+back once if it has a number that is not in the evidence, a citation to nothing, or a finding with no citation.
 
 Everything lands in `.maxx/research/<id>/`: `data/*.csv`, `tests/*.py`, `raw/` (photos, WAVs, serial
 logs), `instruments.jsonl`, `REPORT.md` and a self-contained `report.html` notebook. `maxx lab`

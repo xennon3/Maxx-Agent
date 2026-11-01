@@ -26,7 +26,7 @@ import { htmlFiles } from "./preview.ts";
 import * as A from "../devices/adb.ts";
 import { agentDefaults, agentSettings, cleanSettings, loadAgentSettings, runGoal, saveAgentSettings } from "../agentmode.ts";
 import { findBrowser } from "../judge.ts";
-import { cleanLab, LAB_DEFAULTS, labSettings, loadLab, runStudy, saveLab } from "../lab/lab.ts";
+import { cleanLab, ensureResearchDir, isResearchDir, LAB_DEFAULTS, labSettings, listStudies, loadLab, loadStudy, researchDir, runStudy, saveLab } from "../lab/lab.ts";
 import { discover, ffmpegCapture, instrumentsFile, type Capture, type Captured } from "../lab/instruments.ts";
 import { ARDUINO_SKETCH } from "../lab/serial.ts";
 import { FIX_ROUNDS, describeWhisper, failed, findWhisper, fixPrompt, planRebuild, speakable, transcribe, type TurnCall } from "./voice.ts";
@@ -190,7 +190,7 @@ export async function startUI(opts: UIOptions) {
   async function snapshot(): Promise<Out> {
     const all = (await listProjects()).map((p) => ({ cwd: p.cwd, sessions: p.sessions.slice(0, 8).map(({ id, title, updated, turns, toolsets }) => ({ id, title, updated, turns, toolsets })) }));
     // Chat sessions get their own place in the sidebar, above the projects.
-    const projects = all.filter((p) => !isChatDir(p.cwd));
+    const projects = all.filter((p) => !isChatDir(p.cwd) && !isResearchDir(p.cwd));
     const chat = { cwd: chatDir(), sessions: all.find((p) => isChatDir(p.cwd))?.sessions ?? [] };
     const s = state;
     return {
@@ -210,6 +210,7 @@ export async function startUI(opts: UIOptions) {
       current: s && {
         cwd: s.cwd,
         chat: s.agent.chat,
+        research: isResearchDir(s.cwd),
         session: s.agent.session,
         model: s.llm.model,
         mode: s.permissions.mode,
@@ -226,6 +227,7 @@ export async function startUI(opts: UIOptions) {
       brevity,
       palette,
       palettes: presetList(),
+      research: { cwd: researchDir(), studies: await listStudies(researchDir()) },
       labMode: { settings: labSettings(labSaved), defaults: LAB_DEFAULTS, saved: labSaved },
       agentMode: { settings: agentSettings(contextWindow, goalSaved), defaults: agentDefaults(contextWindow), saved: goalSaved, context: contextWindow, browser },
     };
@@ -250,7 +252,7 @@ export async function startUI(opts: UIOptions) {
     const permissions = await new Permissions(dir, o.mode ?? state?.permissions.mode ?? "ask").load();
     const { vision, note } = await pickVision(llm, { visionModel: opts.visionModel });
     const chat = isChatDir(dir);
-    const toolsets = chat ? [] : (o.toolsets ?? saved?.toolsets ?? []);
+    const toolsets = chat || isResearchDir(dir) ? [] : (o.toolsets ?? saved?.toolsets ?? []);
     const helper = chat ? null : await resolveHelper({}).catch(() => null);
     const agent = await new Agent(
       chat
@@ -394,6 +396,15 @@ export async function startUI(opts: UIOptions) {
         goalSaved = m.reset ? {} : cleanSettings(m.settings ?? {});
         await saveAgentSettings(goalSaved);
         return send(await snapshot());
+      case "research":
+        // The Research tab: its own workspace, like chat.
+        if (!state || !isResearchDir(state.cwd)) await open(await ensureResearchDir(), { model: state?.llm.model });
+        return send(await snapshot());
+      case "study": {
+        const st = state && (await loadStudy(state.cwd, String(m.id)));
+        if (!st) throw new Error("that study is gone");
+        return send({ type: "lab", study: { ...st, dir: undefined }, viewing: true });
+      }
       case "labSettings":
         labSaved = m.reset ? {} : cleanLab(m.settings ?? {});
         await saveLab(labSaved);

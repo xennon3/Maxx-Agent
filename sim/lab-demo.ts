@@ -26,7 +26,7 @@ print(f"METRIC ${col}_rise_per_hour={slope*3600:.1f}")`;
 let broke = false;
 function reply(sys: string, user: string): string {
   if (sys.startsWith("You run a small research lab. You turn")) return "QUESTION: Does the desk warm up while the PC runs, and is the PC fan the loud part?\nMEASURE: temperature and sound level over time on the desk, plus what the camera sees\n1. serial:COM3 | seconds=20\n2. camera | frames=3 every=1\n3. mic | seconds=3";
-  if (sys.startsWith("You are the scientist")) return "H1: The desk warms up steadily while the PC runs | predicts: temperature rises over the 20 s, about 0.1 °C/s | test: fit a line to temp over time | prior: 55%\nH2: The noise comes from the PC fan switching on | predicts: sound jumps by more than 10 dB part way and stays up | test: compare the sound level before and after the jump | prior: 45%\nH3: The warming is sunlight, not the PC | predicts: temperature follows the light level | test: correlate temp with light | prior: 30%";
+  if (sys.startsWith("You are the scientist")) return "H1: The desk warms up steadily while the PC runs | predicts: temperature rises over the 20 s, about 0.1 °C/s | test: fit a line to temp over time | because: E1, C1 | prior: 55%\nH2: The noise comes from the PC fan switching on | predicts: sound jumps by more than 10 dB part way and stays up | test: compare the sound level before and after the jump | because: E1, E3, C3 | prior: 45%\nH3: The warming is sunlight, not the PC | predicts: temperature follows the light level | test: correlate temp with light | prior: 30%";
   if (sys.startsWith("You write short")) {
     if (user.includes("Hypothesis H1")) return "```python\n" + slope("temp", "E1-*.csv") + "\nprint('RESULT: SUPPORTED - temperature rises steadily' if slope > 0.02 else 'RESULT: REFUTED - flat')\n```";
     if (user.includes("Hypothesis H2")) return "```python\nimport csv, glob\nrows = list(csv.DictReader(open(glob.glob('data/E1-*.csv')[0])))\ns = [float(r['sound']) for r in rows]\nh = len(s)//2\na, b = sum(s[:h])/h, sum(s[h:])/(len(s)-h)\nprint(f'METRIC before_db={a:.1f}')\nprint(f'METRIC after_db={b:.1f}')\nprint(f'METRIC jump_db={b-a:.1f}')\nprint('RESULT: SUPPORTED - sound jumps by %.0f dB halfway and stays up' % (b-a) if b-a > 10 else 'RESULT: REFUTED - no jump')\n```";
@@ -34,13 +34,13 @@ function reply(sys: string, user: string): string {
     if (!broke) return (broke = true), "```python\nimport numpy as np\nx = np.corrcoef(light, temp)\n```";
   }
   if (sys.startsWith("You read the output")) {
-    if (user.includes("H1")) return "VERDICT: supported\nCONFIDENCE: 82%\nWHY: temperature rose 0.08 °C/s (about 290 °C/h if it kept going, so it will level off) over 80 readings.";
+    if (user.includes("H1")) return "VERDICT: supported\nCONFIDENCE: 82%\nWHY: temperature rose 0.08 °C/s over 80 readings, from 22.4 to 24.0 °C.";
     if (user.includes("H2")) return "VERDICT: supported\nCONFIDENCE: 88%\nWHY: sound jumped 17 dB halfway, from 41 to 58 dB, and stayed up.";
     return "VERDICT: refuted\nCONFIDENCE: 12%\nWHY: temperature and light are barely correlated (r near 0).";
   }
   if (user.startsWith("Research question")) return "A desk with a monitor and a PC tower beside it. The room is lit by a window on the left. Nothing moves between frames except a slight change in light.";
   if (sys.startsWith("You are a skeptical")) return "- 20 seconds is far too short to call a trend; the 0.08 °C/s slope cannot continue for an hour.\n- The sensor sits next to the PC exhaust, so it may measure the fan's air, not the desk.\n- One noise jump could be anything that switched on; the mic heard it but nothing confirms it was the fan.\nWOULD CHANGE MY MIND: the temperature still rising with the PC off.";
-  if (sys.startsWith("You write the conclusion")) return "## Answer\nYes, most likely. The desk sensor warmed steadily while the PC ran [E1] [H1], and the noise jumped 17 dB halfway through, which fits the fan kicking in [H2]. Sunlight does not explain the warming [H3]. Overall confidence: 78%\n## Findings\n- Temperature rose about 0.08 °C per second over the 20-second reading [E1] [H1].\n- Sound went from 41 to 58 dB and stayed there [E1] [E3] [H2].\n- Temperature did not follow the light level (r near 0) [H3].\n- The camera shows the PC right next to the sensor [E2].\n## Caveats\n- 20 seconds is a very short window; the rise will level off.\n- The sensor may be in the PC's exhaust air.\n## Next experiments\n- Log COM3 for an hour with the PC on, then an hour with it off.\n- Move the sensor 50 cm away from the PC and repeat.\n- Record the mic while switching the fan profile in the BIOS.";
+  if (sys.startsWith("You write the conclusion")) return "## Answer\nYes, most likely. The desk sensor warmed steadily while the PC ran [E1] [H1], and the noise jumped 17 dB halfway through, which fits the fan kicking in [H2]. Sunlight does not explain the warming [H3]. Overall confidence: 78%\n## Findings\n- Temperature rose about 0.08 °C per second, from 22.4 to 24 °C [E1] [C1] [H1].\n- Sound went from 41 to 58 dB and stayed there [E1] [E3] [H2].\n- Temperature did not follow the light level (r near 0) [H3].\n- The camera shows the PC right next to the sensor [E2].\n## Strongest other view\nThe warming could be the sensor sitting in the PC's exhaust air rather than the desk itself warming; a reading 50 cm away would settle it [C1].\n## Caveats\n- 20 seconds is a very short window; the rise will level off.\n- The sensor may be in the PC's exhaust air.\n## Next experiments\n- Log COM3 for an hour with the PC on, then an hour with it off.\n- Move the sensor 50 cm away from the PC and repeat.\n- Record the mic while switching the fan profile in the BIOS.";
   return "NONE";
 }
 const lm = Bun.serve({ port: 0, async fetch(req) {
@@ -64,13 +64,11 @@ p.on("pageerror", (e: any) => console.log("PAGE ERROR", e.message));
 const shot = (n: string) => p.screenshot({ path: join(OUT, n + ".png") });
 await p.goto(ui.link);
 await p.waitForSelector("#model option", { state: "attached" });
-await p.fill("#folder", desk);
-await p.click("#openBtn");
-await p.waitForFunction(() => document.querySelector("#where")!.textContent!.includes("desk"));
-await p.click("#labBtn");
-await p.fill("#input", "Does my desk get warmer while the PC runs, and is the fan what I hear?");
+await p.click("#researchBtn");
+await p.waitForSelector("body.research #rq");
+await p.fill("#rq", "Does my desk get warmer while the PC runs, and is the fan what I hear?");
 await shot("1-question");
-await p.keyboard.press("Enter");
+await p.click("#rgo");
 // Each instrument asks first: Always for the board, Allow for camera and mic.
 await p.waitForSelector(".ask:not(.answered) button[data-a=always]", { timeout: 60000 });
 await shot("2-permission");
@@ -83,10 +81,13 @@ await p.waitForSelector("#lab .hy.testing", { timeout: 120000 });
 await p.waitForTimeout(900);
 await shot("3-testing");
 await p.waitForSelector("#lab.done", { timeout: 180000 });
-await p.waitForTimeout(800);
+await p.waitForTimeout(1200);
 await shot("4-done");
 console.log(await p.locator("#lab").innerText());
-const href = await p.getAttribute("#lab .foot a", "href");
+await p.click("#rtabs button[data-t=claims]");
+await p.waitForTimeout(300);
+await shot("4b-claims");
+const href = await p.getAttribute("#rpane iframe", "src").catch(() => null) ?? (await p.click("#rtabs button[data-t=notebook]"), await p.getAttribute("#rpane iframe", "src"));
 const nb = await ctx.newPage();
 await nb.setViewportSize({ width: 1000, height: 1300 });
 await nb.goto(new URL(href!, ui.link).toString());

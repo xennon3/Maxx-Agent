@@ -11,6 +11,8 @@ import { extractCode, parseOutput, runTest, runtimes, findPython } from "../src/
 import { cleanLab, labSettings, parseFrame, parseHypotheses, parseInterpretation, parsePlan, runStudy, studyId, type Study } from "../src/lab/lab.ts";
 import { md, reportHtml, sparkline } from "../src/lab/report.ts";
 import { fakePorts } from "../src/lab/serial.ts";
+import { applyCrossCheck, audit, looksLikeOpinion, numbersIn, parseCrossCheck, parseFacts, supported, verify, type Claim } from "../src/lab/truth.ts";
+import { splitPages } from "../src/lab/lab.ts";
 import jpeg from "jpeg-js";
 
 process.env.MAXX_FAKE_SERIAL = "COM9=Test board";
@@ -30,7 +32,7 @@ function reply(body: any): string {
   const last = body.messages.at(-1);
   const user = typeof last.content === "string" ? last.content : last.content.map((p: any) => p.text ?? "").join(" ");
   if (sys.startsWith("You run a small research lab. You turn")) return "QUESTION: Does the board's temperature rise while it runs?\nMEASURE: temperature over time\n1. COM9 | seconds=3\n2. banana | x\n3. mic | seconds=2\n4. web | board heat";
-  if (sys.startsWith("You are the scientist")) return "Here you go:\nH1: The temperature rises over time | predicts: a positive slope | test: fit a line | prior: 60%\n2. The sound jump is a fan | predicts: louder second half | test: compare halves | prior: 0.4";
+  if (sys.startsWith("You are the scientist")) return "Here you go:\nH1: The temperature rises over time | predicts: a positive slope | test: fit a line | because: E1, C1, C99 | prior: 60%\n2. The sound jump is a fan | predicts: louder second half | test: compare halves | prior: 0.4";
   if (sys.startsWith("You write short")) {
     if (user.includes("The script failed")) return "```python\nprint('METRIC halves=1')\nprint('RESULT: INCONCLUSIVE - too little sound')\n```";
     if (user.includes("H2") && brokenOnce) return (brokenOnce = false), "```python\nprint(undefined_name)\n```";
@@ -238,12 +240,22 @@ test.skipIf(!py)("a whole study: frame, collect, hypothesize, test (with a fix),
   const [h1, h2] = s.hypotheses;
   expect(h1).toMatchObject({ status: "supported", prior: 60, posterior: 85 });
   expect(h1!.metrics!.slope).toBeGreaterThan(0);
-  expect(h2).toMatchObject({ status: "inconclusive", prior: 40, posterior: 40, tries: 2 });
+  expect(h1!.because).toEqual(["E1", "C1"]);
+  expect(h1!.trail).toEqual([60, 85]);
+  // H2 cites nothing: allowed, but labelled speculative and its prior capped.
+  expect(h2).toMatchObject({ status: "inconclusive", prior: 35, speculative: true, tries: 2 });
+  // The judge never sees the prior.
+  const judged = requests.filter((r) => String(r.messages[0].content).startsWith("You read the output"));
+  expect(judged.some((r) => /before the test|60%/.test(String(r.messages[1].content)))).toBe(false);
+  // Measurements are observed claims; the conclusion passed its fact check.
+  expect(s.claims.filter((c) => c.status === "observed").map((c) => c.text.split(":")[0])).toEqual(["temp", "light", "sound", "level_db"]);
+  expect(s.audit).toMatchObject({ ok: true, revised: false });
   expect(s.skeptic).toContain("WOULD CHANGE MY MIND");
   expect(s.confidence).toBe(80);
   // The phases came by in order.
   const phases = [...new Set(seen.map((x) => x.state))];
   expect(phases).toEqual(["framing", "collecting", "hypothesizing", "testing", "reviewing", "concluding", "done"]);
+
   // The notebook on disk.
   const files = await readdir(s.dir);
   expect(files.sort()).toEqual(["REPORT.md", "data", "instruments.jsonl", "raw", "report.html", "study.json", "tests"]);
@@ -253,7 +265,10 @@ test.skipIf(!py)("a whole study: frame, collect, hypothesize, test (with a fix),
   const html = await readFile(join(s.dir, "report.html"), "utf8");
   expect(html).toContain('<a class="cite" href="#E1">E1</a>');
   expect(html).toContain("<svg");
+  expect(html).toContain("Claim ledger");
+  expect(html).toContain("Fact check");
   expect(await readFile(join(s.dir, "REPORT.md"), "utf8")).toContain("| H1 | The temperature rises over time | supported | 60% → 85%");
+  expect(await readFile(join(s.dir, "REPORT.md"), "utf8")).toContain("(speculative: rests on no evidence)");
   // It is part of the conversation too.
   expect(agent.history.at(-2)).toEqual({ role: "user", content: "🔬 Does my board warm up?" });
   expect(String(agent.history.at(-1)!.content)).toContain(`.maxx/research/${s.id}/report.html`);
@@ -274,6 +289,81 @@ test("report helpers: markdown with citations, sparklines", () => {
 });
 
 test("reportHtml draws an unfinished study too", async () => {
-  const s: Study = { id: "x", question: "Q?", state: "stopped", round: 1, rounds: 2, plan: [], evidence: [], hypotheses: [], log: [], dir: tmpdir(), started: new Date().toISOString(), model: "m", note: "Stopped." };
+  const s: Study = { id: "x", question: "Q?", state: "stopped", round: 1, rounds: 2, plan: [], evidence: [], hypotheses: [], claims: [], log: [], dir: tmpdir(), started: new Date().toISOString(), model: "m", note: "Stopped." };
   expect(await reportHtml(s)).toContain("Stopped.");
+});
+
+// ---------- the truth system ----------
+
+test("numbers: read as written, and a rounded figure still matches its source", () => {
+  expect(numbersIn("It rose 1,200 W and 0.08 °C/s in E1, -3.5 dB")).toEqual([1200, 0.08, -3.5]);
+  expect(supported(0.08, [0.0786])).toBe(true);
+  expect(supported(17, [16.9])).toBe(true);
+  expect(supported(290, [41, 58])).toBe(false);
+});
+
+test("facts and opinions are told apart, and URLs kept", () => {
+  const f = parseFacts("- FACT: Panels lose 0.4% per °C above 25 °C <https://a.org/p>\n- OPINION: Monocrystalline is the best choice, says the vendor <https://shop.com/x>\n- FACT: Everyone knows solar is the best <https://b.org>\nNONE");
+  expect(f.map((x) => x.kind)).toEqual(["sourced", "opinion", "opinion"]);
+  expect(f[0]).toEqual({ kind: "sourced", text: "Panels lose 0.4% per °C above 25 °C", url: "https://a.org/p" });
+  expect(looksLikeOpinion("this is the best laptop")).toBe(true);
+  expect(looksLikeOpinion("the best efficiency measured was 22.8%")).toBe(false);
+});
+
+test("a claim is checked against the page it cites: verified, unverified, fabricated", () => {
+  const pages = [{ url: "https://a.org/p", text: "Typical panels lose about 0.4% of output per degree Celsius above 25 °C." }];
+  expect(verify({ kind: "sourced", text: "Panels lose 0.4% per °C above 25 °C", url: "https://a.org/p" }, pages).status).toBe("verified");
+  const wrong = verify({ kind: "sourced", text: "Panels lose 1.2% per °C", url: "https://a.org/p" }, pages);
+  expect(wrong).toEqual({ status: "unverified", note: "1.2 not found on a.org" });
+  expect(verify({ kind: "sourced", text: "Panels lose 0.4%", url: "https://made-up.net/x" }, pages).status).toBe("fabricated");
+  expect(verify({ kind: "sourced", text: "Bananas photosynthesize underwater quickly", url: "https://a.org/p" }, pages).status).toBe("unverified");
+});
+
+test("the web instrument's text splits into its pages", () => {
+  const t = "Search: q (DuckDuckGo)\n- Title A: snippet a <https://a.org/1>\n- Title B: snippet b <https://b.org/2>\n\nFrom Page A <https://a.org/1>:\nbody a 12\n\nFrom Page B <https://b.org/2>:\nbody b 34";
+  expect(splitPages(t).map((p) => [p.url, p.text.trim()])).toEqual([["https://a.org/1", "body a 12"], ["https://b.org/2", "body b 34"]]);
+});
+
+test("cross-check: agreement across sites corroborates, conflict contests, measurements stand", () => {
+  const mk = (id: string, status: Claim["status"], url?: string, kind: Claim["kind"] = "sourced"): Claim => ({ id, text: id, kind, status, evidence: "E1", url, history: [] });
+  const claims = [mk("C1", "verified", "https://a.org"), mk("C2", "verified", "https://b.org"), mk("C3", "verified", "https://a.org/z"), mk("C4", "observed", undefined, "observed")];
+  applyCrossCheck(claims, parseCrossCheck("AGREE: C1, C2\nCONFLICT: C3 vs C4 - page says 30, sensor says 23\nnoise"), 2);
+  expect(claims.map((c) => c.status)).toEqual(["corroborated", "corroborated", "contested", "observed"]);
+  expect(claims[2]!.history).toEqual([{ round: 2, status: "contested", why: "conflicts with C4: page says 30, sensor says 23" }]);
+  // Two claims from the same site do not corroborate each other.
+  const same = [mk("C1", "verified", "https://a.org/1"), mk("C2", "verified", "https://a.org/2")];
+  applyCrossCheck(same, parseCrossCheck("AGREE: C1, C2"), 1);
+  expect(same.map((c) => c.status)).toEqual(["verified", "verified"]);
+});
+
+test("the conclusion audit catches invented numbers, fake citations and uncited findings", () => {
+  const known = new Set(["E1", "H1", "C1"]);
+  const corpus = "temp mean=23.28 slope=0.0786 sound before 41 after 58";
+  const good = audit("## Answer\nIt warms 0.08 °C/s [E1]. Overall confidence: 80%\n## Findings\n- 41 to 58 dB [H1]", corpus, known);
+  expect(good.ok).toBe(true);
+  const bad = audit("## Answer\nIt warms 290 °C per hour [E7]. Overall confidence: 80%\n## Findings\n- the fan is loud\n- 58 dB [C1]", corpus, known);
+  expect(bad).toEqual({ ok: false, numbers: 2, unsupported: ["290"], fakeCitations: ["E7"], uncited: ["the fan is loud"] });
+});
+
+test("an invented number in the conclusion goes back once to be fixed", async () => {
+  const { agent } = await setup("always");
+  let calls = 0;
+  const fixer = Bun.serve({ port: 0, async fetch(req) {
+    const body = await req.json() as any;
+    const sys = String(body.messages[0]?.content ?? "");
+    const last = String(body.messages.at(-1).content);
+    let t = "NONE";
+    if (sys.startsWith("You run a small research lab. You turn")) t = "QUESTION: q\nMEASURE: m\n1. COM9 | seconds=2";
+    else if (sys.startsWith("You are the scientist")) t = "H1: warms | because: E1 | prior: 50%";
+    else if (sys.startsWith("You write short")) t = "```js\nconsole.log('RESULT: SUPPORTED - ok')\n```";
+    else if (sys.startsWith("You read the output")) t = "VERDICT: supported\nCONFIDENCE: 70%\nWHY: ok";
+    else if (sys.startsWith("You write the conclusion")) t = last.includes("fact check") ? (calls++, "## Answer\nIt warms [E1]. Overall confidence: 70%\n## Findings\n- warms [H1]") : "## Answer\nIt warms 9000 degrees [E1]. Overall confidence: 70%\n## Findings\n- warms [H1]";
+    return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: t } }] })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+  } });
+  (agent as any).opts.llm = { baseURL: `http://localhost:${fixer.port}/v1`, model: "fake" };
+  const s = await runStudy(agent, "q", { study: () => {} }, { settings: labSettings({ rounds: 1, skeptic: false }), instruments: await serialInstruments(), runtime: runtimes().find((r) => r.lang === "js")! });
+  fixer.stop();
+  expect(calls).toBe(1);
+  expect(s.answer).not.toContain("9000");
+  expect(s.audit).toMatchObject({ ok: true, revised: true });
 });

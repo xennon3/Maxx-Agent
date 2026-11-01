@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Study, Evidence, Hypothesis } from "./lab.ts";
+import { STATUS_ICON, type Claim, type ClaimStatus } from "./truth.ts";
 
 // The study as a lab notebook: REPORT.md for reading anywhere, and a
 // self-contained report.html (pictures inlined, sparklines drawn as SVG)
@@ -17,7 +18,13 @@ export function reportMarkdown(s: Study): string {
   out.push(s.answer ?? `_${s.note ?? "No conclusion yet."}_`, "");
   if (s.hypotheses.length) {
     out.push("## Hypotheses", "", "| | Hypothesis | Result | Before → after | Why |", "|---|---|---|---|---|");
-    for (const h of s.hypotheses) out.push(`| ${h.id} | ${h.text.replace(/\|/g, "/")} | ${h.status} | ${pct(h.prior)} → ${pct(h.posterior)} | ${(h.why ?? "").replace(/\|/g, "/")} |`);
+    for (const h of s.hypotheses) out.push(`| ${h.id} | ${h.text.replace(/\|/g, "/")}${tags(h)} | ${h.status} | ${(h.trail ?? [h.prior]).map((x) => pct(x)).join(" → ")} | ${(h.why ?? "").replace(/\|/g, "/")}${h.because?.length ? ` (rests on ${h.because.join(", ")})` : ""} |`);
+    out.push("");
+  }
+  if (s.audit) out.push(`**Fact check:** ${auditLine(s)}`, "");
+  if (s.claims?.length) {
+    out.push("## Claim ledger", "", `${tally(s.claims)}`, "", "| | Claim | Status | From | Why |", "|---|---|---|---|---|");
+    for (const c of s.claims) out.push(`| ${c.id} | ${c.text.replace(/\|/g, "/").replace(/\n/g, " ")} | ${STATUS_ICON[c.status]} ${c.status} | ${c.evidence}${c.url ? ` <${c.url}>` : ""} | ${c.history.map((h) => `r${h.round} ${h.status}: ${h.why}`).join("; ").replace(/\|/g, "/")} |`);
     out.push("");
   }
   if (s.skeptic) out.push(`## Reviewer (${s.skepticModel ?? "model"})`, "", s.skeptic, "");
@@ -37,6 +44,17 @@ export function reportMarkdown(s: Study): string {
   return out.join("\n") + "\n";
 }
 
+const ORDER: ClaimStatus[] = ["observed", "corroborated", "verified", "opinion", "unverified", "contested", "fabricated"];
+export function tally(claims: Claim[]): string {
+  return ORDER.map((st) => [st, claims.filter((c) => c.status === st).length] as const).filter(([, n]) => n).map(([st, n]) => `${STATUS_ICON[st]} ${n} ${st}`).join(" · ");
+}
+export function auditLine(s: Study): string {
+  const a = s.audit!;
+  if (a.ok) return `passed: ${a.numbers} numbers traced to the evidence, every citation real${a.revised ? " (after one revision)" : ""}.`;
+  return [a.unsupported.length ? `numbers not found in the evidence: ${a.unsupported.join(", ")}` : "", a.fakeCitations.length ? `citations to nothing: ${a.fakeCitations.join(", ")}` : "", a.uncited.length ? `${a.uncited.length} finding(s) cite nothing` : ""].filter(Boolean).join("; ") + (a.revised ? " (after one revision)" : "");
+}
+const tags = (h: Hypothesis) => (h.speculative ? " *(speculative: rests on no evidence)*" : "") + (h.wildcard ? " *(wildcard: a new perspective)*" : "");
+
 // Tiny markdown for the model's conclusion: headings, bullets, bold, [E1] chips.
 export function md(text: string): string {
   const lines = esc(text).split("\n");
@@ -46,7 +64,7 @@ export function md(text: string): string {
     const b = l.match(/^\s*[-*•]\s+(.*)$/);
     if (b && !list) (html.push("<ul>"), (list = true));
     if (!b && list) (html.push("</ul>"), (list = false));
-    const inline = (t: string) => t.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/\[(E\d+|H\d+)\]/g, '<a class="cite" href="#$1">$1</a>');
+    const inline = (t: string) => t.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/\[(E\d+|H\d+|C\d+)\]/g, '<a class="cite" href="#$1">$1</a>');
     if (b) html.push(`<li>${inline(b[1]!)}</li>`);
     else if (/^#{1,3}\s/.test(l)) html.push(`<h3>${inline(l.replace(/^#+\s*/, ""))}</h3>`);
     else if (l.trim()) html.push(`<p>${inline(l)}</p>`);
@@ -84,9 +102,11 @@ async function evidenceCard(s: Study, e: Evidence): Promise<string> {
 
 export async function reportHtml(s: Study): Promise<string> {
   const ev = (await Promise.all(s.evidence.map((e) => evidenceCard(s, e)))).join("\n");
-  const hy = s.hypotheses.map((h) => `<article class="hy ${h.status}" id="${h.id}"><header><b>${h.id}</b> ${esc(h.text)}<span class="tag">${h.status}</span></header>${meter(h)}<p class="nums">${pct(h.prior)} → <b>${pct(h.posterior)}</b>${h.why ? ` · ${esc(h.why)}` : ""}</p>` +
+  const hy = s.hypotheses.map((h) => `<article class="hy ${h.status}" id="${h.id}"><header><b>${h.id}</b> ${esc(h.text)}${h.speculative ? '<span class="pill spec" title="It cites no evidence, so its prior is capped at 35%">speculative</span>' : ""}${h.wildcard ? '<span class="pill wild" title="Added in a later round: a perspective nobody had considered">wildcard</span>' : ""}<span class="tag">${h.status}</span></header>${meter(h)}<p class="nums">${(h.trail ?? [h.prior]).map((x, i, a) => (i === a.length - 1 && a.length > 1 ? `<b>${pct(x)}</b>` : pct(x))).join(" → ")}${h.why ? ` · ${esc(h.why)}` : ""}</p>` +
+    (h.because?.length ? `<p class="sub">rests on ${h.because.map((id) => `<a class="cite" href="#${id}">${id}</a>`).join(" ")}</p>` : "") +
     (h.predicts ? `<p class="sub">predicts: ${esc(h.predicts)}</p>` : "") +
     (h.output ? `<details><summary>test ${h.script ? `<a href="${esc(h.script)}">${esc(h.script)}</a>` : ""}${h.tries > 1 ? ` · ${h.tries} tries` : ""}</summary><pre>${esc(h.output.trim().slice(-3000))}</pre></details>` : "") + "</article>").join("\n");
+  const claims = (s.claims ?? []).map((c) => `<tr class="cl ${c.status}" id="${c.id}"><td><b>${c.id}</b></td><td>${esc(c.text)}${c.note ? `<div class="sub">${esc(c.note)}</div>` : ""}</td><td class="st">${STATUS_ICON[c.status]} ${c.status}</td><td><a class="cite" href="#${c.evidence}">${c.evidence}</a>${c.url ? `<div class="sub"><a href="${esc(c.url)}">${esc(c.url.replace(/^https?:\/\/(www\.)?/, "").slice(0, 40))}</a></div>` : ""}</td><td class="sub">${c.history.map((h) => `r${h.round} ${STATUS_ICON[h.status]} ${esc(h.why)}`).join("<br>")}</td></tr>`).join("");
   const log = s.log.map((l) => `<tr class="${l.ok ? "" : "bad"}"><td>${hm(l.at)}</td><td>${esc(l.instrument)}</td><td>${esc(l.args)}</td><td>${l.approval}</td><td>${(l.ms / 1000).toFixed(1)}s</td><td>${l.ok ? "✓" : "✗"} ${esc(l.note)}</td></tr>`).join("");
   const conf = s.confidence;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lab notebook</title><style>
@@ -105,14 +125,18 @@ pre{white-space:pre-wrap;word-break:break-word;font:12.5px/1.5 ui-monospace,Cons
 .meter{position:relative;height:8px;background:var(--line);border-radius:4px;margin:10px 0 4px}.meter .mv{position:absolute;top:0;height:100%;border-radius:4px}.meter .mv.up{background:color-mix(in srgb,var(--ok) 55%,transparent)}.meter .mv.down{background:color-mix(in srgb,var(--bad) 55%,transparent)}
 .meter i{position:absolute;top:-4px;width:3px;height:16px;margin-left:-1px;border-radius:2px;background:var(--mute)}.meter i.post{background:var(--ink);width:4px}.nums{margin:2px 0;font-size:13px}.sub{margin:2px 0;font-size:13px;color:var(--mute)}
 details summary{cursor:pointer;font-size:13px;color:var(--mute)}a.cite{font:600 11px ui-monospace,monospace;padding:0 5px;border-radius:5px;background:color-mix(in srgb,var(--acc) 18%,transparent);color:var(--acc);text-decoration:none}
-.skeptic{border-left:4px solid var(--maybe)}table{width:100%;border-collapse:collapse;font-size:12.5px;background:var(--card)}td,th{border:1px solid var(--line);padding:4px 6px;text-align:left;vertical-align:top}tr.bad td{color:var(--bad)}.tablewrap{overflow-x:auto}
+.skeptic{border-left:4px solid var(--maybe)}.pill{font-size:11px;padding:0 7px;border-radius:9px;border:1px dashed var(--mute);color:var(--mute)}.pill.wild{border-color:var(--acc);color:var(--acc)}
+.audit{padding:8px 12px;border-radius:8px;border:1px solid var(--line);background:var(--card);font-size:13.5px}.audit.ok{border-left:4px solid var(--ok)}.audit.bad{border-left:4px solid var(--maybe)}
+.ledger td.st{white-space:nowrap}.cl.verified td.st,.cl.corroborated td.st,.cl.observed td.st{color:var(--ok)}.cl.unverified td.st,.cl.contested td.st{color:var(--maybe)}.cl.fabricated td.st{color:var(--bad)}.cl.fabricated td{text-decoration:line-through;text-decoration-color:var(--bad)}.cl.opinion td.st{color:var(--mute)}table{width:100%;border-collapse:collapse;font-size:12.5px;background:var(--card)}td,th{border:1px solid var(--line);padding:4px 6px;text-align:left;vertical-align:top}tr.bad td{color:var(--bad)}.tablewrap{overflow-x:auto}
 </style></head><body><main>
 <p class="stamp">LAB NOTEBOOK · ${esc(s.id)}</p><h1>🔬 ${esc(s.question)}</h1>
 <p class="stamp">${esc(s.started.slice(0, 16).replace("T", " "))} · ${esc(s.model)} · ${s.rounds > 1 ? `round ${s.round} of ${s.rounds} · ` : ""}${s.state}</p>
 ${s.sharpened && s.sharpened !== s.question ? `<p><b>Made measurable:</b> ${esc(s.sharpened)}</p>` : ""}${s.measure ? `<p><b>What would answer it:</b> ${esc(s.measure)}</p>` : ""}
 <section class="answer">${conf !== undefined ? `<div class="conf"><b>Confidence</b><div class="bar"><i style="width:${conf}%"></i></div><b>${conf}%</b></div>` : ""}${s.answer ? md(s.answer) : `<p>${esc(s.note ?? "No conclusion yet.")}</p>`}</section>
+${s.audit ? `<p class="audit ${s.audit.ok ? "ok" : "bad"}"><b>${s.audit.ok ? "✔" : "⚠"} Fact check</b> ${esc(auditLine(s))}</p>` : ""}
 ${hy ? `<h2>Hypotheses · before → after testing</h2>${hy}` : ""}
 ${s.skeptic ? `<h2>Reviewer${s.skepticModel ? ` · ${esc(s.skepticModel)}` : ""}</h2><article class="skeptic">${md(s.skeptic)}</article>` : ""}
+${claims ? `<h2>Claim ledger · what is fact, what is opinion</h2><p class="sub">${esc(tally(s.claims))} · 📏 measured here · ✔ found on the cited page · 🔁 confirmed by another site · 💬 a judgement · ⚠ a number not on its page · ⚖ sources disagree · ✗ cites a page never fetched</p><div class="tablewrap"><table class="ledger"><tr><th></th><th>Claim</th><th>Status</th><th>From</th><th>History</th></tr>${claims}</table></div>` : ""}
 <h2>Evidence</h2>${ev || "<p>No readings.</p>"}
 <h2>Instrument log</h2><div class="tablewrap"><table><tr><th>Time</th><th>Instrument</th><th>Arguments</th><th>Approved</th><th>Took</th><th>Result</th></tr>${log}</table></div>
 </main></body></html>`;
