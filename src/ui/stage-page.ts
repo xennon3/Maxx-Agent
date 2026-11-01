@@ -61,9 +61,16 @@ export const STAGE_CSS = `
 .proc .meta a { color: var(--accent); cursor: pointer; }
 @keyframes pulse { 50% { opacity: .35; } }
 .phwrap { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 10px; border-top: 1px solid var(--line); background: var(--bg); }
-.phwrap img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 14px; box-shadow: 0 0 0 6px #222; background: #000; cursor: zoom-in; user-select: none; -webkit-user-drag: none; }
-.phwrap img.live { cursor: crosshair; }
-.phwrap img:not([src]) { display: none; }
+.phwrap img, .phwrap canvas { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 14px; box-shadow: 0 0 0 6px #222; background: #000; cursor: zoom-in; user-select: none; -webkit-user-drag: none; }
+.phwrap img.live, .phwrap canvas { cursor: crosshair; }
+.phwrap img:not([src]), .phwrap img.hide, .phwrap canvas.hide { display: none; }
+.ghost { position: fixed; width: 30px; height: 30px; margin: -15px 0 0 -15px; border-radius: 99px; background: color-mix(in srgb, #a855f7 45%, transparent); border: 2px solid #a855f7; pointer-events: none; z-index: 9; box-shadow: 0 0 14px #a855f7; }
+.ghost::after { content: "Maxx"; position: absolute; left: 30px; top: -6px; font: 600 11px system-ui, sans-serif; color: #fff; background: #a855f7; padding: 1px 6px; border-radius: 99px; white-space: nowrap; }
+.ghost.long { animation: ghostLong .9s; }
+.ghost.out { transition: opacity .5s, transform .5s; opacity: 0; transform: scale(1.7); }
+@keyframes ghostLong { 50% { transform: scale(1.5); } }
+.ghostTrail { position: fixed; height: 4px; margin-top: -2px; transform-origin: 0 50%; background: linear-gradient(90deg, transparent, #a855f7); border-radius: 4px; pointer-events: none; z-index: 8; transition: opacity .8s; }
+.ghostSay { position: fixed; transform: translateX(-50%); font: 600 12px system-ui, sans-serif; color: #fff; background: #a855f7; padding: 4px 10px; border-radius: 99px; pointer-events: none; z-index: 9; box-shadow: 0 2px 10px rgba(0,0,0,.3); transition: opacity .5s; white-space: nowrap; max-width: 80vw; overflow: hidden; text-overflow: ellipsis; }
 .phwrap .blank { color: var(--mute); text-align: center; max-width: 280px; }
 .phkeys { justify-content: center; padding-top: 8px; }
 .phkeys button { width: 54px; }
@@ -116,9 +123,10 @@ export const STAGE_HTML = `
       <div class="stabs"><span class="t" id="scTitle">Screen</span><button id="stageHide3" title="Hide panel">✕</button></div>
       <div class="sbar">
         <button id="phLive" title="Mirror the phone live; click to tap, drag to swipe">● Live phone</button>
-        <span class="status" id="scCap" style="margin-left:4px"></span>
+        <span class="status" id="scCap" style="margin-left:4px; margin-right:auto"></span>
+        <button id="phExplore" title="Ask Maxx to tap through every screen of the app and fix what breaks">🧭 Explore app</button>
       </div>
-      <div class="phwrap"><img id="shot" alt="Latest screenshot" draggable="false"><div class="blank" id="scBlank">Screenshots from the phone or desktop show here while Maxx tests.<br><br>Turn on <b>Live phone</b> to mirror a connected Android phone and tap it yourself.</div></div>
+      <div class="phwrap"><img id="shot" alt="Latest screenshot" draggable="false"><canvas id="phCanvas" class="hide"></canvas><div class="blank" id="scBlank">Screenshots from the phone or desktop show here while Maxx tests.<br><br>Turn on <b>Live phone</b> to mirror a connected Android phone and tap it yourself. When Maxx taps, you see its finger in purple.</div></div>
       <div class="sbar phkeys" id="phKeys" style="display:none"><button data-key="back" title="Back">◀</button><button data-key="home" title="Home">●</button><button data-key="recents" title="Recent apps">■</button></div>
     </div>${VIS_PANE}
   </div>
@@ -278,33 +286,109 @@ const stage = (() => {
   $("runCmd").onkeydown = (e) => { if (e.key === "Enter") run(); };
 
   // ---- Screen ----
-  let down = null;
-  const img = $("shot");
-  function frac(e) { const r = img.getBoundingClientRect(); return { fx: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), fy: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) }; }
-  img.onmousedown = (e) => { if (mirror) { e.preventDefault(); down = { x: e.clientX, y: e.clientY, t: Date.now(), f: frac(e) }; } };
-  img.onmouseup = (e) => {
-    if (!mirror || !down) return;
-    const f = frac(e), moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
-    if (moved < 8) send(Object.assign({ type: "phoneTap" }, f));
-    else send({ type: "phoneSwipe", fx1: down.f.fx, fy1: down.f.fy, fx2: f.fx, fy2: f.fy, ms: Math.min(1500, Math.max(120, Date.now() - down.t)) });
-    const ring = div("tap"); ring.style.left = e.clientX + "px"; ring.style.top = e.clientY + "px"; document.body.appendChild(ring); setTimeout(() => ring.remove(), 600);
-    down = null;
-  };
+  // Live view: H.264 video from the phone decoded with WebCodecs (smooth), or
+  // screenshots twice a second when video isn't available.
+  let down = null, userStopped = false, videoOn = false, dec = null, codec = "", needKey = true, decoded = 0;
+  const img = $("shot"), cv = $("phCanvas"), cx = cv.getContext("2d");
+  const canVideo = typeof VideoDecoder !== "undefined";
+  function media() { return videoOn && mirror ? cv : img; }
+  function frac(e) { const r = media().getBoundingClientRect(); return { fx: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), fy: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) }; }
+  for (const el of [img, cv]) {
+    el.onmousedown = (e) => { if (mirror) { e.preventDefault(); down = { x: e.clientX, y: e.clientY, t: Date.now(), f: frac(e) }; } };
+    el.onmouseup = (e) => {
+      if (!mirror || !down) return;
+      const f = frac(e), moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+      if (moved < 8) send(Object.assign({ type: "phoneTap" }, f));
+      else send({ type: "phoneSwipe", fx1: down.f.fx, fy1: down.f.fy, fx2: f.fx, fy2: f.fy, ms: Math.min(1500, Math.max(120, Date.now() - down.t)) });
+      const ring = div("tap"); ring.style.left = e.clientX + "px"; ring.style.top = e.clientY + "px"; document.body.appendChild(ring); setTimeout(() => ring.remove(), 600);
+      down = null;
+    };
+  }
   img.onclick = () => { if (!mirror && img.src) { $("zoomImg").src = img.src; $("zoom").style.display = "flex"; } };
-  function setMirror(on) {
+  function useVideo(on) { videoOn = on; cv.classList.toggle("hide", !on); img.classList.toggle("hide", on); }
+  function closeDecoder() { try { if (dec && dec.state !== "closed") dec.close(); } catch (e) {} dec = null; codec = ""; }
+  function setMirror(on, video) {
     mirror = on;
     $("phLive").classList.toggle("on", on);
     $("phLive").textContent = on ? "■ Stop live view" : "● Live phone";
     $("phKeys").style.display = on ? "" : "none";
     img.classList.toggle("live", on);
-    send({ type: "mirror", on });
+    if (!on) { useVideo(false); closeDecoder(); }
+    const v = video !== undefined ? video : canVideo;
+    send({ type: "mirror", on, video: v });
+    if (on) $("scCap").textContent = "connecting to the phone…";
   }
-  $("phLive").onclick = () => setMirror(!mirror);
+  // The decoder can't take this stream: start over with screenshots.
+  function videoFailed(why) {
+    closeDecoder(); useVideo(false);
+    $("scCap").textContent = "video failed (" + why + "), using screenshots";
+    if (mirror) { send({ type: "mirror", on: false }); setMirror(true, false); }
+  }
+  function videoFrame(m) {
+    if (!mirror) return;
+    if (m.codec && (m.codec !== codec || !dec)) {
+      closeDecoder();
+      codec = m.codec; decoded = 0;
+      try {
+        dec = new VideoDecoder({
+          output(f) {
+            if (cv.width !== f.displayWidth || cv.height !== f.displayHeight) { cv.width = f.displayWidth; cv.height = f.displayHeight; }
+            cx.drawImage(f, 0, 0); f.close();
+            if (!decoded++) { useVideo(true); $("scBlank").style.display = "none"; $("scTitle").textContent = "Phone"; }
+            $("scCap").textContent = "live video · " + m.w + "×" + m.h;
+          },
+          error(e) { if (!decoded) return videoFailed(e.message || "decoder error"); needKey = true; codec = ""; dec = null; send({ type: "mirrorKey" }); },
+        });
+        dec.configure({ codec, optimizeForLatency: true });
+      } catch (e) { return videoFailed(e.message); }
+      needKey = true;
+    }
+    if (!dec || dec.state !== "configured" || (needKey && !m.key)) return;
+    needKey = false;
+    const bin = atob(m.data), bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    try { dec.decode(new EncodedVideoChunk({ type: m.key ? "key" : "delta", timestamp: Math.round(performance.now() * 1000), data: bytes })); }
+    catch (e) { needKey = true; send({ type: "mirrorKey" }); }
+  }
+  $("phLive").onclick = () => { userStopped = mirror; setMirror(!mirror); };
+  $("phExplore").onclick = () => ask("Explore the app on the phone with android_explore. Fix any crash or button that does nothing, run it again with android_run, and explore once more to check.");
   for (const b of document.querySelectorAll("#phKeys button")) b.onclick = () => send({ type: "phoneKey", key: b.dataset.key });
   function shot(src, tool, cap) {
     img.src = src; $("scBlank").style.display = "none";
     $("scTitle").textContent = tool && tool.startsWith("desktop") ? "Desktop" : "Phone";
     $("scCap").textContent = cap || (tool + " · " + new Date().toLocaleTimeString());
+  }
+
+  // Maxx's own taps, drawn on the mirror as a purple finger.
+  // Where a point of the phone screen is in the window (the panel itself before the first frame).
+  function rect() { const r = media().getBoundingClientRect(); return r.width > 0 ? r : document.querySelector(".phwrap").getBoundingClientRect(); }
+  function at(fx, fy) { const r = rect(); return { x: r.left + fx * r.width, y: r.top + fy * r.height, ok: r.width > 0 }; }
+  function fade(el, ms) { setTimeout(() => { el.classList.add("out"); el.style.opacity = 0; setTimeout(() => el.remove(), 600); }, ms); }
+  function say(text) {
+    const r = rect(); if (!r.width) return;
+    const b = div("ghostSay", text); b.style.left = r.left + r.width / 2 + "px"; b.style.top = r.bottom - 44 + "px";
+    document.body.appendChild(b); fade(b, 1400);
+  }
+  function ghost(m) {
+    // Watching Maxx test is the point: start the live view unless the user turned it off.
+    if (!mirror && !userStopped) setMirror(true);
+    if (!shown) show("screen");
+    else if (tab !== "screen") return badge("screen");
+    if (m.kind === "tap") {
+      const p = at(m.fx, m.fy); if (!p.ok) return;
+      const g = div("ghost" + (m.long ? " long" : "")); g.style.left = p.x + "px"; g.style.top = p.y + "px"; g.title = m.note;
+      document.body.appendChild(g); fade(g, m.long ? 900 : 450);
+    } else if (m.kind === "swipe") {
+      const p = at(m.fx1, m.fy1), q = at(m.fx2, m.fy2); if (!p.ok) return;
+      const g = div("ghost"); g.style.left = p.x + "px"; g.style.top = p.y + "px"; document.body.appendChild(g);
+      const t = div("ghostTrail"); t.style.left = p.x + "px"; t.style.top = p.y + "px"; t.style.width = Math.hypot(q.x - p.x, q.y - p.y) + "px";
+      t.style.transform = "rotate(" + Math.atan2(q.y - p.y, q.x - p.x) + "rad) scaleX(0)"; document.body.appendChild(t);
+      const ms = Math.max(350, Math.min(1500, m.ms * 1.3));
+      g.animate([{ left: p.x + "px", top: p.y + "px" }, { left: q.x + "px", top: q.y + "px" }], { duration: ms, fill: "forwards", easing: "ease-in-out" });
+      t.animate([{ transform: "rotate(" + Math.atan2(q.y - p.y, q.x - p.x) + "rad) scaleX(0)" }, { transform: "rotate(" + Math.atan2(q.y - p.y, q.x - p.x) + "rad) scaleX(1)" }], { duration: ms, fill: "forwards", easing: "ease-in-out" });
+      fade(g, ms); setTimeout(() => { t.style.opacity = 0; setTimeout(() => t.remove(), 900); }, ms);
+    } else if (m.kind === "key") say("Maxx pressed " + ({ back: "◀ Back", home: "● Home", recents: "■ Recents", enter: "⏎ Enter" }[m.key] || m.key));
+    else if (m.kind === "type") say("Maxx typed “" + m.text + "”");
   }
 
   // ---- Panel ----
@@ -368,8 +452,11 @@ const stage = (() => {
         }
         case "mirrorFrame":
           if (m.error) { if (mirror) setMirror(false); $("scCap").textContent = m.error; $("scBlank").style.display = ""; return; }
-          if (mirror) shot(m.src, "android", "live · " + m.w + "×" + m.h);
+          if (mirror && !videoOn) shot(m.src, "android", "live · " + m.w + "×" + m.h);
           return;
+        case "mirrorVideo": return videoFrame(m);
+        case "mirrorMode": closeDecoder(); useVideo(false); $("scCap").textContent = m.reason; return;
+        case "phoneAct": return ghost(m);
       }
     },
   };

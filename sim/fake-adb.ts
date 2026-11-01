@@ -4,13 +4,27 @@ import { spendSync } from "./ledger.ts";
 
 // Stands in for adb.exe: same arguments, same output shapes, a simulated phone behind it.
 let args = process.argv.slice(2);
+if (process.env.SIM_ADB_LOG) require("node:fs").appendFileSync(process.env.SIM_ADB_LOG, args.join(" ") + "\n");
 if (args[0] === "-s") args = args.slice(2);
 const cmd = args.join(" ");
 const s = P.load();
 const out = (t: string) => process.stdout.write(t);
 const cost = (what: string, sec: number) => spendSync("phone", what, sec);
 
-if (cmd === "devices -l") out("List of devices attached\nSIMPIXEL9   device usb:1-2 product:tokay model:Pixel_9 device:tokay transport_id:1\n\n");
+if (args[0] === "exec-out" && args[1] === "screenrecord") {
+  // Live video: encode the pretend phone's screen with ffmpeg as it changes (needs ffmpeg on PATH).
+  const size = args.find((a) => a.startsWith("--size="))?.slice(7).split("x") ?? ["1080", "2400"];
+  const ff = Bun.spawn(["ffmpeg", "-loglevel", "error", "-f", "image2pipe", "-framerate", "8", "-i", "-", "-vf", `scale=${size[0]}:${size[1]}`, "-c:v", "libx264", "-profile:v", "baseline", "-tune", "zerolatency", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "16", "-f", "h264", "-"], { stdin: "pipe", stdout: "inherit", stderr: "inherit" });
+  const end = Date.now() + 60_000;
+  while (Date.now() < end) {
+    ff.stdin.write(P.screenshot(P.load()));
+    await ff.stdin.flush();
+    await Bun.sleep(125);
+  }
+  ff.stdin.end();
+  await ff.exited;
+  process.exit(0);
+} else if (cmd === "devices -l") out("List of devices attached\nSIMPIXEL9   device usb:1-2 product:tokay model:Pixel_9 device:tokay transport_id:1\n\n");
 else if (cmd === "exec-out screencap -p") (cost("screencap", 0.35), process.stdout.write(P.screenshot(s)));
 else if (cmd.startsWith("shell uiautomator dump")) (cost("uiautomator dump", 1.4), out("UI hierchary dumped to: /sdcard/maxx_ui.xml\n"));
 else if (cmd.startsWith("exec-out cat")) out(P.uiXml(s));
@@ -35,4 +49,6 @@ else if (args[1] === "input") {
   process.stderr.write(`fake adb: unsupported command: ${cmd}\n`);
   process.exit(1);
 }
-P.save(s);
+// Only commands that change the phone write its state back, so a read running
+// alongside (the live view asking for the screen size) can't undo a tap.
+if (args[0] === "install" || args[0] === "logcat" || args[1] === "input" || args[1] === "am" || args[1] === "monkey") P.save(s);

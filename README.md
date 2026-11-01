@@ -142,6 +142,7 @@ draws a numbered box and checks the model can read the number back.
 | `android_screen` | screenshot + numbered elements; `zoom` for detail |
 | `android_tap` / `android_type` / `android_swipe` / `android_key` | by element number, text, or screenshot pixels |
 | `android_logcat` | crashes, or the app's own log |
+| `android_explore` | tests the whole app by itself: taps every button on every screen it can reach, types a sample into fields, and reports crashes (with the taps that cause them, saved as a replay), buttons that do nothing, buttons that leave the app, and one picture of every screen. Skips Delete / Buy / Send / Log out unless `bold` |
 | `android_devices` / `android_connect` | pick a device, pair and connect over Wi-Fi |
 
 ### Desktop (Windows)
@@ -224,8 +225,13 @@ Claude Code app:
     opens in Preview, and a failed command gets an *ask Maxx to fix* link with the end of its
     output.
   - **📱 Screen** shows the latest phone or desktop screenshot. *Live phone* mirrors a connected
-    Android phone at about two frames a second: click to tap, drag to swipe, plus Back / Home /
-    Recents.
+    Android phone as smooth video (the phone's own H.264 encoder through `adb screenrecord`,
+    decoded in the window with WebCodecs; capped at 1920 px on the long side, restarted every
+    3 minutes). Phones that can't stream fall back to screenshots twice a second. Click to tap,
+    drag to swipe, plus Back / Home / Recents. When Maxx taps, swipes or types, a purple
+    "Maxx" finger shows where, and the live view turns itself on (unless you stopped it).
+    *🧭 Explore app* asks Maxx to run `android_explore` and fix what it finds.
+    `MAXX_MIRROR=frames` forces screenshots; `MAXX_MIRROR_MAX` and `MAXX_MIRROR_BITRATE` tune the video.
 
   The model gets two tools of its own in the app window: `preview` opens a page in the panel and
   returns its title, visible text and console errors (so even a text-only model can tell if its

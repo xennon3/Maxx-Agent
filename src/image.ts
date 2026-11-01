@@ -104,3 +104,22 @@ export function toShot(src: Uint8Array | Raw, opts: { maxSide?: number; marks?: 
 }
 
 export const center = (b: Bounds) => ({ x: Math.round((b.x1 + b.x2) / 2), y: Math.round((b.y1 + b.y2) / 2) });
+
+// Several screenshots side by side on one image, each with its number in the
+// corner, so one picture shows every screen an exploration found.
+export function contactSheet(tiles: Raw[], opts: { tileSide?: number; cols?: number; gap?: number } = {}): { img: Raw; marks: Mark[] } {
+  const side = opts.tileSide ?? 420, gap = opts.gap ?? 12;
+  const small = tiles.map((t) => downscale(t, side).img);
+  const cols = Math.max(1, Math.min(opts.cols ?? 4, small.length));
+  const rows = Math.ceil(small.length / cols);
+  const cw = Math.max(1, ...small.map((t) => t.width)), ch = Math.max(1, ...small.map((t) => t.height));
+  const W = cols * cw + (cols + 1) * gap, H = rows * ch + (rows + 1) * gap;
+  const data = new Uint8Array(W * H * 4).fill(40);
+  const marks: Mark[] = [];
+  small.forEach((t, i) => {
+    const x0 = gap + (i % cols) * (cw + gap), y0 = gap + Math.floor(i / cols) * (ch + gap);
+    for (let y = 0; y < t.height; y++) data.set(t.data.subarray(y * t.width * 4, (y + 1) * t.width * 4), ((y0 + y) * W + x0) * 4);
+    marks.push({ n: i + 1, bounds: { x1: x0, y1: y0, x2: x0 + t.width, y2: y0 + t.height } });
+  });
+  return { img: { width: W, height: H, data }, marks };
+}

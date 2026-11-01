@@ -16,7 +16,7 @@ writeFileSync(join(app, "bun.lock"), "");
 Bun.spawnSync(["git", "init", "-q"], { cwd: app });
 process.env.MAXX_HOME = join(OUT, "home");
 mkdirSync(join(OUT, "bin"), { recursive: true });
-writeFileSync(join(OUT, "bin", "adb"), "#!/bin/sh\nexec bun " + ROOT + "/sim/fake-adb.ts \"$@\"\n", { mode: 0o755 });
+writeFileSync(join(OUT, "bin", "adb"), `#!/bin/sh\nexport SIM_PHONE='${join(OUT, "phone.json")}'\nexec bun ${ROOT}/sim/fake-adb.ts "$@"\n`, { mode: 0o755 });
 Object.assign(process.env, { MAXX_ADB: join(OUT, "bin", "adb"), SIM_PHONE: join(OUT, "phone.json") });
 
 const HTML = `<!doctype html><html><head><title>Tip calculator</title><style>body{font:16px system-ui;margin:24px;background:#fff7ed}h1{color:#c2410c}input{font-size:18px;padding:6px;margin:4px 0;width:200px}.total{font-size:28px;font-weight:700;margin-top:12px}</style></head><body><h1>Tip calculator</h1><label>Bill<br><input id=bill value=42></label><br><label>Tip %<br><input id=tip value=18></label><div class=total id=out>Total: $0</div><script>function calc(){const b=+bill.value,t=+tip.value;out.textContent="Total: $"+(b*(1+t/100)).toFixed(2)}bill.oninput=tip.oninput=calc;calc();console.log("ready");totl.focus();</script></body></html>`;
@@ -72,9 +72,10 @@ await page.waitForTimeout(300);
 await shot("3-devserver-phone-size");
 await page.click("#rail button[data-tab=screen]");
 await page.click("#phLive");
-await page.waitForSelector("#shot.live[src]", { timeout: 15000 });
+// Live H.264 video on the canvas, or screenshots on the image when video can't play.
+const live = await page.waitForSelector("#phCanvas:not(.hide), #shot.live[src]:not(.hide)", { timeout: 15000 });
 await page.waitForTimeout(1200);
-const box = (await page.locator("#shot").boundingBox())!;
+const box = (await live.boundingBox())!;
 await page.mouse.click(box.x + box.width / 2, box.y + box.height * 0.3);
 await page.waitForTimeout(200);
 await shot("4-screen");

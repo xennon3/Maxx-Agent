@@ -5,6 +5,7 @@ import { inside } from "../tools/paths.ts";
 import { shell } from "../shell.ts";
 import { decodePng, toShot } from "../image.ts";
 import * as A from "../devices/adb.ts";
+import { AccessUnits, captureSize, pump, screenrecordArgs, spawnStream, type StreamProc } from "../devices/stream.ts";
 import { PreviewServer, htmlFiles } from "./preview.ts";
 import { Runner, detectCommands, saveCommand, savedCommands, type Proc } from "./runner.ts";
 
@@ -25,9 +26,28 @@ export class Stage {
   private reports = new Map<string, (r: Report) => void>();
   private mirrorOn = false;
   private screen = { w: 0, h: 0 };
+  private video: StreamProc | null = null;
+  private offAct: () => void;
 
   constructor(private send: (m: Out) => void, private clients: () => number, port = 0) {
     this.preview = new PreviewServer((paths) => this.send({ type: "changed", paths }), port);
+    // Show Maxx's own taps and swipes on the mirror, as a ghost finger.
+    this.offAct = A.onAct((a) => void this.ghost(a));
+  }
+
+  private async ghost(a: A.PhoneAct) {
+    if (!this.clients()) return;
+    if (!this.screen.w) this.screen = await A.screenSize().catch(() => this.screen);
+    const { w, h } = this.screen;
+    if (!w) return;
+    const f = (x: number, y: number) => ({ fx: x / w, fy: y / h });
+    const base = { type: "phoneAct", kind: a.kind, note: a.note };
+    if (a.kind === "tap") this.send({ ...base, ...f(a.x, a.y), long: !!a.long });
+    else if (a.kind === "swipe") {
+      const p = f(a.x1, a.y1), q = f(a.x2, a.y2);
+      this.send({ ...base, fx1: p.fx, fy1: p.fy, fx2: q.fx, fy2: q.fy, ms: a.ms });
+    } else if (a.kind === "key") this.send({ ...base, key: a.key });
+    else this.send({ ...base, text: a.text });
   }
 
   async use(cwd: string) {
@@ -83,9 +103,16 @@ export class Stage {
         this.reports.get(m.id)?.(m);
         this.reports.delete(m.id);
         return true;
-      case "mirror":
+      case "mirror": {
+        const was = this.mirrorOn;
         this.mirrorOn = !!m.on;
-        if (this.mirrorOn) void this.mirror();
+        this.video?.kill();
+        if (this.mirrorOn && !was) void (m.video && process.env.MAXX_MIRROR !== "frames" ? this.mirrorVideo() : this.mirror());
+        return true;
+      }
+      case "mirrorKey":
+        // The decoder lost its place; a fresh screenrecord starts with a key frame.
+        this.video?.kill();
         return true;
       case "phoneTap":
         await this.phone(["shell", "input", "tap", ...this.px(m.fx, m.fy)]);
@@ -110,6 +137,43 @@ export class Stage {
   private async phone(args: string[]) {
     if (!this.screen.w) throw new Error("turn the live phone view on first");
     await A.adbText(args);
+  }
+
+  // Smooth live view: the phone's own H.264 encoder, decoded in the page with
+  // WebCodecs. screenrecord stops after 3 minutes, so it is restarted; if it
+  // never sends a frame (old Android, some emulators), fall back to screenshots.
+  private async mirrorVideo() {
+    try {
+      await A.ensureDevice();
+      this.screen = await A.screenSize();
+    } catch (e) {
+      this.mirrorOn = false;
+      return this.send({ type: "mirrorFrame", error: (e as Error).message });
+    }
+    const size = captureSize(this.screen.w, this.screen.h);
+    let frames = 0, quick = 0;
+    while (this.mirrorOn && this.clients() > 0) {
+      const t = Date.now();
+      const got = frames;
+      const proc = (this.video = spawnStream(A.adbArgv(screenrecordArgs(size))));
+      const watch = setInterval(() => !this.clients() && proc.kill(), 1000);
+      const units = new AccessUnits((f) => {
+        frames++;
+        this.send({ type: "mirrorVideo", key: f.key, codec: f.codec, data: Buffer.from(f.data).toString("base64"), w: this.screen.w, h: this.screen.h });
+      });
+      await pump(proc, units, 25).catch(() => {});
+      await proc.exited.catch(() => null);
+      clearInterval(watch);
+      if (this.video === proc) this.video = null;
+      if (!this.mirrorOn || !this.clients()) break;
+      if (frames === got) {
+        // Nothing came out of this run. Twice in a row: this phone can't stream.
+        if (++quick >= 2 || Date.now() - t < 1500) {
+          this.send({ type: "mirrorMode", mode: "frames", reason: "this phone did not stream video (screenrecord), so the live view uses screenshots" });
+          return void this.mirror();
+        }
+      } else quick = 0;
+    }
   }
 
   // About two frames a second over adb: enough to watch a test run or poke at a screen.
@@ -206,6 +270,8 @@ export class Stage {
 
   stop() {
     this.mirrorOn = false;
+    this.video?.kill();
+    this.offAct();
     this.runner?.stopAll();
     this.preview.stop();
   }
