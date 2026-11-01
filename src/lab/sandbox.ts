@@ -73,9 +73,9 @@ export function parseOutput(out: string): { verdict?: Verdict; metrics: Record<s
   return { verdict: { result, why: r[2]!.trim().slice(0, 300) }, metrics };
 }
 
-export async function runTest(o: { dir: string; name: string; code: string; runtime: Runtime; seconds: number; network: boolean; signal?: AbortSignal }): Promise<TestRun> {
+export async function runTest(o: { dir: string; name: string; code: string; runtime: Runtime; seconds: number; network: boolean; signal?: AbortSignal; folder?: string; needResult?: boolean }): Promise<TestRun> {
   const ext = o.runtime.lang === "python" ? "py" : "js";
-  const file = join(o.dir, "tests", `${o.name}.${ext}`);
+  const file = join(o.dir, o.folder ?? "tests", `${o.name}.${ext}`);
   const guard = o.network ? "" : o.runtime.lang === "python" ? PY_GUARD : JS_GUARD;
   await writeFile(file, guard + o.code + "\n");
   // A clean environment: no API keys or tokens leak into model-written code.
@@ -96,7 +96,7 @@ export async function runTest(o: { dir: string; name: string; code: string; runt
   if (o.signal?.aborted) throw Object.assign(new Error("stopped"), { name: "AbortError" });
   const output = clip(out + (err.trim() ? `\n[stderr]\n${err}` : "") + (timedOut ? `\n[stopped after ${o.seconds}s]` : ""));
   const parsed = parseOutput(out);
-  return { ok: code === 0 && !timedOut && !!parsed.verdict, code, output, ms: Date.now() - started, timedOut, ...parsed };
+  return { ok: code === 0 && !timedOut && (o.needResult === false || !!parsed.verdict), code, output, ms: Date.now() - started, timedOut, ...parsed };
 }
 
 // The start and the end matter most (the RESULT line is last).

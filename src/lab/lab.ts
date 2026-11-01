@@ -10,6 +10,8 @@ import { toCSV, series } from "./data.ts";
 import { ICON, menu, parseArgs, type Instrument, type Kind } from "./instruments.ts";
 import { extractCode, runTest, runtimes, type Runtime, type TestRun } from "./sandbox.ts";
 import { reportHtml, reportMarkdown } from "./report.ts";
+import { advocateMessages, addLeads, addPredictions, ASSUMPTION_ASK, gapMapSvg, horizonMessages, HYPOTHESIS_KINDS, judgeMessages, kindOf, outliers, parseAssumptions, parseHorizon, parseJudge, scoreSide, type Assumption, type Debate, type Experiment, type HKind, type MapNode, type Prediction } from "./discover.ts";
+import { designMessages, listLabs, loadLabCode, loadLabMeta, parseDesign, parseSweeps, recordRun, runSim, saveLab as saveSimLab, sweepMessages, sweepRuns, sweepTable, type LabMeta } from "./sim.ts";
 import { applyCrossCheck, audit, auditNote, crossCheckMessages, ledger, parseCrossCheck, parseFacts, RULES, verify, type Audit, type Claim } from "./truth.ts";
 
 // The research lab. A question goes round a small scientific loop:
@@ -49,12 +51,18 @@ export type LabSettings = {
   fixes: number;
   // A skeptical review before the conclusion.
   skeptic: boolean;
+  // Maxx designs a virtual lab (a simulation) when it helps, and sweeps it.
+  sims: boolean;
+  // Two advocates argue the leading idea and its best rival, scored on evidence.
+  debate: boolean;
+  // After the conclusion: gap map, dated predictions, experiments, what would change its mind.
+  horizon: boolean;
   // Default listening time for serial ports.
   serialSeconds: number;
 };
 
-export const LAB_DEFAULTS: LabSettings = { rounds: 2, hypotheses: 3, readings: 5, parallel: 1, testSeconds: 60, fixes: 2, skeptic: true, serialSeconds: 10 };
-const LIMITS: Record<Exclude<keyof LabSettings, "skeptic">, [number, number]> = { rounds: [1, 4], hypotheses: [1, 6], readings: [1, 12], parallel: [1, 4], testSeconds: [5, 600], fixes: [0, 4], serialSeconds: [1, 300] };
+export const LAB_DEFAULTS: LabSettings = { rounds: 2, hypotheses: 3, readings: 5, parallel: 1, testSeconds: 60, fixes: 2, skeptic: true, sims: true, debate: true, horizon: true, serialSeconds: 10 };
+const LIMITS: Record<Exclude<keyof LabSettings, "skeptic" | "sims" | "debate" | "horizon">, [number, number]> = { rounds: [1, 4], hypotheses: [1, 6], readings: [1, 12], parallel: [1, 4], testSeconds: [5, 600], fixes: [0, 4], serialSeconds: [1, 300] };
 
 export const labFile = () => join(maxxHome(), "lab.json");
 export function cleanLab(raw: Record<string, unknown>): Partial<LabSettings> {
@@ -65,7 +73,7 @@ export function cleanLab(raw: Record<string, unknown>): Partial<LabSettings> {
     const n = Math.round(Number(v));
     if (Number.isFinite(n)) out[k] = Math.min(hi, Math.max(lo, n));
   }
-  if (typeof raw.skeptic === "boolean") out.skeptic = raw.skeptic;
+  for (const k of ["skeptic", "sims", "debate", "horizon"] as const) if (typeof raw[k] === "boolean") out[k] = raw[k] as boolean;
   return out;
 }
 export async function loadLab(): Promise<Partial<LabSettings>> {
@@ -109,6 +117,9 @@ export type Hypothesis = {
   speculative?: boolean;
   // A perspective added in a later round that nobody had considered.
   wildcard?: boolean;
+  // rival, wildcard, flipped (an assumption turned around) or borrowed (from another field).
+  kind?: HKind;
+  field?: string;
   // Confidence after each test, starting with the prior: truth may move.
   trail?: number[];
 };
@@ -126,6 +137,17 @@ export type Study = {
   hypotheses: Hypothesis[];
   claims: Claim[];
   audit?: Audit;
+  assumptions?: Assumption[];
+  // The virtual lab this study designed or reused.
+  lab?: { slug: string; title: string; about: string; reused: boolean; sweeps: number };
+  debate?: Debate;
+  map?: MapNode[];
+  predictions?: Prediction[];
+  experiments?: Experiment[];
+  changeMind?: string[];
+  leads?: string[];
+  // Where it came from: an earlier study, a lead, an experiment, a prediction.
+  parent?: { id?: string; question: string };
   log: LogEntry[];
   skeptic?: string;
   skepticModel?: string;
@@ -139,7 +161,7 @@ export type Study = {
 };
 
 export type StudyEvents = { study(s: Study): void; image?(label: string, images: Image[]): void };
-export type StudyOptions = { settings: LabSettings; instruments: Instrument[]; signal?: AbortSignal; runtime?: Runtime; now?: Date };
+export type StudyOptions = { settings: LabSettings; instruments: Instrument[]; signal?: AbortSignal; runtime?: Runtime; now?: Date; parent?: { id?: string; question: string } };
 
 export function studyId(question: string, now = new Date()): string {
   const p = (n: number) => String(n).padStart(2, "0");
@@ -207,8 +229,8 @@ export function hypothesisMessages(s: Study, max: number): Message[] {
       role: "user",
       content:
         `Question: ${s.sharpened ?? s.question}\n${s.measure ? `What would answer it: ${s.measure}\n` : ""}\nEvidence so far:\n${evidenceBlock(s.evidence)}${claimBlock(s)}\n\n` +
-        `Write 2 to ${max} hypotheses, one per line, as:\nH1: <claim> | predicts: <what we would see in the data or a simulation> | test: <how a short script checks it> | because: <the E# and C# it rests on> | prior: <0-100>%\n` +
-        "Make them rivals: include at least one that would make the obvious answer wrong (another cause, chance, a faulty sensor). Ground each one in evidence with because:. A hypothesis with nothing to rest on is allowed if it is genuinely worth testing, but write because: none. Base the prior on the strength of that evidence, not on what sounds likely. Reply with the lines only.",
+        `${ASSUMPTION_ASK}\n\nThen write 2 to ${Math.max(max, 4)} hypotheses, one per line, as:\nH1: <claim> | predicts: <what we would see in the data or a simulation> | test: <how a short script checks it> | because: <the E# and C# it rests on> | prior: <0-100>%\n` +
+        HYPOTHESIS_KINDS + "\nGround each one in evidence with because:. A hypothesis with nothing to rest on is allowed if it is genuinely worth testing, but write because: none. Base the prior on the strength of that evidence, not on what sounds likely. Reply with the lines only.",
     },
   ];
 }
@@ -218,15 +240,19 @@ export function parseHypotheses(text: string, max: number): Omit<Hypothesis, "st
   for (const raw of strip(text).split("\n")) {
     const line = raw.trim();
     const m = line.match(/^(?:[-*•]\s*)?(?:H(?:ypothesis)?\s*)?(\d+)\s*[:.)]\s*(.+)$/i);
-    if (!m) continue;
+    if (!m || /^\W*ASSUMPTION\b/i.test(m[2]!)) continue;
     const parts = m[2]!.split(/\s*\|\s*/);
     const field = (name: RegExp) => parts.find((p) => name.test(p))?.replace(name, "").trim() ?? "";
     const claim = parts.find((p) => !/^(predicts?|test|prior|because|evidence)\s*:/i.test(p))?.trim() ?? "";
-    if (claim.length < 4) continue;
+    if (kindOf(claim).text.length < 4) continue;
     const prior = Number(field(/^prior\s*:\s*/i).match(/(\d+(?:\.\d+)?)/)?.[1] ?? NaN);
+    const k = kindOf(claim);
     out.push({
       id: `H${out.length + 1}`,
-      text: claim.slice(0, 300),
+      text: k.text.slice(0, 300),
+      kind: k.kind,
+      field: k.field,
+      wildcard: k.kind === "wildcard" || undefined,
       predicts: field(/^predicts?\s*:\s*/i).slice(0, 300),
       test: field(/^test\s*:\s*/i).slice(0, 300),
       prior: Number.isFinite(prior) ? Math.max(1, Math.min(99, prior <= 1 && /\./.test(String(prior)) ? prior * 100 : prior)) : 50,
@@ -280,12 +306,13 @@ export function parseInterpretation(text: string, fallback: TestRun, prior: numb
 
 export function followupMessages(s: Study, instruments: Instrument[], max: number): Message[] {
   const open = s.hypotheses.filter((h) => h.status === "inconclusive" || h.status === "error");
+  const fights = s.claims.filter((c) => c.status === "contested").map((c) => `${c.id}: ${c.text} (${c.history.at(-1)?.why ?? "disputed"})`);
   return [
-    { role: "system", content: "You run a small research lab. You decide what extra data would settle open hypotheses." },
+    { role: "system", content: "You run a small research lab. You decide what extra data would settle open hypotheses. Where trusted sources disagree, that is where discoveries hide: settle it with a measurement or a better source." },
     {
       role: "user",
       content:
-        `Question: ${s.sharpened ?? s.question}\nStill open:\n${open.map((h) => `${h.id}: ${h.text} (${h.status}${h.why ? `: ${h.why}` : ""})`).join("\n")}\n\nEvidence so far:\n${evidenceBlock(s.evidence, 400)}\n\n` +
+        `Question: ${s.sharpened ?? s.question}\nStill open:\n${open.map((h) => `${h.id}: ${h.text} (${h.status}${h.why ? `: ${h.why}` : ""})`).join("\n") || "(none)"}\n${fights.length ? `\nSources disagree here (chase these first):\n${fights.join("\n")}\n` : ""}\nEvidence so far:\n${evidenceBlock(s.evidence, 400)}\n\n` +
         `Instruments:\n${menu(instruments)}\n\n` +
         `List 1 to ${max} more readings that would settle them, one per line, as: number. instrument | arguments (longer recordings, a different condition, a better search, a source that could prove the leading idea wrong). If nothing more can be measured, reply NONE.\n` +
         "Then, to stay open-minded, you may add one line for an explanation nobody has considered yet:\nWILDCARD: <claim> | predicts: <...> | test: <...> | because: <E#/C# or none> | prior: <0-100>%",
@@ -326,7 +353,7 @@ export async function runStudy(agent: Agent, question: string, events: StudyEven
   const now = o.now ?? new Date();
   const id = studyId(question, now);
   const dir = join(agent.cwd, ".maxx", "research", id);
-  const s: Study = { id, question, state: "framing", round: 0, rounds: set.rounds, plan: [], evidence: [], hypotheses: [], claims: [], log: [], dir, started: now.toISOString(), model: agent.llm.model };
+  const s: Study = { id, question, state: "framing", round: 0, rounds: set.rounds, plan: [], evidence: [], hypotheses: [], claims: [], log: [], dir, parent: o.parent, started: now.toISOString(), model: agent.llm.model };
   agent.lab = s;
   const emit = () => events.study(structuredClone(s));
   const save = () => writeFile(join(dir, "study.json"), JSON.stringify(s, null, 2)).catch(() => {});
@@ -360,9 +387,12 @@ export async function runStudy(agent: Agent, question: string, events: StudyEven
       if (!s.hypotheses.length) {
         s.state = "hypothesizing";
         emit();
-        const hs = parseHypotheses(await agent.think(hypothesisMessages(s, set.hypotheses), o.signal), set.hypotheses);
+        const said = await agent.think(hypothesisMessages(s, set.hypotheses), o.signal);
+        s.assumptions = parseAssumptions(said);
+        const hs = parseHypotheses(said, Math.max(set.hypotheses, 4));
         s.hypotheses = (hs.length ? hs : [{ id: "H1", text: s.sharpened ?? question, predicts: "", test: "", prior: 50 }]).map((h) => ground(s, { ...h, status: "untested" as const, tries: 0 }));
         emit();
+        if (set.sims) await virtualLab(agent, s, runtime, set, emit, o.signal);
       }
 
       s.state = "testing";
@@ -372,7 +402,7 @@ export async function runStudy(agent: Agent, question: string, events: StudyEven
       await pool(todo, set.parallel, (h) => testOne(agent, s, h, runtime, set, emit, o.signal));
       await save();
 
-      const open = s.hypotheses.some((h) => h.status === "inconclusive" || h.status === "error");
+      const open = s.hypotheses.some((h) => h.status === "inconclusive" || h.status === "error") || s.claims.some((c) => c.status === "contested");
       if (!open || s.round >= set.rounds) break;
       const fu = await agent.think(followupMessages(s, usable, set.readings), o.signal);
       const next = parsePlan(fu.replace(/^.*WILDCARD.*$/gim, ""), usable, set.readings).plan;
@@ -380,7 +410,7 @@ export async function runStudy(agent: Agent, question: string, events: StudyEven
       if (wild) {
         const [w] = parseHypotheses(`H1: ${wild}`, 1);
         if (w) {
-          s.hypotheses.push(ground(s, { ...w, id: `H${s.hypotheses.length + 1}`, status: "inconclusive", tries: 0, wildcard: true }));
+          s.hypotheses.push(ground(s, { ...w, id: `H${s.hypotheses.length + 1}`, status: "inconclusive", tries: 0, wildcard: true, kind: "wildcard" }));
           agent.note(`(lab: a new perspective to test: ${w.text})`);
         }
       }
@@ -389,6 +419,16 @@ export async function runStudy(agent: Agent, question: string, events: StudyEven
       agent.note(`(lab: round ${s.round + 1}, ${next.length} more reading${next.length > 1 ? "s" : ""} for what is still open)`);
     }
     s.round = Math.min(s.round, set.rounds);
+
+    if (set.debate && s.hypotheses.filter((h) => h.status !== "error").length >= 2) {
+      s.state = "reviewing";
+      emit();
+      await debate(agent, s, o.signal).catch((e) => {
+        if ((e as Error).name === "AbortError") throw e;
+        agent.note(`(lab: the debate failed: ${(e as Error).message})`);
+      });
+      emit();
+    }
 
     if (set.skeptic) {
       s.state = "reviewing";
@@ -420,6 +460,20 @@ export async function runStudy(agent: Agent, question: string, events: StudyEven
     s.audit = { ...a, revised };
     const c = s.answer.match(/overall confidence\s*:?\s*(\d+(?:\.\d+)?)\s*%/i);
     if (c) s.confidence = Math.max(0, Math.min(100, Number(c[1])));
+    if (set.horizon) {
+      try {
+        const hz = parseHorizon(await agent.think(horizonMessages(s.sharpened ?? question, s.answer, ledger(s.claims), menu(usable), new Date().toISOString().slice(0, 10)), o.signal), s.id);
+        Object.assign(s, { map: hz.map, predictions: hz.predictions, experiments: hz.experiments, changeMind: hz.changeMind });
+        await addPredictions(hz.predictions);
+        await addLeads([
+          ...hz.gaps.map((g) => ({ kind: "gap" as const, source: s.id, text: `Gap: ${g}`, question: g.split(/\s+[-—–]\s+/)[0] })),
+          ...hz.experiments.map((x) => ({ kind: "experiment" as const, source: s.id, text: `${x.title} (${x.uses}): ${x.how}`, question: `${x.title}: ${x.how}` })),
+        ]);
+      } catch (e) {
+        if ((e as Error).name === "AbortError") throw e;
+        agent.note(`(lab: the look ahead failed: ${(e as Error).message})`);
+      }
+    }
     s.state = "done";
     s.finished = new Date().toISOString();
     s.note = `Study done: ${s.evidence.filter((e) => !e.error).length} readings, ${s.claims.length} claims checked, ${s.hypotheses.length} hypotheses tested${s.confidence !== undefined ? `, ${s.confidence}% confident` : ""}.${s.audit && !s.audit.ok ? " The fact check still flags parts of the conclusion (see the notebook)." : ""}`;
@@ -518,6 +572,12 @@ async function collect(agent: Agent, s: Study, item: PlanItem, all: Instrument[]
     } else if (r.rows?.length && r.keys?.length) {
       // A measurement: each column's statistics are an observed claim.
       for (const line of r.text.split("\n").filter((l) => /^[\w.]+: n=\d+/.test(l))) addClaim(s, { kind: "observed", text: line, evidence: id }, { status: "observed" });
+      // Spikes are leads: maybe noise, maybe the interesting thing.
+      const odd = outliers(r.rows, r.keys).map((o) => `${inst.label}: ${o}`);
+      if (odd.length) {
+        (s.leads ??= []).push(...odd);
+        await addLeads(odd.map((text) => ({ kind: "outlier" as const, source: s.id, text, question: `What caused this? ${text}` })));
+      }
     }
     // Pictures: the vision model says what is in them, in the question's terms.
     if (r.images?.length) {
@@ -547,10 +607,15 @@ async function collect(agent: Agent, s: Study, item: PlanItem, all: Instrument[]
 async function distill(agent: Agent, s: Study, text: string, signal?: AbortSignal): Promise<string> {
   const out = await agent.think([
     { role: "system", content: "You extract claims for a research study, without bias. Only what the text says; copy numbers and units exactly as written. Separate checkable facts from opinions, predictions and marketing." },
-    { role: "user", content: `Question: ${s.sharpened ?? s.question}\n\nText:\n${text.slice(0, 6000)}\n\nList up to 6 claims from the text that bear on the question, for and against, one per line as:\n- FACT: <a checkable statement> <source URL>\n- OPINION: <a judgement, recommendation or prediction, and whose> <source URL>\nIf none, reply NONE.` },
+    { role: "user", content: `Question: ${s.sharpened ?? s.question}\n\nText:\n${text.slice(0, 6000)}\n\nList up to 6 claims from the text that bear on the question, for and against, one per line as:\n- FACT: <a checkable statement> <source URL>\n- OPINION: <a judgement, recommendation or prediction, and whose> <source URL>\nYou may add one line for anything surprising you noticed, even off-topic:\n- ODD: <what and why it is odd>\nIf none, reply NONE.` },
   ], signal);
   const t = strip(out);
-  return /^NONE\b/i.test(t) ? "" : t.slice(0, 2400);
+  const odd = [...t.matchAll(/^\W*ODD\s*:\s*(.+)$/gim)].map((m) => m[1]!.trim().slice(0, 300));
+  if (odd.length) {
+    (s.leads ??= []).push(...odd);
+    await addLeads(odd.map((text) => ({ kind: "odd" as const, source: s.id, text, question: text })));
+  }
+  return /^NONE\b/i.test(t) ? "" : t.replace(/^\W*ODD\s*:.*$/gim, "").slice(0, 2400);
 }
 
 async function testOne(agent: Agent, s: Study, h: Hypothesis, runtime: Runtime, set: LabSettings, emit: () => void, signal?: AbortSignal) {
@@ -682,4 +747,88 @@ export async function loadStudy(cwd: string, id: string): Promise<Study | null> 
   } catch {
     return null;
   }
+}
+
+// ---------- virtual lab ----------
+
+async function virtualLab(agent: Agent, s: Study, runtime: Runtime, set: LabSettings, emit: () => void, signal?: AbortSignal) {
+  // The lab runs on JavaScript; Maxx itself provides it, so this always works.
+  const js: Runtime = runtime.lang === "js" ? runtime : { lang: "js", cmd: [process.execPath] };
+  const hyp = s.hypotheses.map((h) => `${h.id}: ${h.text}${h.predicts ? ` (predicts: ${h.predicts})` : ""}`).join("\n");
+  try {
+    const library = await listLabs();
+    const convo = designMessages(s.sharpened ?? s.question, hyp, evidenceBlock(s.evidence, 500), library.slice(0, 12));
+    let design = parseDesign(await agent.think(convo, signal));
+    let meta: LabMeta | null = null;
+    let code = "";
+    if (design.kind === "reuse") {
+      meta = await loadLabMeta(design.slug);
+      code = (await loadLabCode(design.slug)) ?? "";
+      if (!meta || !code) return;
+    } else if (design.kind === "new") {
+      for (let attempt = 0; attempt <= set.fixes && design.kind === "new"; attempt++) {
+        const smoke = await runSim(s.dir, "smoke", design.code, [{ params: {}, seed: 1, steps: 50 }], js, Math.min(set.testSeconds, 30), signal);
+        if (smoke.ok && smoke.meta && Object.keys(smoke.meta.params ?? {}).length && Object.keys(smoke.meta.outputs ?? {}).length) {
+          code = design.code;
+          meta = await saveSimLab(code, smoke.meta, s.id);
+          break;
+        }
+        convo.push({ role: "assistant", content: "```js\n" + design.code + "\n```" }, { role: "user", content: `The lab failed its smoke test (50 steps with default parameters). Output:\n${smoke.output.slice(-1500)}\nFix it: LAB needs params and outputs, and init/step/measure functions; measure must return finite numbers. Reply with the whole lab in one js block.` });
+        design = parseDesign(await agent.think(convo, signal));
+      }
+      if (!meta) return agent.note("(lab: the virtual lab would not run, so the study goes on without it)");
+    } else return;
+    await mkdir(join(s.dir, "sim"), { recursive: true });
+    await writeFile(join(s.dir, "sim", "lab.js"), code);
+    s.lab = { slug: meta.slug, title: meta.title, about: meta.about, reused: design.kind === "reuse", sweeps: 0 };
+    if (design.kind === "reuse") await saveSimLab(code, meta, s.id);
+    agent.note(`(lab: ${design.kind === "reuse" ? "reusing" : "built"} the virtual lab "${meta.title}")`);
+    emit();
+    // The experiments: sweeps that tell the hypotheses apart, each one evidence.
+    const sweeps = parseSweeps(await agent.think(sweepMessages(s.sharpened ?? s.question, hyp, meta), signal), meta);
+    for (const sw of sweeps) {
+      const id = `E${s.evidence.length + 1}`;
+      const ev: Evidence = { id, instrument: `lab:${meta.slug}`, kind: "sim", icon: "🧪", title: `${meta.title}: sweep ${sw.param} ${sw.from}→${sw.to}`, text: "", at: new Date().toISOString(), round: s.round };
+      s.evidence.push(ev);
+      emit();
+      const r = await runSim(s.dir, `sweep-${id.toLowerCase()}`, code, sweepRuns(sw), js, set.testSeconds, signal);
+      if (!r.ok) {
+        ev.error = `the sweep failed: ${r.output.split("\n").filter(Boolean).at(-1)?.slice(0, 200) ?? "no output"}`;
+        continue;
+      }
+      const t = sweepTable(sw, r.runs);
+      const name = `data/${id}-sim-${sw.param}.csv`;
+      await writeFile(join(s.dir, name), toCSV(t.rows, t.keys));
+      Object.assign(ev, { text: `${t.text}\n(A simulation: it shows what the model's assumptions imply, not what the world does.)`, data: name, keys: t.keys, series: sw.watch.map((w) => ({ name: `${w} vs ${sw.param}`, values: averages(t.rows, sw.param, w) })) });
+      // A simulated result is a claim of its own kind: what the model predicts.
+      addClaim(s, { kind: "sourced", text: `Simulation (${meta.title}): ${t.text.split("\n").slice(-sw.watch.length).join("; ")}`, evidence: id }, { status: "unverified", note: "a simulation's prediction, not a measurement" });
+      for (const run of r.runs.slice(0, 40)) await recordRun(meta.slug, { at: new Date().toISOString(), source: "sweep", params: run.params, seed: run.seed, steps: run.steps, final: run.final }, s.dir);
+      s.lab.sweeps++;
+      emit();
+    }
+  } catch (e) {
+    if ((e as Error).name === "AbortError") throw e;
+    agent.note(`(lab: the virtual lab failed: ${(e as Error).message})`);
+  }
+}
+
+const averages = (rows: Record<string, number>[], param: string, key: string) => {
+  const by = new Map<number, number[]>();
+  for (const r of rows) by.set(r[param]!, [...(by.get(r[param]!) ?? []), r[key]!]);
+  return [...by.values()].map((v) => v.reduce((a, b) => a + b, 0) / v.length);
+};
+
+// ---------- debate ----------
+
+async function debate(agent: Agent, s: Study, signal?: AbortSignal) {
+  const ranked = s.hypotheses.filter((h) => h.status !== "error").sort((a, b) => (b.posterior ?? b.prior) - (a.posterior ?? a.prior));
+  const [A, B] = ranked;
+  if (!A || !B) return;
+  const ev = evidenceBlock(s.evidence, 500), led = ledger(s.claims);
+  const [ta, tb] = await Promise.all([agent.think(advocateMessages(s.sharpened ?? s.question, A, B, ev, led), signal), agent.think(advocateMessages(s.sharpened ?? s.question, B, A, ev, led), signal)]);
+  const eids = new Set(s.evidence.map((e) => e.id)), hids = new Set(s.hypotheses.map((h) => h.id));
+  const a = scoreSide(A.id, ta, s.claims, eids, hids), b = scoreSide(B.id, tb, s.claims, eids, hids);
+  const judge = secondOpinion(agent) ?? agent.llm;
+  const j = parseJudge(await agent.think(judgeMessages(s.sharpened ?? s.question, a, b), signal, judge), a, b);
+  s.debate = { a, b, winner: j.winner, why: j.why, judge: judge.model };
 }

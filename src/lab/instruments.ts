@@ -29,7 +29,7 @@ export type Reading = {
   // Web sources the reading quotes.
   urls?: string[];
 };
-export type Kind = "web" | "serial" | "camera" | "mic" | "file" | "command";
+export type Kind = "web" | "serial" | "camera" | "mic" | "file" | "command" | "sim";
 export type Captured = { frames?: Uint8Array[]; wav?: Uint8Array; device?: string };
 export type Capture = (kind: "camera" | "mic", args: { frames?: number; every?: number; seconds?: number }, signal?: AbortSignal) => Promise<Captured>;
 export type RunCtx = { cwd: string; signal?: AbortSignal; serialSeconds?: number };
@@ -48,7 +48,7 @@ export type Instrument = {
   run(args: Args, ctx: RunCtx): Promise<Reading>;
 };
 
-export const ICON: Record<Kind, string> = { web: "🌐", serial: "🔌", camera: "📷", mic: "🎙", file: "📄", command: "🧰" };
+export const ICON: Record<Kind, string> = { web: "🌐", serial: "🔌", camera: "📷", mic: "🎙", file: "📄", command: "🧰", sim: "🧪" };
 
 const num = (v: string | undefined, d: number, lo: number, hi: number) => {
   const n = Number(v);
