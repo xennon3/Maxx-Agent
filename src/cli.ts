@@ -51,6 +51,8 @@ usage:
   maxx sessions rm <ref...>   delete sessions (asks first; -y skips that); they stay in the trash for 7 days
   maxx sessions undo          bring back the session deleted last
   maxx new [template] [dir]   start a project from a working template (no template: list them)
+  maxx sound <words>          make a game sound effect as a .wav ("deep crunchy explosion")
+  maxx sound music <mood> [seed]  make a chiptune loop as a .wav (happy, spooky, boss, chill...)
 
 options:
   --base-url <url>   OpenAI-compatible server (default $MAXX_BASE_URL or http://localhost:1234/v1)
@@ -202,6 +204,31 @@ if (positionals[0] === "new") {
   const files = await scaffold(t, dir).catch((e) => die((e as Error).message));
   const rel = relative(process.cwd(), dir) || ".";
   console.log(`${C.bold}${t.name}${C.reset} created in ${rel} (${files.length} files). Next:\n  cd ${rel}\n  maxx\n${C.dim}Try: ${t.try.map((x) => `"${x}"`).join(", ")}${C.reset}`);
+  process.exit(0);
+}
+
+if (positionals[0] === "sound") {
+  const { engine } = await import("./sound/index.ts");
+  const words = positionals.slice(1);
+  if (!words.length) die(`usage: maxx sound <words>   or   maxx sound music <mood> [seed]\neffects: ${engine.KINDS.join(", ")}\nmoods: ${engine.MOODS.join(", ")}`);
+  const music = words[0] === "music";
+  const rate = 44100;
+  let samples: Float32Array, name: string, about: string;
+  if (music) {
+    const r = engine.recipe({ mood: words[1] ?? "happy", seed: Number(words[2] ?? 1) });
+    samples = engine.renderSong(r, rate);
+    name = `${r.mood}-${r.seed}`;
+    about = engine.describeSong(r);
+  } else {
+    const text = words.join(" ");
+    const s = engine.makeSfx(words[0]!, text);
+    samples = engine.renderSfx(s.params, rate);
+    name = words.join("-").replace(/[^\w-]/g, "").slice(0, 40) || "sound";
+    about = `${s.kind}: ${engine.describeSfx(s.params)}`;
+  }
+  const file = resolve(`${name}.wav`);
+  await Bun.write(file, engine.toWav(samples, rate));
+  console.log(`${about}\nwrote ${relative(process.cwd(), file)}`);
   process.exit(0);
 }
 

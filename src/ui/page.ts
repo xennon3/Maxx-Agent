@@ -1,5 +1,6 @@
 import { STAGE_CSS, STAGE_HTML, STAGE_JS } from "./stage-page.ts";
 import { VIS_CSS, VIS_JS } from "./visuals-page.ts";
+import { SOUND_CSS, SOUND_JS } from "./sound-page.ts";
 import { BREVITY_LABEL } from "../brevity.ts";
 import { VOICE_CSS, VOICE_HINT, VOICE_HTML, VOICE_JS } from "./voice-page.ts";
 
@@ -221,6 +222,7 @@ body.agent .composer textarea { border-color: #1971c2; }
 ${STAGE_CSS}
 ${VOICE_CSS}
 ${VIS_CSS}
+${SOUND_CSS}
 </style>
 </head>
 <body>
@@ -369,12 +371,13 @@ const VERBS = { read_file: "Read", write_file: "Write", edit_file: "Edit", list_
   android_key: "Press", android_logcat: "Read phone log", android_devices: "List devices", android_connect: "Connect phone",
   desktop_screenshot: "Look at desktop", desktop_click: "Click", desktop_type: "Type", desktop_key: "Press", desktop_scroll: "Scroll", desktop_open: "Open",
   web_search: "Search the web", web_fetch: "Read page",
-  preview: "Preview", start_server: "Start", use_template: "Start from template", plan: "Plan", remember: "Remember", check: "Check" };
+  preview: "Preview", start_server: "Start", use_template: "Start from template", make_sounds: "Make sounds", plan: "Plan", remember: "Remember", check: "Check" };
 function label(name, args) {
   let a = {}; try { a = JSON.parse(args || "{}"); } catch {}
   if (name === "plan") return ["Plan", a.done ? "step " + a.done + " done" : "write the steps"];
   if (name === "remember") return ["Remember", String(a.note ?? "")];
   if (name === "ask_user") return ["Ask", String(a.question ?? "")];
+  if (name === "make_sounds") return ["Make sounds", [...(a.effects || []).map((e) => e.name), ...(a.music || []).map((m) => "♪ " + m.name + (m.mood ? " (" + m.mood + ")" : ""))].join(", ")];
   const main = a.template ?? a.path ?? a.query ?? a.url ?? a.libraryName ?? a.question ?? a.command ?? a.pattern ?? a.keys ?? a.key ?? a.target ?? a.direction ?? (a.text !== undefined ? JSON.stringify(a.text) : undefined) ??
     (a.element !== undefined ? "element " + a.element : a.x !== undefined ? a.x + "," + a.y : a.crashes ? "crashes" : a.project_dir ?? a.apk ?? "");
   return [VERBS[name] || name, String(main)];
@@ -487,6 +490,7 @@ function abandonWriting() {
 function on(m) {
   stage.on(m);
   voice.on(m);
+  soundLab.on(m);
   switch (m.type) {
     case "state": return render(m);
     case "progress": return progress(m);
@@ -735,6 +739,7 @@ function askCard(m) {
 ${STAGE_JS}
 ${VOICE_JS}
 ${VIS_JS}
+${SOUND_JS}
 
 function render(s) {
   state = s;

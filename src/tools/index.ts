@@ -8,10 +8,11 @@ import { editFile } from "./edit.ts";
 import { writeFile } from "./write.ts";
 import { bash } from "./bash.ts";
 import { useTemplate } from "./template.ts";
+import { makeSounds } from "./sound.ts";
 import { ANDROID_TOOLS, ANDROID_PROMPT } from "./android.ts";
 import { DESKTOP_TOOLS, DESKTOP_PROMPT } from "./desktop.ts";
 
-export const TOOLS: Tool<any>[] = [readFile, listFiles, grep, editFile, writeFile, bash, useTemplate];
+export const TOOLS: Tool<any>[] = [readFile, listFiles, grep, editFile, writeFile, bash, useTemplate, makeSounds];
 
 // Opt-in groups (--with android,desktop or /with), so small models are not
 // handed twenty tools when they are only editing code.

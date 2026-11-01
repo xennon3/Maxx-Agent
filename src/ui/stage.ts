@@ -7,6 +7,8 @@ import { decodePng, toShot } from "../image.ts";
 import * as A from "../devices/adb.ts";
 import { PreviewServer, htmlFiles } from "./preview.ts";
 import { Runner, detectCommands, saveCommand, savedCommands, type Proc } from "./runner.ts";
+import { cleanName, emptyBank, engine, findSoundFiles, starterBank, type Bank } from "../sound/index.ts";
+import { defaultSoundPath, linkPage, loadBank, saveBank } from "../tools/sound.ts";
 
 // The app window's right-hand "stage": Preview (the project's web pages, or a
 // dev server), Run (project commands with live output) and Phone (a live
@@ -77,6 +79,28 @@ export class Stage {
       case "runOutput": {
         const p = r?.procs.get(m.id);
         if (p) this.send({ type: "procOutput", id: p.id, text: p.output });
+        return true;
+      }
+      case "soundList":
+      case "soundNew":
+      case "soundSave": {
+        if (!r) throw new Error("open a project folder first");
+        const files = await findSoundFiles(r.cwd);
+        let file = typeof m.file === "string" && files.includes(m.file) ? m.file : files[0];
+        let saved = false;
+        if (m.type === "soundNew") {
+          file = file ?? (await defaultSoundPath(r.cwd));
+          const at = inside(r.cwd, file);
+          if (!existsSync(at)) { await saveBank(at, starterBank()); await linkPage(at); }
+        } else if (m.type === "soundSave") {
+          file = String(m.file ?? "");
+          if (!files.includes(file)) throw new Error(`${file} isn't a sound file in this project`);
+          await saveBank(inside(r.cwd, file), cleanBank(m.bank));
+          saved = true;
+        }
+        const now = m.type === "soundList" ? files : await findSoundFiles(r.cwd);
+        const bank = file ? await loadBank(inside(r.cwd, file)).catch(() => null) : null;
+        this.send({ type: "sounds", files: now, file: file ?? "", bank, saved });
         return true;
       }
       case "previewReport":
@@ -224,4 +248,14 @@ export function describeReport(label: string, r: Report | null, bridged: boolean
   const other = logs.filter((l) => l.level !== "error").slice(-10);
   if (other.length) lines.push(`console:\n${other.map((l) => `  [${l.level}] ${l.text}`).join("\n")}`);
   return lines.join("\n");
+}
+
+// A bank from the page, made safe to write: known numbers only, tidy names.
+export function cleanBank(input: any): Bank {
+  const bank = emptyBank();
+  const each = (g: unknown, f: (v: any) => any) => Object.entries(g && typeof g === "object" ? (g as Record<string, unknown>) : {}).slice(0, 200).map(([k, v]) => [cleanName(k), f(v)] as const);
+  for (const [k, v] of each(input?.sfx, (v) => engine.tidy(v ?? {}))) bank.sfx[k] = v;
+  for (const [k, v] of each(input?.jingles, (v) => { const r = engine.recipe(v ?? {}); delete (r as any).bars; return r; })) bank.jingles[k] = v;
+  for (const [k, v] of each(input?.music, (v) => engine.recipe({ ...(v ?? {}), jingle: undefined }))) bank.music[k] = v;
+  return bank;
 }

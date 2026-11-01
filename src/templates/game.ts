@@ -1,6 +1,8 @@
 import type { Template } from "./index.ts";
+import { soundFile, starterBank } from "../sound/index.ts";
 
-// Snake on a <canvas>, no build step: open index.html and play. The numbers a
+// Snake on a <canvas>, no build step: open index.html and play. It comes with
+// sound: effects and a chiptune loop synthesized by sound.js (see src/sound). The numbers a
 // person is likely to ask about sit at the top of game.js under "Tweak me".
 
 export const htmlGame: Template = {
@@ -9,7 +11,7 @@ export const htmlGame: Template = {
   icon: "🎮",
   about: "Snake on an HTML canvas, plain JavaScript, no build step (open index.html)",
   folder: "snake-game",
-  try: ["Make the snake faster", "Add walls that end the game", "Add a sound when it eats"],
+  try: ["Make the snake faster", "Add walls that end the game", "Make the music spooky and the eat sound crunchier"],
   files: ({ name }) => ({
     "MAXX.md": `# ${name} (HTML canvas game)
 
@@ -19,6 +21,7 @@ Started from Maxx's html-game template: a working Snake game in plain JavaScript
 - Game rules (moving, eating, dying): \`step()\` in game.js
 - Drawing: \`draw()\` in game.js
 - Page and score text: index.html
+- Sound: sound.js holds the effects (eat, turn, die), the game over jingle and the music loop (theme). Change or add sounds with the make_sounds tool, not by hand-writing audio code. game.js calls Sound.play("eat") and Sound.music("theme").
 - Run: open index.html in a browser, or use the preview tool on index.html. No build or server needed.
 - game.js logs "game over" with the score to the console, so the preview tool shows whether it runs.
 `,
@@ -41,7 +44,8 @@ Started from Maxx's html-game template: a working Snake game in plain JavaScript
   <h1>${name}</h1>
   <div id="hud"><span>Score <b id="score">0</b></span><span>Best <b id="best">0</b></span></div>
   <canvas id="board" width="480" height="480"></canvas>
-  <div id="help">Arrow keys or WASD to steer, swipe on a phone. Space to restart.</div>
+  <div id="help">Arrow keys or WASD to steer, swipe on a phone. Space to restart, M to mute.</div>
+  <script src="sound.js"></script>
   <script src="game.js"></script>
 </body>
 </html>
@@ -70,6 +74,7 @@ function reset() {
   alive = true;
   food = placeFood();
   updateHud();
+  Sound.music("theme");
 }
 
 function placeFood() {
@@ -83,7 +88,10 @@ function turn(d) {
   // No turning straight back into yourself.
   const [dx, dy] = DIRS[d];
   const [cx, cy] = DIRS[dir];
-  if (dx !== -cx || dy !== -cy) nextDir = d;
+  if ((dx !== -cx || dy !== -cy) && d !== nextDir) {
+    nextDir = d;
+    Sound.play("turn");
+  }
 }
 
 function step() {
@@ -96,12 +104,16 @@ function step() {
     best = Math.max(best, score);
     try { localStorage.setItem("best", String(best)); } catch {}
     console.log("game over, score " + score);
+    Sound.play("die");
+    Sound.music(); // stop the music
+    Sound.play("gameover");
     updateHud();
     return;
   }
   snake.unshift(head);
   if (head.x === food.x && head.y === food.y) {
     score++;
+    Sound.play("eat");
     food = placeFood();
     updateHud();
   } else {
@@ -180,5 +192,6 @@ reset();
 console.log("${name} ready: " + GRID + "x" + GRID + " board, speed " + SPEED);
 requestAnimationFrame(frame);
 `,
+    "sound.js": soundFile(starterBank()),
   }),
 };
