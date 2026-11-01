@@ -60,6 +60,8 @@ export async function startUI(opts: UIOptions) {
     controller: AbortController | null;
   } | null = null;
   const pending = new Map<string, (a: Answer) => void>();
+  // Follow-up questions waiting for the user (ask_user, Agent mode's briefing).
+  const questions = new Map<string, (a: string | null) => void>();
   let stage: Stage | null = null;
   // Files posted to /upload wait here until the message they belong to is sent.
   const uploads = new Map<string, Upload>();
@@ -90,6 +92,21 @@ export async function startUI(opts: UIOptions) {
         const id = crypto.randomUUID();
         pending.set(id, res);
         send({ type: "ask", id, question, preview });
+      }),
+    question: (q, signal) =>
+      new Promise<string | null>((res) => {
+        const done = (a: string | null) => {
+          if (!questions.delete(q.id)) return;
+          signal.removeEventListener("abort", gone);
+          // Closes the card on every open window, answered or not.
+          send({ type: "questionDone", id: q.id, answer: a, timedOut: a === null && signal.aborted });
+          res(a);
+        };
+        const gone = () => done(null);
+        questions.set(q.id, done);
+        signal.addEventListener("abort", gone);
+        send({ type: "question", ...q });
+        if (signal.aborted) gone();
       }),
   };
 
@@ -327,9 +344,14 @@ export async function startUI(opts: UIOptions) {
         pending.get(m.id)?.(m.answer);
         pending.delete(m.id);
         return;
+      case "reply":
+        // An empty reply skips the question; the model then goes with its guess.
+        questions.get(String(m.id))?.(typeof m.answer === "string" && m.answer.trim() ? m.answer.trim().slice(0, 2000) : null);
+        return;
       case "stop":
         state?.controller?.abort();
         for (const [id, res] of pending) (res("no"), pending.delete(id));
+        for (const done of [...questions.values()]) done(null);
         return;
       case "send": {
         if (!state) throw new Error("open a project folder first");
