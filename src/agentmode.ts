@@ -20,7 +20,7 @@ import { judgeLLM, judgeMessages, parseVerdict, pickSurface, type SurfaceOptions
 // the same code drives a 4B model on a laptop and a big one on a workstation.
 
 export type TaskStatus = "todo" | "doing" | "checking" | "done" | "failed";
-export type Task = { text: string; check: string; status: TaskStatus; tries: number; note?: string; files?: number };
+export type Task = { text: string; check: string; status: TaskStatus; tries: number; note?: string; files?: number; answer?: string };
 export type Board = { goal: string; state: "planning" | "running" | "done" | "stuck" | "stopped"; tasks: Task[]; current: number; note?: string; brief?: string };
 
 export type AgentModeSettings = {
@@ -191,54 +191,13 @@ export async function runGoal(agent: Agent, goal: string, events: GoalEvents, o:
       task.status = "doing";
       emit();
       agent.clearPlan();
-      const before = await agent.checkpoints.snapshot(`agent: before task ${board.current + 1}`);
-      let retry = "";
-      for (;;) {
-        task.tries++;
-        task.status = "doing";
+      const r = await workTask(agent, board, events, o, emit);
+      if (!r.ok) {
+        board.state = "stuck";
+        board.note = r.note;
+        agent.history.push({ role: "assistant", content: board.note });
         emit();
-        // The map costs context, so it goes with the first task and with retries only.
-        const fresh = s.mapTokens > 0 && (board.current === 0 || retry) ? await projectMap(agent.cwd, s.mapTokens).catch(() => "") : "";
-        let answer = await agent.send(asReport(taskPrompt(board, fresh, retry)), o.signal, { maxSteps: s.stepsPerTask });
-        let r = outcome(answer, agent.lastCheck);
-        if (r.ok && s.judge) {
-          const j = await judgeTask(agent, board, task, before, events, o, emit);
-          if (j && !j.pass) task.note = `screenshot judge: ${j.why}`;
-          for (let fix = 0; j && !j.pass && fix < s.judgeFixes && r.ok; fix++) {
-            task.status = "doing";
-            emit();
-            answer = await agent.send(asReport(`Maxx checked a screenshot of the result. The vision model says: FAIL: ${j.why}\nFix this, then reply with one line starting with DONE.`), o.signal, { maxSteps: s.stepsPerTask });
-            r = outcome(answer, agent.lastCheck);
-            if (!r.ok) break;
-            const again = await judgeTask(agent, board, task, before, events, o, emit);
-            if (!again) break;
-            Object.assign(j, again);
-            task.note = again.pass ? undefined : `screenshot judge: ${again.why}`;
-          }
-        }
-        if (r.ok) {
-          task.status = "done";
-          if (!task.note?.startsWith("screenshot")) task.note = task.tries > 1 ? `done on try ${task.tries}` : undefined;
-          task.files = before ? (await agent.checkpoints.changed(before)).length : undefined;
-          emit();
-          break;
-        }
-        // Keep the failed try (/checkpoints lists it), then rewind to before the task.
-        await agent.checkpoints.snapshot(`agent: task ${board.current + 1} try ${task.tries} (failed)`);
-        const back = before ? await agent.checkpoints.rewind(before) : { ok: false, removed: [], error: "no snapshot" };
-        if (back.ok) agent.note(`(Agent mode: rewound the files to before task ${board.current + 1})`);
-        if (task.tries >= s.tries || !back.ok) {
-          task.status = "failed";
-          task.note = r.why;
-          board.state = "stuck";
-          board.note = `Stuck on task ${board.current + 1} after ${task.tries} ${task.tries > 1 ? "tries" : "try"}: ${r.why}.${back.ok ? " The files are back the way they were before it." : ""}`;
-          agent.history.push({ role: "assistant", content: board.note });
-          emit();
-          return board;
-        }
-        retry = r.why;
-        task.note = `try ${task.tries} failed: ${r.why}; rewound`;
-        emit();
+        return board;
       }
     }
     board.state = "done";
@@ -257,6 +216,61 @@ export async function runGoal(agent: Agent, goal: string, events: GoalEvents, o:
   } finally {
     if (perms.mode === "auto-edit" && mode === "ask") perms.mode = mode;
     agent.askWaitMs = wait;
+  }
+}
+
+// One task of a board, with its tries: snapshot, work, check (and the
+// screenshot judge), and on a failure keep the try, rewind and go again a
+// different way. Crew mode runs this in each worker's own copy of the project.
+export async function workTask(agent: Agent, board: Board, events: GoalEvents, o: GoalOptions, emit: () => void): Promise<{ ok: true } | { ok: false; why: string; note: string }> {
+  const s = o.settings;
+  const task = board.tasks[board.current]!;
+  const before = await agent.checkpoints.snapshot(`agent: before task ${board.current + 1}`);
+  let retry = "";
+  for (;;) {
+    task.tries++;
+    task.status = "doing";
+    emit();
+    // The map costs context, so it goes with the first task and with retries only.
+    const fresh = s.mapTokens > 0 && (board.current === 0 || retry) ? await projectMap(agent.cwd, s.mapTokens).catch(() => "") : "";
+    let answer = await agent.send(asReport(taskPrompt(board, fresh, retry)), o.signal, { maxSteps: s.stepsPerTask });
+    let r = outcome(answer, agent.lastCheck);
+    if (r.ok && s.judge) {
+      const j = await judgeTask(agent, board, task, before, events, o, emit);
+      if (j && !j.pass) task.note = `screenshot judge: ${j.why}`;
+      for (let fix = 0; j && !j.pass && fix < s.judgeFixes && r.ok; fix++) {
+        task.status = "doing";
+        emit();
+        answer = await agent.send(asReport(`Maxx checked a screenshot of the result. The vision model says: FAIL: ${j.why}\nFix this, then reply with one line starting with DONE.`), o.signal, { maxSteps: s.stepsPerTask });
+        r = outcome(answer, agent.lastCheck);
+        if (!r.ok) break;
+        const again = await judgeTask(agent, board, task, before, events, o, emit);
+        if (!again) break;
+        Object.assign(j, again);
+        task.note = again.pass ? undefined : `screenshot judge: ${again.why}`;
+      }
+    }
+    if (r.ok) {
+      task.status = "done";
+      if (!task.note?.startsWith("screenshot")) task.note = task.tries > 1 ? `done on try ${task.tries}` : undefined;
+      task.files = before ? (await agent.checkpoints.changed(before)).length : undefined;
+      task.answer = answer.trim().replace(/^\W*DONE\b[\s:.,-]*/i, "").split("\n")[0]!.slice(0, 200) || undefined;
+      emit();
+      return { ok: true };
+    }
+    // Keep the failed try (/checkpoints lists it), then rewind to before the task.
+    await agent.checkpoints.snapshot(`agent: task ${board.current + 1} try ${task.tries} (failed)`);
+    const back = before ? await agent.checkpoints.rewind(before) : { ok: false, removed: [], error: "no snapshot" };
+    if (back.ok) agent.note(`(Agent mode: rewound the files to before task ${board.current + 1})`);
+    if (task.tries >= s.tries || !back.ok) {
+      task.status = "failed";
+      task.note = r.why;
+      emit();
+      return { ok: false, why: r.why, note: `Stuck on task ${board.current + 1} after ${task.tries} ${task.tries > 1 ? "tries" : "try"}: ${r.why}.${back.ok ? " The files are back the way they were before it." : ""}` };
+    }
+    retry = r.why;
+    task.note = `try ${task.tries} failed: ${r.why}; rewound`;
+    emit();
   }
 }
 

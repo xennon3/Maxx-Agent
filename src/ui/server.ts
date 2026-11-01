@@ -25,6 +25,7 @@ import { CLAUDE_MODELS, HELPER_DEFAULTS, loadHelper, resolveHelper, saveHelper, 
 import { htmlFiles } from "./preview.ts";
 import * as A from "../devices/adb.ts";
 import { agentDefaults, agentSettings, cleanSettings, loadAgentSettings, runGoal, saveAgentSettings } from "../agentmode.ts";
+import { cleanCrew, CREW_DEFAULTS, crewSettings, loadCrewSettings, runCrew, saveCrewSettings } from "../crew.ts";
 import { findBrowser } from "../judge.ts";
 import { FIX_ROUNDS, describeWhisper, failed, findWhisper, fixPrompt, planRebuild, speakable, transcribe, type TurnCall } from "./voice.ts";
 
@@ -74,6 +75,9 @@ export async function startUI(opts: UIOptions) {
   let turn: TurnCall[] = [];
   // Agent mode budgets the user changed (the rest follow the context window).
   let goalSaved = await loadAgentSettings();
+  let crewSaved = await loadCrewSettings();
+  // How many requests LM Studio runs at once, by model, measured on the first crew run.
+  const probed = new Map<string, number>();
   const browser = !!findBrowser();
 
   const progress = throttle((p: StreamProgress) => send(progressMessage(p)), 120);
@@ -193,6 +197,7 @@ export async function startUI(opts: UIOptions) {
       palette,
       palettes: presetList(),
       agentMode: { settings: agentSettings(contextWindow, goalSaved), defaults: agentDefaults(contextWindow), saved: goalSaved, context: contextWindow, browser },
+      crewMode: { settings: crewSettings(crewSaved), defaults: CREW_DEFAULTS, probed: Object.fromEntries(probed) },
     };
   }
 
@@ -359,6 +364,12 @@ export async function startUI(opts: UIOptions) {
         goalSaved = m.reset ? {} : cleanSettings(m.settings ?? {});
         await saveAgentSettings(goalSaved);
         return send(await snapshot());
+      case "crewSettings":
+        crewSaved = m.reset ? {} : cleanCrew(m.settings ?? {});
+        await saveCrewSettings(crewSaved);
+        // A new slot count is a new measurement.
+        if (m.reprobe) probed.clear();
+        return send(await snapshot());
       case "answer":
         pending.get(m.id)?.(m.answer);
         pending.delete(m.id);
@@ -383,12 +394,22 @@ export async function startUI(opts: UIOptions) {
           files.push({ ...u, mode: f.mode === "save" ? "save" : "attach" });
         }
         for (const f of m.files ?? []) uploads.delete(String(f.id));
-        if (m.agent && s.agent.chat) throw new Error("Agent mode works on a project; open a project folder first");
-        if (m.agent && files.length) throw new Error("Agent mode takes a goal in words; send attachments as a normal message");
+        if ((m.agent || m.crew) && s.agent.chat) throw new Error(`${m.crew ? "Crew" : "Agent"} mode works on a project; open a project folder first`);
+        if ((m.agent || m.crew) && files.length) throw new Error(`${m.crew ? "Crew" : "Agent"} mode takes a goal in words; send attachments as a normal message`);
         const controller = (s.controller = new AbortController());
         send({ type: "busy", busy: true });
         turn = [];
         try {
+          if (m.crew) {
+            const b = await runCrew(s.agent, String(m.text ?? ""), { board: (board) => send({ type: "board", board }), image: (tool, images) => io.image!(tool, images) }, {
+              crew: crewSettings(crewSaved),
+              settings: agentSettings(contextWindow, goalSaved),
+              signal: controller.signal,
+              probed,
+            });
+            send({ type: "done", text: b.note ?? "" });
+            return;
+          }
           if (m.agent) {
             const b = await runGoal(s.agent, String(m.text ?? ""), { board: (board) => send({ type: "board", board }), image: (tool, images) => io.image!(tool, images) }, {
               settings: agentSettings(contextWindow, goalSaved),

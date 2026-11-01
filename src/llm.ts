@@ -36,6 +36,8 @@ export type LLMConfig = {
   // "anthropic" talks to Claude's Messages API instead (the escalation helper).
   provider?: "openai" | "anthropic";
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  // Crew mode: wait for a free slot on the model before asking (see gate.ts).
+  gate?: { acquire(signal?: AbortSignal): Promise<() => void> };
 };
 
 export type Completion = {
@@ -62,6 +64,23 @@ export async function complete(
   onToken: (t: string) => void = () => {},
   signal?: AbortSignal,
   onProgress: (p: StreamProgress) => void = () => {},
+): Promise<Completion> {
+  if (!cfg.gate) return completeNow(cfg, messages, tools, onToken, signal, onProgress);
+  const release = await cfg.gate.acquire(signal);
+  try {
+    return await completeNow(cfg, messages, tools, onToken, signal, onProgress);
+  } finally {
+    release();
+  }
+}
+
+async function completeNow(
+  cfg: LLMConfig,
+  messages: Message[],
+  tools: ToolSpec[],
+  onToken: (t: string) => void,
+  signal: AbortSignal | undefined,
+  onProgress: (p: StreamProgress) => void,
 ): Promise<Completion> {
   if (cfg.provider === "anthropic") return completeAnthropic(cfg, messages, tools, onToken, signal, onProgress);
   const started = Date.now();
