@@ -435,6 +435,24 @@ For one request you can just say it: "make a snake game in synthwave colors", "u
 #0b132b #3a506b #5bc0be", "give it a random palette". Maxx adds that palette's hex codes next to
 the message, so the model doesn't have to remember them, and the saved setting stays as it was.
 
+## Game sound: effects and chiptune music, no audio files
+
+When Maxx builds a web game it can give it sound with the `make_sounds` tool. The model describes
+each sound in a few words ("short bright coin", "deep crunchy explosion", "victory fanfare") and
+picks a mood for the music (happy, heroic, chill, spooky, tense, sad, boss, space, cute). Maxx
+writes one `sound.js` next to the game and links it from `index.html`; the game then calls
+`Sound.play("eat")` and `Sound.music("theme")`, and M mutes. Nothing is downloaded: every sound is
+synthesized in the browser from a few numbers, and every song is composed from its mood and a seed
+(chord progression, a melody built from repeating motifs, bass, arpeggios and drums). The Snake
+template ships with a starter set.
+
+- **Sound lab** (the 🔊 tab in `maxx ui`): play every effect and song in the project, drag
+  sliders (pitch, glide, fade, crunch, echo...), type a change ("deeper, shorter, wobbly"), roll
+  🎲 for another take, watch a song's piano roll, switch its parts on and off, download a .wav,
+  and Save. The game in Preview reloads with the new sounds.
+- **Terminal:** `maxx sound deep crunchy explosion` and `maxx sound music boss 4` write .wav files.
+- The bank at the top of `sound.js` is plain JSON, one sound per line, so tweaks are easy to diff.
+
 ## Looking things up: web search and free MCP servers
 
 A small local model's knowledge stops at its training date, so it will happily describe last
