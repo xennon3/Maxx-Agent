@@ -1,7 +1,7 @@
 import { complete, toWire, type ContentPart, type LLMConfig, type Message, type ToolCall } from "./llm.ts";
 import { TOOLS, toolSpecs, findTool, withToolsets } from "./tools/index.ts";
 import type { Tool } from "./tools/types.ts";
-import { Permissions, type Answer } from "./permissions.ts";
+import { Permissions, isNo, whyNo, type Answer } from "./permissions.ts";
 import { Checkpoints } from "./checkpoint.ts";
 import { compact, estimateTokens, systemPrompt, truncate, typedText } from "./context.ts";
 import { describeImages, imagePart, type Vision } from "./vision.ts";
@@ -22,6 +22,10 @@ import { mentionedPalette, paletteNote, palettePrompt, type Palette } from "./pa
 import { brief, describeHelper, HELPER_DEFAULTS, helperLLM, type Helper } from "./escalate.ts";
 import { mapBudget, projectMap, projectMapTool } from "./projectmap.ts";
 import type { Board } from "./agentmode.ts";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+
+import { addRule, correctionPrompt, fallbackRule, handDiff, isStanding, loadRules, parseRule, soundsLikeCorrection, type Correction, type Rule } from "./learn.ts";
 import { answerText, ASK_PROMPT, askTool, MAX_QUESTIONS, type AskFn, type Question } from "./ask.ts";
 
 // The local model got stuck and a helper took over (active), or handed back.
@@ -43,7 +47,12 @@ export type AgentIO = {
   escalation?(e: Escalation): void;
   // A follow-up question from the model (ask_user). Without it the model is not offered the tool.
   question?: AskFn;
+  // A rule learned from the user's correction (new, or said again), for UIs that offer to take it back.
+  learned?(l: Learned): void;
 };
+
+export type Learned = { rule: Rule; isNew: boolean; replaced?: string; kind: Correction["kind"]; text: string };
+const FROM: Record<Correction["kind"], string> = { said: "from what you said", denied: "from why you said no", handfix: "from your fix", undid: "from your undo" };
 
 export type AgentOptions = {
   llm: LLMConfig;
@@ -76,6 +85,8 @@ export type AgentOptions = {
   online?: () => Promise<Online>;
   // Tokens of project map in the system prompt and the project_map tool (default: 5% of the context; 0 = off).
   mapTokens?: number;
+  // Learn a rule for MAXX.md when the user corrects Maxx (default on; off with memory off and in chat).
+  learn?: boolean;
 };
 
 export type Online = { tools: Tool<any>[]; notes: string[]; servers: string[] };
@@ -112,7 +123,7 @@ export class Agent {
   toolsets: string[] = [];
   plan: Step[] = [];
   // Escalation banners, by the history length when they happened, so a redrawn transcript keeps them.
-  marks: { at: number; text: string; active: boolean }[] = [];
+  marks: { at: number; text: string; active: boolean; learned?: boolean }[] = [];
   // The last check the fix-it loop ran in the latest turn (null: none ran).
   lastCheck: CheckResult | null = null;
   // Agent mode's task board, while a goal runs and after.
@@ -122,6 +133,12 @@ export class Agent {
   // Questions asked in the current turn, and the turn's stop signal (a question must not outlive it).
   private asked = 0;
   private turnSignal?: AbortSignal;
+  // Learning from corrections: what this turn did, and what the last one left behind.
+  private turnDid: string[] = [];
+  private turnFiles = new Set<string>();
+  private turnFrom = 0;
+  private lastTurn: { did: string[]; files: Map<string, string>; start?: string; undone: boolean } | null = null;
+  private corrections: Correction[] = [];
 
   constructor(private opts: AgentOptions, private io: AgentIO) {
     this.tools = this.baseTools();
@@ -309,7 +326,22 @@ export class Agent {
   // One user turn: loop until the model answers without calling tools.
   // A turn with attached images comes as parts (see attach.ts).
   // Agent mode gives each task its own step budget.
-  async send(userText: string | ContentPart[], signal?: AbortSignal, o: { maxSteps?: number } = {}): Promise<string> {
+  // Agent mode's own task prompts pass learn: false; they are not the user talking.
+  async send(userText: string | ContentPart[], signal?: AbortSignal, o: { maxSteps?: number; learn?: boolean } = {}): Promise<string> {
+    const learning = this.learning && o.learn !== false;
+    if (learning) await this.noticeCorrection(userText).catch(() => {});
+    this.turnDid = [];
+    this.turnFiles = new Set();
+    this.turnFrom = this.checkpoints.count;
+    let answer = "";
+    try {
+      return (answer = await this.turn(userText, signal, o));
+    } finally {
+      await this.endTurn(answer, learning, signal).catch(() => {});
+    }
+  }
+
+  private async turn(userText: string | ContentPart[], signal: AbortSignal | undefined, o: { maxSteps?: number }): Promise<string> {
     this.history.push({ role: "user", content: withPalette(userText, this.palette) });
     this.lastCheck = null;
     this.asked = 0;
@@ -457,8 +489,10 @@ export class Agent {
   // Bookkeeping after each tool call: which files changed, and lessons from a fix that worked.
   private async learn(name: string, args: Record<string, unknown>, result: string, changed: Set<string>, lastFail: string): Promise<string> {
     const tool = findTool(name, this.tools);
-    const bad = failed(result) || result === "user denied this tool call";
-    if (tool?.risk === "write" && typeof args.path === "string" && !bad) changed.add(args.path);
+    const denied = result.startsWith("user denied this tool call");
+    const bad = failed(result) || denied;
+    if (tool && tool.risk !== "read") this.turnDid.push(`${denied ? "(denied) " : ""}${name} ${tool.ruleKey?.(args as never) ?? ""}`.trim().slice(0, 160));
+    if (tool?.risk === "write" && typeof args.path === "string" && !bad) changed.add(args.path), this.turnFiles.add(args.path);
     if (name !== "bash") return lastFail;
     const command = String(args.command ?? "");
     if (bad) return command;
@@ -513,7 +547,7 @@ export class Agent {
     this.io.toolStart("check", JSON.stringify(args));
     if (this.opts.permissions.needsPrompt(bash, args)) {
       const answer = await this.io.ask("Let Maxx check the build?", `$ ${command}`);
-      if (answer === "no") {
+      if (isNo(answer)) {
         this.io.toolEnd("check", "skipped");
         return quick;
       }
@@ -618,8 +652,11 @@ export class Agent {
         preview = `(no preview: ${(e as Error).message})`;
       }
       const answer = await this.io.ask(`Allow ${tool.name}?`, preview);
-      if (answer === "no") {
-        const result = "user denied this tool call";
+      if (isNo(answer)) {
+        // The reason goes to the model now, and becomes a rule when the turn ends.
+        const why = whyNo(answer);
+        const result = why ? `user denied this tool call and said: ${why}` : "user denied this tool call";
+        if (why && this.learning) this.corrections.push({ kind: "denied", did: [...this.turnDid, `${tool.name} ${tool.ruleKey?.(args as never) ?? ""}`.trim()], said: why.slice(0, 600) });
         this.io.toolEnd(tool.name, result);
         return { result, bad: false, args };
       }
@@ -655,6 +692,100 @@ export class Agent {
       this.snapshotsOffSaid = true;
       this.io.note(`(${this.checkpoints.off})`);
     }
+  }
+
+  get learning(): boolean {
+    return this.opts.learn !== false && this.opts.memory !== false && !this.opts.chat;
+  }
+
+  setLearn(on: boolean) {
+    this.opts.learn = on;
+    if (!on) this.corrections = [];
+  }
+
+  // Before a typed message: did the user just correct the last turn? Fixing
+  // Maxx's files by hand, undoing the turn, or saying "no, ..." all count.
+  private async noticeCorrection(userText: string | ContentPart[]) {
+    const last = this.lastTurn;
+    this.lastTurn = null;
+    const typed = (typeof userText === "string" ? userText : userText.map((p) => (p.type === "text" ? p.text : "")).join(" ")).trim().slice(0, 600);
+    const said = soundsLikeCorrection(typed) || isStanding(typed) ? typed : undefined;
+    if (last) {
+      const diffs: string[] = [];
+      for (const [path, before] of last.files) {
+        const now = await readFile(join(this.opts.cwd, path), "utf8").catch(() => null);
+        const d = now === null ? null : handDiff(path, before, now);
+        if (d) diffs.push(d);
+      }
+      if (diffs.length) return void this.corrections.push({ kind: "handfix", did: last.did, diff: diffs.join("\n\n").slice(0, 3000), said });
+      if (last.undone) return void this.corrections.push({ kind: "undid", did: last.did, said: typed || undefined });
+    }
+    if (said && (last || isStanding(typed))) this.corrections.push({ kind: "said", did: last?.did ?? [], said });
+  }
+
+  // After a turn: remember what it left behind, and learn from any correction.
+  private async endTurn(answer: string, learning: boolean, signal?: AbortSignal) {
+    const files = new Map<string, string>();
+    for (const path of [...this.turnFiles].slice(0, 12)) {
+      const text = await readFile(join(this.opts.cwd, path), "utf8").catch(() => null);
+      if (text !== null && text.length < 200_000) files.set(path, text);
+    }
+    const did = [...this.turnDid.slice(-12), ...(answer ? [`answered: ${answer.replace(/\s+/g, " ").slice(0, 240)}`] : [])];
+    this.lastTurn = { did, files, start: this.checkpoints.shaAt(this.turnFrom), undone: false };
+    if (!learning || !this.corrections.length) return;
+    const todo = this.corrections.splice(0);
+    for (const c of todo.slice(-2)) await this.learnFrom(c, signal?.aborted ? undefined : signal);
+  }
+
+  // One correction, one rule (or none, when it was only a change of mind).
+  async learnFrom(c: Correction, signal?: AbortSignal): Promise<Learned | null> {
+    const rules = await loadRules(this.opts.cwd);
+    let text: string | null = null;
+    try {
+      if (signal?.aborted) throw new Error("stopped");
+      const p = parseRule(await this.think(correctionPrompt(c, rules), signal), rules);
+      if (!p) return null;
+      text = "again" in p ? rules[p.again]!.text : p.rule;
+    } catch {
+      text = fallbackRule(c);
+    }
+    if (!text) return null;
+    const r = await addRule(this.opts.cwd, text);
+    const say = `📏 ${r.isNew ? "Learned" : `Learned again (x${r.rule.times})`} ${FROM[c.kind]}: ${r.rule.text}${r.replaced ? ` (replaces: ${r.replaced})` : ""}`;
+    const l: Learned = { rule: r.rule, isNew: r.isNew, replaced: r.replaced, kind: c.kind, text: say };
+    // Kept with the transcript, so it is still there when the page redraws.
+    this.marks.push({ at: this.history.length, text: say, active: false, learned: true });
+    if (this.io.learned) this.io.learned(l);
+    else this.io.note(`(${say}. Saved in MAXX.md; /rules to review.)`);
+    return l;
+  }
+
+  // Put every file back as it was before the last turn. What the user says
+  // next is then read as the correction, so Maxx learns what to do instead.
+  async undoTurn(): Promise<string> {
+    const last = this.lastTurn;
+    if (!last?.start) return "Nothing to undo: the last turn changed no files (or snapshots are off).";
+    if (last.undone) return "The last turn is already undone.";
+    const r = await this.checkpoints.rewind(last.start);
+    if (!r.ok) return `Couldn't undo: ${r.error}`;
+    last.undone = true;
+    last.files = new Map();
+    this.history.push({ role: "user", content: [{ type: "text", text: "Maxx: the user undid all file changes from your last turn, so the files are back as they were before it. Do not redo that work unless asked." }] });
+    return `Undid the last turn${r.removed.length ? ` (and removed ${r.removed.length} new file${r.removed.length > 1 ? "s" : ""})` : ""}. Tell Maxx what you wanted instead; it will learn a rule from it.`;
+  }
+
+  get canUndo(): boolean {
+    return !!this.lastTurn?.start && !this.lastTurn.undone;
+  }
+
+  // The user put files back by hand (/rewind): what they say next is a correction too.
+  markUndone() {
+    if (this.lastTurn) (this.lastTurn.undone = true), (this.lastTurn.files = new Map());
+  }
+
+  // Agent mode rewinds tasks itself; that is not the user correcting anything.
+  forgetTurn() {
+    this.lastTurn = null;
   }
 
   private async maybeCompact() {

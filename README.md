@@ -343,6 +343,33 @@ by default, keep it on track while costing only about 150 prompt tokens:
 - **Memory notes.** The `remember` tool adds a lesson to a "Lessons" section of MAXX.md, and when a
   failed command works with a different program (`python a.py`, then `py a.py`), Maxx writes that
   down by itself. MAXX.md is read at the start of every session (keeps the last 20 lessons).
+## Learning from your corrections
+
+Small models repeat their mistakes. So whenever you correct Maxx, it writes one short rule into a
+"Rules from your corrections" section of the project's MAXX.md, and every later session starts out
+knowing it. Four things count as a correction:
+
+- **Saying so.** "No, use pnpm", "don't touch the tests", "I said Kotlin", "always write comments in
+  Spanish". A plain new request ("now add sound") is not a correction and costs nothing.
+- **Deny with a reason.** The permission card has a "Why not?" box (in the terminal, answer
+  `n keep the build folder`). The model reads the reason right away, and it becomes a rule.
+- **Fixing Maxx's code by hand.** If a file Maxx wrote has changed when you send your next message,
+  Maxx shows the model your diff and learns what you wanted.
+- **↶ Undo** (or `/undo`, or `/rewind`). Every file goes back to how it was before the last turn,
+  and what you say next is read as the correction.
+
+After the turn, the model turns the correction into one instruction of 20 words or fewer. It answers NONE when you only
+changed your mind about this one task. A rule you teach again is not added twice: it gets stronger
+(`x2`, `x3`), and a newer rule that contradicts an old one ("Never indent with spaces" after "Indent
+with spaces") replaces it. The list keeps 15 rules. When it is full, the weakest, oldest rule goes. The
+rules are taken out of the MAXX.md notes and put last in the system prompt, where a small model pays
+the most attention.
+
+In the app, a green line shows each rule as it is learned, with **Undo** on the toast. The **📏
+Rules** chip opens the list, where you can edit, remove or add rules, or turn learning off. In the
+terminal, use `/rules`, `/rules add <rule>`, `/rules rm <n>` and `/rules off`. You can also use `--learn off` or `MAXX_LEARN=off`.
+Agent mode's own task prompts and rewinds never count as corrections.
+
 ## Brain swap: a bigger helper when the local model is stuck
 
 A small model does most steps fine and then gets stuck on one: the same call five times, or a
@@ -473,6 +500,7 @@ src/
   loop.ts          the agent loop: send, validate and run tool calls, append, repeat
   llm.ts           streaming OpenAI-compatible client + tool-call rescue
   context.ts       system prompt, MAXX.md project notes, truncation, compaction
+  learn.ts         rules learned from your corrections (MAXX.md section, dedupe, prompts)
   permissions.ts   ask / auto-edit / yolo, "always allow" rules in .maxx/settings.json
   checkpoint.ts    shadow commits under refs/maxx/<session>, used by /rewind
   doctor.ts        canned tool-call probes for a model

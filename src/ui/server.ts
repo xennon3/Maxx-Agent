@@ -20,6 +20,7 @@ import { TOOLS, TOOLSETS } from "../tools/index.ts";
 import { TEMPLATES, findTemplate, freeFolder, isEmptyFolder, scaffold } from "../templates/index.ts";
 import { resolveNetwork, saveNetwork } from "../network.ts";
 import { parseBrevity, resolveBrevity, saveBrevity } from "../brevity.ts";
+import { forgetRule, loadRules, resolveLearn, saveLearn, saveRules, tidyRules } from "../learn.ts";
 import { checkPalette, parsePalette, presetList, resolvePalette, savePalette, withBackdrop } from "../palette.ts";
 import { CLAUDE_MODELS, HELPER_DEFAULTS, loadHelper, resolveHelper, saveHelper, type Helper } from "../escalate.ts";
 import { htmlFiles } from "./preview.ts";
@@ -36,13 +37,15 @@ import { FIX_ROUNDS, describeWhisper, failed, findWhisper, fixPrompt, planRebuil
 type Client = ServerWebSocket<unknown>;
 type Out = Record<string, unknown> & { type: string };
 
-export type UIOptions = { baseURL: string; port?: number; previewPort?: number; open?: boolean; model?: string; visionModel?: string; context?: number; whisper?: string; whisperModel?: string; network?: string; brevity?: string; palette?: string };
+export type UIOptions = { baseURL: string; port?: number; previewPort?: number; open?: boolean; model?: string; visionModel?: string; context?: number; whisper?: string; whisperModel?: string; network?: string; brevity?: string; learn?: string; palette?: string };
 
 export async function startUI(opts: UIOptions) {
   // Installs and downloads: the header's 🌐 switch, saved for next time.
   let network = await resolveNetwork(opts.network);
   // How much Maxx says: the header's ✂ switch, saved too.
   let brevity = await resolveBrevity(opts.brevity);
+  // Learn rules from the user's corrections: the 📏 Rules dialog, saved too.
+  let learn = await resolveLearn(opts.learn);
   // The colors Maxx designs with: the header's 🎨 picker, saved too.
   let palette = await resolvePalette(opts.palette);
   const token = crypto.randomUUID().replace(/-/g, "");
@@ -89,6 +92,7 @@ export async function startUI(opts: UIOptions) {
     },
     note: (text) => send({ type: "note", text }),
     escalation: (e) => send({ type: "escalation", ...e }),
+    learned: (l) => send({ type: "learned", ...l }),
     image: (tool, images) => send({ type: "image", tool, images: images.map((i) => `data:${i.mime};base64,${i.base64}`) }),
     ask: (question, preview) =>
       new Promise<Answer>((res) => {
@@ -140,7 +144,7 @@ export async function startUI(opts: UIOptions) {
   // Each history entry the page draws, with the escalation banners in place.
   function transcript(agent: Agent) {
     const out: Record<string, unknown>[] = [];
-    const marks = (i: number) => agent.marks.filter((m) => m.at === i).forEach((m) => out.push({ role: "mark", text: m.text, active: m.active }));
+    const marks = (i: number) => agent.marks.filter((m) => m.at === i).forEach((m) => out.push({ role: "mark", text: m.text, active: m.active, learned: m.learned }));
     agent.history.forEach((m, i) => {
       marks(i);
       // Parts-array user messages are screenshots and Maxx's own reports (fix-it, plan); only the reports are shown, as notes.
@@ -150,7 +154,7 @@ export async function startUI(opts: UIOptions) {
       if (m.role === "user") return void (Array.isArray(m.content) && isReport(m.content) && out.push({ role: "note", text: textOf(m.content) }));
       out.push({ role: m.role, text: textOf(m.content as any), tools: "tool_calls" in m ? m.tool_calls?.map((t) => ({ name: t.function.name, args: t.function.arguments })) : undefined });
     });
-    agent.marks.filter((m) => m.at >= agent.history.length).forEach((m) => out.push({ role: "mark", text: m.text, active: m.active }));
+    agent.marks.filter((m) => m.at >= agent.history.length).forEach((m) => out.push({ role: "mark", text: m.text, active: m.active, learned: m.learned }));
     return out;
   }
 
@@ -186,7 +190,10 @@ export async function startUI(opts: UIOptions) {
         board: s.agent.board,
         history: transcript(s.agent),
         helper: s.agent.helper && { model: s.agent.helper.model, kind: s.agent.helper.kind },
+        rules: s.agent.chat ? [] : await loadRules(s.cwd),
+        canUndo: s.agent.canUndo,
       },
+      learn,
       helper: await helperInfo(),
       network,
       brevity,
@@ -220,7 +227,7 @@ export async function startUI(opts: UIOptions) {
     const agent = await new Agent(
       chat
         ? { llm, cwd: dir, permissions, vision, network, brevity, palette, contextWindow: opts.context, chat: true, plan: false, memory: false, fixTries: 0 }
-        : { llm, cwd: dir, permissions, toolsets, vision, helper, network, brevity, palette, contextWindow: opts.context, tools: [...TOOLS, ...stage!.tools()], mapTokens: agentSettings(contextWindow, goalSaved).mapTokens },
+        : { llm, cwd: dir, permissions, toolsets, vision, helper, network, brevity, palette, learn, contextWindow: opts.context, tools: [...TOOLS, ...stage!.tools()], mapTokens: agentSettings(contextWindow, goalSaved).mapTokens },
       io,
     ).init();
     if (saved) await agent.restore(saved.id, saved.history);
@@ -354,13 +361,39 @@ export async function startUI(opts: UIOptions) {
         await state?.agent.setPalette(palette);
         return send(await snapshot());
       }
+      case "rules": {
+        // The 📏 dialog: the whole list as the user left it, and the learning switch.
+        if (typeof m.learn === "boolean") {
+          learn = m.learn;
+          await saveLearn(learn);
+          state?.agent.setLearn(learn);
+        }
+        if (Array.isArray(m.rules)) {
+          if (!state || state.agent.chat) throw new Error("open a project folder first; rules live in its MAXX.md");
+          await saveRules(state.cwd, tidyRules(m.rules));
+          if (!state.controller) await state.agent.refreshSystemPrompt();
+        }
+        return send(await snapshot());
+      }
+      case "forgetRule":
+        // "Undo" on the toast after Maxx learned something.
+        if (state && (await forgetRule(state.cwd, String(m.text ?? ""))) && !state.controller) await state.agent.refreshSystemPrompt();
+        return send(await snapshot());
+      case "undoTurn": {
+        if (!state || state.agent.chat) throw new Error("open a project folder first");
+        if (state.controller) throw new Error("stop the current turn first");
+        io.note(await state.agent.undoTurn());
+        await save();
+        return send(await snapshot());
+      }
       case "agentSettings":
         // Saving the defaults back unchanged keeps following them when the context changes.
         goalSaved = m.reset ? {} : cleanSettings(m.settings ?? {});
         await saveAgentSettings(goalSaved);
         return send(await snapshot());
       case "answer":
-        pending.get(m.id)?.(m.answer);
+        // Deny can carry the user's reason, which the model reads and Maxx learns a rule from.
+        pending.get(m.id)?.(m.answer === "no" && typeof m.why === "string" && m.why.trim() ? `no: ${m.why.trim().slice(0, 600)}` : m.answer);
         pending.delete(m.id);
         return;
       case "reply":

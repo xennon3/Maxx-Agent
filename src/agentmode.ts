@@ -199,7 +199,7 @@ export async function runGoal(agent: Agent, goal: string, events: GoalEvents, o:
         emit();
         // The map costs context, so it goes with the first task and with retries only.
         const fresh = s.mapTokens > 0 && (board.current === 0 || retry) ? await projectMap(agent.cwd, s.mapTokens).catch(() => "") : "";
-        let answer = await agent.send(asReport(taskPrompt(board, fresh, retry)), o.signal, { maxSteps: s.stepsPerTask });
+        let answer = await agent.send(asReport(taskPrompt(board, fresh, retry)), o.signal, { maxSteps: s.stepsPerTask, learn: false });
         let r = outcome(answer, agent.lastCheck);
         if (r.ok && s.judge) {
           const j = await judgeTask(agent, board, task, before, events, o, emit);
@@ -207,7 +207,7 @@ export async function runGoal(agent: Agent, goal: string, events: GoalEvents, o:
           for (let fix = 0; j && !j.pass && fix < s.judgeFixes && r.ok; fix++) {
             task.status = "doing";
             emit();
-            answer = await agent.send(asReport(`Maxx checked a screenshot of the result. The vision model says: FAIL: ${j.why}\nFix this, then reply with one line starting with DONE.`), o.signal, { maxSteps: s.stepsPerTask });
+            answer = await agent.send(asReport(`Maxx checked a screenshot of the result. The vision model says: FAIL: ${j.why}\nFix this, then reply with one line starting with DONE.`), o.signal, { maxSteps: s.stepsPerTask, learn: false });
             r = outcome(answer, agent.lastCheck);
             if (!r.ok) break;
             const again = await judgeTask(agent, board, task, before, events, o, emit);
@@ -226,6 +226,7 @@ export async function runGoal(agent: Agent, goal: string, events: GoalEvents, o:
         // Keep the failed try (/checkpoints lists it), then rewind to before the task.
         await agent.checkpoints.snapshot(`agent: task ${board.current + 1} try ${task.tries} (failed)`);
         const back = before ? await agent.checkpoints.rewind(before) : { ok: false, removed: [], error: "no snapshot" };
+        agent.forgetTurn(); // a rewind by Agent mode, not a correction from the user
         if (back.ok) agent.note(`(Agent mode: rewound the files to before task ${board.current + 1})`);
         if (task.tries >= s.tries || !back.ok) {
           task.status = "failed";
