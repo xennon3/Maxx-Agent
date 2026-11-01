@@ -376,6 +376,32 @@ header (Brief, Normal, Detailed), `/brevity brief|normal|detailed` in the termin
 and project mode. Only the prompt changes: there is no token cap, so a file write or tool call is
 never cut off halfway.
 
+## Colors: any palette
+
+Maxx can design with any color palette: charts and Mermaid diagrams in chat, and the pages, apps
+and games it builds. Pick one with the 🎨 chip in the app header, `/palette` in the terminal, or
+`--palette` / `$MAXX_PALETTE`. A palette can be:
+
+- a preset: maxx, ocean, sunset, forest, pastel, synthwave, neon, earth, mono, ice, autumn, candy,
+  retro, cyber, dracula, nord, solarized, handheld (4-shade green LCD), pico (16-color pixel art)
+  or colorblind (Okabe–Ito, readable with every common kind of color blindness); `/palette list`
+  shows them as swatches
+- your own hex colors: `/palette #264653 #2a9d8f #e9c46a`, optionally named (`brand: #111 #f60`)
+- one color and a harmony that grows it into five: `#ff6600 triad` (analogous, complementary,
+  triad, split, tetrad, mono)
+- a coolors.co link
+- `random`, which rolls a fresh palette that still hangs together (and gives it a silly name)
+- the main colors of a picture: 🖼 From an image in the app, worked out in the browser
+- `auto`: no palette, the model picks
+
+The palette is one line in the system prompt with the hex codes, plus a background and a text color
+that pass WCAG contrast. The app also uses it to color charts the model left uncolored and to theme
+Mermaid diagrams, and recolors the transcript when you switch. It is saved in `~/.maxx/palette.json`.
+
+For one request you can just say it: "make a snake game in synthwave colors", "use the palette
+#0b132b #3a506b #5bc0be", "give it a random palette". Maxx adds that palette's hex codes next to
+the message, so the model doesn't have to remember them, and the saved setting stays as it was.
+
 ## Looking things up: web search and free MCP servers
 
 A small local model's knowledge stops at its training date, so it will happily describe last

@@ -199,15 +199,19 @@ const visuals = (() => {
     body.chart = new Chart(c, cfg);
   }
 
-  // Models rarely pick colors; without them every series is grey.
-  const PALETTE = ["#d9480f", "#1c7ed6", "#2b8a3e", "#ae3ec9", "#f59f00", "#0c8599", "#e64980", "#5c7cfa", "#74b816", "#868e96"];
+  // Models rarely pick colors; without them every series is grey. The 🎨 palette, when one is set, wins.
+  const ACCENTS = ["#d9480f", "#1c7ed6", "#2b8a3e", "#ae3ec9", "#f59f00", "#0c8599", "#e64980", "#5c7cfa", "#74b816", "#868e96"];
+  const chosen = () => (typeof state !== "undefined" && state && state.palette && state.palette.colors) || null;
   function colorize(cfg) {
+    const PALETTE = chosen() || ACCENTS;
+    // Fewer series than colors: spread them across the palette, so three bars aren't three neighbouring shades.
+    const pick = (i, n) => PALETTE[n > 1 && n <= PALETTE.length && chosen() ? Math.round((i * (PALETTE.length - 1)) / (n - 1)) : i % PALETTE.length];
     const round = /^(pie|doughnut|polarArea)$/.test(cfg.type);
     (cfg.data.datasets || []).forEach((ds, i) => {
       if (ds.backgroundColor || ds.borderColor) return;
       const n = Array.isArray(ds.data) ? ds.data.length : 0;
-      if (round) { ds.backgroundColor = Array.from({ length: n }, (_, k) => PALETTE[k % PALETTE.length]); ds.borderColor = css("--panel"); return; }
-      const c = PALETTE[i % PALETTE.length];
+      if (round) { ds.backgroundColor = Array.from({ length: n }, (_, k) => pick(k, n)); ds.borderColor = css("--panel"); return; }
+      const c = pick(i, (cfg.data.datasets || []).length);
       ds.borderColor = c;
       ds.backgroundColor = /^(line|radar|scatter|bubble)$/.test(ds.type || cfg.type) ? c + "33" : c + "cc";
     });
@@ -217,7 +221,9 @@ const visuals = (() => {
     // One at a time: Mermaid keeps global state while it lays a diagram out.
     const job = mermaidQueue.then(async () => {
       const mermaid = await lib("mermaid");
-      if (!mermaid.ready) mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: dark() ? "dark" : "default", fontFamily: 'system-ui, "Segoe UI", sans-serif' }), mermaid.ready = true;
+      // Set up again whenever the palette or the light/dark theme changes.
+      const look = (chosen() || []).join() + "|" + dark();
+      if (mermaid.ready !== look) mermaid.initialize(mermaidConfig(chosen())), mermaid.ready = look;
       const id = "mmd" + ++seq;
       try {
         const { svg } = await mermaid.render(id, src.trim());
@@ -229,6 +235,32 @@ const visuals = (() => {
     });
     mermaidQueue = job.catch(() => {});
     return job;
+  }
+
+  // Mermaid's "base" theme takes its colors from variables: nodes, pie slices,
+  // mindmap and timeline sections all come from the palette.
+  function mermaidConfig(colors) {
+    const base = { startOnLoad: false, securityLevel: "strict", fontFamily: 'system-ui, "Segoe UI", sans-serif' };
+    if (!colors) return Object.assign(base, { theme: dark() ? "dark" : "default" });
+    const lum = (h) => { const v = [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4))); return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]; };
+    const on = (h) => (lum(h) > 0.4 ? "#1a1a1a" : "#ffffff");
+    const c = (i) => colors[i % colors.length];
+    const v = {
+      darkMode: dark(), background: css("--panel"), fontFamily: base.fontFamily,
+      primaryColor: c(0), primaryTextColor: on(c(0)), primaryBorderColor: c(0),
+      secondaryColor: c(1), secondaryTextColor: on(c(1)), secondaryBorderColor: c(1),
+      tertiaryColor: c(2), tertiaryTextColor: on(c(2)), tertiaryBorderColor: c(2),
+      lineColor: css("--mute"), textColor: css("--ink"), titleColor: css("--ink"),
+      noteBkgColor: c(3), noteTextColor: on(c(3)), noteBorderColor: c(3),
+      actorBkg: c(0), actorTextColor: on(c(0)), actorBorder: c(0), signalColor: css("--ink"), signalTextColor: css("--ink"),
+      pieStrokeColor: css("--panel"), pieOuterStrokeColor: css("--line"), pieTitleTextColor: css("--ink"), pieLegendTextColor: css("--ink"), pieSectionTextColor: on(c(Math.floor(colors.length / 2))),
+    };
+    for (let i = 0; i < 12; i++) {
+      v["pie" + (i + 1)] = c(i);
+      v["cScale" + i] = c(i); v["cScaleLabel" + i] = on(c(i));
+      v["git" + i] = c(i);
+    }
+    return Object.assign(base, { theme: "base", themeVariables: v });
   }
 
   const CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:";
