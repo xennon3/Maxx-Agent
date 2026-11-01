@@ -162,7 +162,9 @@ test("with one slot the workers take turns at the model, and the board shows who
   byTask = { t1: [write("b.txt", "B\n"), { text: "DONE" }], t2: [write("c.txt", "C\n"), { text: "DONE" }] };
   maxInFlight = 0;
   boards.length = 0;
-  const b = (await runCrew(agent, "two files", events, { crew: crewSettings({ workers: 2, slots: 1, finalCheck: false }), settings })) as CrewBoard;
+  // Slow answers, so the second worker reaches the gate while the first holds it, however long its worktree took.
+  delay = 800;
+  const b = (await runCrew(agent, "two files", events, { crew: crewSettings({ workers: 2, slots: 1, finalCheck: false }), settings }).finally(() => (delay = 60))) as CrewBoard;
   expect(b.state).toBe("done");
   expect(maxInFlight).toBe(1);
   expect(boards.some((x) => x.workers.some((w) => w.state === "queued"))).toBe(true);
