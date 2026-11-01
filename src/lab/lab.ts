@@ -1,5 +1,5 @@
-import { mkdir, readFile, writeFile, appendFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, readdir, writeFile, appendFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import type { Agent } from "../loop.ts";
 import type { LLMConfig, Message } from "../llm.ts";
 import type { Image } from "../image.ts";
@@ -10,6 +10,7 @@ import { toCSV, series } from "./data.ts";
 import { ICON, menu, parseArgs, type Instrument, type Kind } from "./instruments.ts";
 import { extractCode, runTest, runtimes, type Runtime, type TestRun } from "./sandbox.ts";
 import { reportHtml, reportMarkdown } from "./report.ts";
+import { applyCrossCheck, audit, auditNote, crossCheckMessages, ledger, parseCrossCheck, parseFacts, RULES, verify, type Audit, type Claim } from "./truth.ts";
 
 // The research lab. A question goes round a small scientific loop:
 //
@@ -21,6 +22,12 @@ import { reportHtml, reportMarkdown } from "./report.ts";
 //   follow up  still unsure? plan more readings and test again (rounds)
 //   review     a skeptic (a second model when there is one) finds the weak spots
 //   conclude   the answer, with confidence, citations and next experiments
+//   fact-check the conclusion's numbers and citations against the evidence
+//
+// Every fact goes into a claim ledger (truth.ts) tagged observed, verified,
+// corroborated, opinion, unverified, contested or fabricated, checked against
+// the pages actually fetched and against each other. Hypotheses must cite
+// what they rest on; the judge never sees the prior, so it cannot anchor on it.
 //
 // Every phase is a short one-off request with a line-by-line answer format,
 // which small local models follow far better than one long tool-calling run.
@@ -95,7 +102,16 @@ export type Evidence = {
 };
 export type LogEntry = { at: string; instrument: string; args: string; approval: "not needed" | "you" | "saved rule" | "denied" | "unavailable"; ms: number; ok: boolean; note: string };
 export type HStatus = "untested" | "testing" | "supported" | "refuted" | "inconclusive" | "error";
-export type Hypothesis = { id: string; text: string; predicts: string; test: string; prior: number; posterior?: number; status: HStatus; why?: string; script?: string; lang?: string; output?: string; metrics?: Record<string, number>; tries: number; round?: number };
+export type Hypothesis = {
+  id: string; text: string; predicts: string; test: string; prior: number; posterior?: number; status: HStatus; why?: string; script?: string; lang?: string; output?: string; metrics?: Record<string, number>; tries: number; round?: number;
+  // The evidence and claims it rests on; none means it is speculative (allowed, but labelled and its prior capped).
+  because?: string[];
+  speculative?: boolean;
+  // A perspective added in a later round that nobody had considered.
+  wildcard?: boolean;
+  // Confidence after each test, starting with the prior: truth may move.
+  trail?: number[];
+};
 export type PlanItem = { instrument: string; args: string };
 export type Study = {
   id: string;
@@ -108,6 +124,8 @@ export type Study = {
   plan: PlanItem[];
   evidence: Evidence[];
   hypotheses: Hypothesis[];
+  claims: Claim[];
+  audit?: Audit;
   log: LogEntry[];
   skeptic?: string;
   skepticModel?: string;
@@ -178,6 +196,7 @@ export function parsePlan(text: string, instruments: Instrument[], max: number):
   return { plan, dropped };
 }
 
+const claimBlock = (s: Study) => (s.claims.length ? `\n\nClaim ledger (status says how far each can be trusted):\n${ledger(s.claims)}` : "");
 const evidenceBlock = (ev: Evidence[], max = 1400) =>
   ev.map((e) => `${e.id} [${e.instrument}] ${e.title}${e.error ? ` (failed: ${e.error})` : ""}:\n${e.text.slice(0, max)}${e.data ? `\nData file: ${e.data} (columns: t,${(e.keys ?? []).join(",")})` : ""}`).join("\n\n");
 
@@ -187,9 +206,9 @@ export function hypothesisMessages(s: Study, max: number): Message[] {
     {
       role: "user",
       content:
-        `Question: ${s.sharpened ?? s.question}\n${s.measure ? `What would answer it: ${s.measure}\n` : ""}\nEvidence so far:\n${evidenceBlock(s.evidence)}\n\n` +
-        `Write 2 to ${max} hypotheses, one per line, as:\nH1: <claim> | predicts: <what we would see in the data or a simulation> | test: <how a short script checks it> | prior: <0-100>%\n` +
-        "Make them rivals: include at least one that would make the obvious answer wrong (another cause, chance, a faulty sensor). The prior is how likely you think it is before testing. Reply with the lines only.",
+        `Question: ${s.sharpened ?? s.question}\n${s.measure ? `What would answer it: ${s.measure}\n` : ""}\nEvidence so far:\n${evidenceBlock(s.evidence)}${claimBlock(s)}\n\n` +
+        `Write 2 to ${max} hypotheses, one per line, as:\nH1: <claim> | predicts: <what we would see in the data or a simulation> | test: <how a short script checks it> | because: <the E# and C# it rests on> | prior: <0-100>%\n` +
+        "Make them rivals: include at least one that would make the obvious answer wrong (another cause, chance, a faulty sensor). Ground each one in evidence with because:. A hypothesis with nothing to rest on is allowed if it is genuinely worth testing, but write because: none. Base the prior on the strength of that evidence, not on what sounds likely. Reply with the lines only.",
     },
   ];
 }
@@ -202,7 +221,7 @@ export function parseHypotheses(text: string, max: number): Omit<Hypothesis, "st
     if (!m) continue;
     const parts = m[2]!.split(/\s*\|\s*/);
     const field = (name: RegExp) => parts.find((p) => name.test(p))?.replace(name, "").trim() ?? "";
-    const claim = parts.find((p) => !/^(predicts?|test|prior)\s*:/i.test(p))?.trim() ?? "";
+    const claim = parts.find((p) => !/^(predicts?|test|prior|because|evidence)\s*:/i.test(p))?.trim() ?? "";
     if (claim.length < 4) continue;
     const prior = Number(field(/^prior\s*:\s*/i).match(/(\d+(?:\.\d+)?)/)?.[1] ?? NaN);
     out.push({
@@ -211,6 +230,7 @@ export function parseHypotheses(text: string, max: number): Omit<Hypothesis, "st
       predicts: field(/^predicts?\s*:\s*/i).slice(0, 300),
       test: field(/^test\s*:\s*/i).slice(0, 300),
       prior: Number.isFinite(prior) ? Math.max(1, Math.min(99, prior <= 1 && /\./.test(String(prior)) ? prior * 100 : prior)) : 50,
+      because: [...field(/^(?:because|evidence)\s*:\s*/i).matchAll(/\b[EC]\d+\b/g)].map((x) => x[0]),
     });
     if (out.length >= max) break;
   }
@@ -237,11 +257,11 @@ export function testMessages(s: Study, h: Hypothesis, lang: "python" | "js"): Me
 
 export function interpretMessages(h: Hypothesis, run: TestRun): Message[] {
   return [
-    { role: "system", content: "You read the output of a test script and judge a hypothesis. You are calibrated: strong evidence moves confidence a lot, weak or tiny samples move it little." },
+    { role: "system", content: "You read the output of a test script and judge a hypothesis. You judge from the output alone: strong evidence earns high or low confidence, weak or tiny samples stay near 50%. An output that assumed its numbers instead of measuring them is weak evidence." },
     {
       role: "user",
       content:
-        `Hypothesis ${h.id}: ${h.text}\nConfidence before the test: ${Math.round(h.prior)}%\n\nTest output:\n${run.output.slice(-2500)}\n\n` +
+        `Hypothesis ${h.id}: ${h.text}\n\nTest output:\n${run.output.slice(-2500)}\n\n` +
         "Reply in exactly three lines:\nVERDICT: supported, refuted or inconclusive\nCONFIDENCE: <0-100>% that the hypothesis is true now\nWHY: <one sentence that cites the numbers>",
     },
   ];
@@ -267,18 +287,19 @@ export function followupMessages(s: Study, instruments: Instrument[], max: numbe
       content:
         `Question: ${s.sharpened ?? s.question}\nStill open:\n${open.map((h) => `${h.id}: ${h.text} (${h.status}${h.why ? `: ${h.why}` : ""})`).join("\n")}\n\nEvidence so far:\n${evidenceBlock(s.evidence, 400)}\n\n` +
         `Instruments:\n${menu(instruments)}\n\n` +
-        `List 1 to ${max} more readings that would settle them, one per line, as: number. instrument | arguments (longer recordings, a different condition, a better search). If nothing more can be measured, reply NONE.`,
+        `List 1 to ${max} more readings that would settle them, one per line, as: number. instrument | arguments (longer recordings, a different condition, a better search, a source that could prove the leading idea wrong). If nothing more can be measured, reply NONE.\n` +
+        "Then, to stay open-minded, you may add one line for an explanation nobody has considered yet:\nWILDCARD: <claim> | predicts: <...> | test: <...> | because: <E#/C# or none> | prior: <0-100>%",
     },
   ];
 }
 
 export function skepticMessages(s: Study): Message[] {
   return [
-    { role: "system", content: "You are a skeptical peer reviewer. You look for the weakest link in a study: confounders, too little data, a sensor that may be wrong, a test that checks the wrong thing, sources that disagree. You are brief and concrete." },
+    { role: "system", content: "You are a skeptical peer reviewer. You look for the weakest link in a study: confounders, too little data, a sensor that may be wrong, a test that checks the wrong thing, sources that disagree, opinions treated as facts, a conclusion that goes further than the evidence. You are brief and concrete." },
     {
       role: "user",
       content:
-        `Question: ${s.sharpened ?? s.question}\n\nEvidence:\n${evidenceBlock(s.evidence, 500)}\n\nHypotheses after testing:\n${s.hypotheses.map((h) => `${h.id}: ${h.text} → ${h.status}, ${Math.round(h.prior)}% → ${Math.round(h.posterior ?? h.prior)}%${h.why ? ` (${h.why})` : ""}`).join("\n")}\n\n` +
+        `Question: ${s.sharpened ?? s.question}\n\nEvidence:\n${evidenceBlock(s.evidence, 500)}${claimBlock(s)}\n\nHypotheses after testing:\n${s.hypotheses.map((h) => `${h.id}: ${h.text} → ${h.status}, ${Math.round(h.prior)}% → ${Math.round(h.posterior ?? h.prior)}%${h.why ? ` (${h.why})` : ""}`).join("\n")}\n\n` +
         "List at most 3 weaknesses as lines starting with - . Then one line: WOULD CHANGE MY MIND: <the one observation that would flip the conclusion>.",
     },
   ];
@@ -286,14 +307,14 @@ export function skepticMessages(s: Study): Message[] {
 
 export function concludeMessages(s: Study): Message[] {
   return [
-    { role: "system", content: "You write the conclusion of a small research study for a curious non-expert. Plain words, numbers where they matter, and honest about uncertainty. Cite evidence as [E1] and hypotheses as [H2]." },
+    { role: "system", content: `You write the conclusion of a small research study for a curious non-expert. Plain words, numbers where they matter, and honest about uncertainty. Cite evidence as [E1], claims as [C3] and hypotheses as [H2]. ${RULES}` },
     {
       role: "user",
       content:
-        `Question: ${s.question}\n${s.sharpened && s.sharpened !== s.question ? `Made measurable as: ${s.sharpened}\n` : ""}\nEvidence:\n${evidenceBlock(s.evidence, 600)}\n\n` +
+        `Question: ${s.question}\n${s.sharpened && s.sharpened !== s.question ? `Made measurable as: ${s.sharpened}\n` : ""}\nEvidence:\n${evidenceBlock(s.evidence, 600)}${claimBlock(s)}\n\n` +
         `Hypotheses after testing:\n${s.hypotheses.map((h) => `${h.id}: ${h.text} → ${h.status}, confidence ${Math.round(h.prior)}% → ${Math.round(h.posterior ?? h.prior)}%${h.why ? `. ${h.why}` : ""}${h.metrics && Object.keys(h.metrics).length ? ` [${Object.entries(h.metrics).map(([k, v]) => `${k}=${v}`).join(", ")}]` : ""}`).join("\n")}\n` +
         (s.skeptic ? `\nA reviewer said:\n${s.skeptic}\n` : "") +
-        "\nWrite markdown with exactly these four sections:\n## Answer\n2 to 4 sentences that answer the question, ending with: Overall confidence: <0-100>%\n## Findings\n3 to 6 bullets, each citing [E#] or [H#]\n## Caveats\n1 to 3 bullets\n## Next experiments\n2 or 3 bullets: what to measure next and with which instrument",
+        "\nWrite markdown with exactly these five sections:\n## Answer\n2 to 4 sentences that answer the question, ending with: Overall confidence: <0-100>%\n## Findings\n3 to 6 bullets, each citing [E#], [C#] or [H#]\n## Strongest other view\nThe best case for a different answer, fairly put, and what evidence would make it win\n## Caveats\n1 to 3 bullets\n## Next experiments\n2 or 3 bullets: what to measure next and with which instrument",
     },
   ];
 }
@@ -305,7 +326,7 @@ export async function runStudy(agent: Agent, question: string, events: StudyEven
   const now = o.now ?? new Date();
   const id = studyId(question, now);
   const dir = join(agent.cwd, ".maxx", "research", id);
-  const s: Study = { id, question, state: "framing", round: 0, rounds: set.rounds, plan: [], evidence: [], hypotheses: [], log: [], dir, started: now.toISOString(), model: agent.llm.model };
+  const s: Study = { id, question, state: "framing", round: 0, rounds: set.rounds, plan: [], evidence: [], hypotheses: [], claims: [], log: [], dir, started: now.toISOString(), model: agent.llm.model };
   agent.lab = s;
   const emit = () => events.study(structuredClone(s));
   const save = () => writeFile(join(dir, "study.json"), JSON.stringify(s, null, 2)).catch(() => {});
@@ -332,13 +353,15 @@ export async function runStudy(agent: Agent, question: string, events: StudyEven
       s.state = "collecting";
       emit();
       for (const item of s.plan) await collect(agent, s, item, usable, events, emit, o.signal, set);
+      await crossCheck(agent, s, o.signal);
+      emit();
       await save();
 
       if (!s.hypotheses.length) {
         s.state = "hypothesizing";
         emit();
         const hs = parseHypotheses(await agent.think(hypothesisMessages(s, set.hypotheses), o.signal), set.hypotheses);
-        s.hypotheses = (hs.length ? hs : [{ id: "H1", text: s.sharpened ?? question, predicts: "", test: "", prior: 50 }]).map((h) => ({ ...h, status: "untested" as const, tries: 0 }));
+        s.hypotheses = (hs.length ? hs : [{ id: "H1", text: s.sharpened ?? question, predicts: "", test: "", prior: 50 }]).map((h) => ground(s, { ...h, status: "untested" as const, tries: 0 }));
         emit();
       }
 
@@ -351,8 +374,17 @@ export async function runStudy(agent: Agent, question: string, events: StudyEven
 
       const open = s.hypotheses.some((h) => h.status === "inconclusive" || h.status === "error");
       if (!open || s.round >= set.rounds) break;
-      const next = parsePlan(await agent.think(followupMessages(s, usable, set.readings), o.signal), usable, set.readings).plan;
-      if (!next.length) break;
+      const fu = await agent.think(followupMessages(s, usable, set.readings), o.signal);
+      const next = parsePlan(fu.replace(/^.*WILDCARD.*$/gim, ""), usable, set.readings).plan;
+      const wild = fu.match(/^\W*WILDCARD\s*:\s*(.+)$/im)?.[1];
+      if (wild) {
+        const [w] = parseHypotheses(`H1: ${wild}`, 1);
+        if (w) {
+          s.hypotheses.push(ground(s, { ...w, id: `H${s.hypotheses.length + 1}`, status: "inconclusive", tries: 0, wildcard: true }));
+          agent.note(`(lab: a new perspective to test: ${w.text})`);
+        }
+      }
+      if (!next.length && !wild) break;
       s.plan = next;
       agent.note(`(lab: round ${s.round + 1}, ${next.length} more reading${next.length > 1 ? "s" : ""} for what is still open)`);
     }
@@ -375,11 +407,22 @@ export async function runStudy(agent: Agent, question: string, events: StudyEven
     s.state = "concluding";
     emit();
     s.answer = strip(await agent.think(concludeMessages(s), o.signal));
+    // Fact-check the conclusion; anything invented goes back once.
+    const corpus = corpusOf(s);
+    const known = new Set([...s.evidence.map((e) => e.id), ...s.hypotheses.map((h) => h.id), ...s.claims.map((c) => c.id)]);
+    let a = audit(s.answer, corpus, known);
+    let revised = false;
+    if (!a.ok) {
+      const fixed = strip(await agent.think([...concludeMessages(s), { role: "assistant", content: s.answer }, { role: "user", content: `A fact check of your conclusion found problems:\n${auditNote(a)}\nRewrite the whole conclusion with the same five sections, fixing them.` }], o.signal));
+      const b = audit(fixed, corpus, known);
+      if (/##\s*Answer/i.test(fixed) && b.unsupported.length + b.fakeCitations.length + b.uncited.length <= a.unsupported.length + a.fakeCitations.length + a.uncited.length) (s.answer = fixed), (a = b), (revised = true);
+    }
+    s.audit = { ...a, revised };
     const c = s.answer.match(/overall confidence\s*:?\s*(\d+(?:\.\d+)?)\s*%/i);
     if (c) s.confidence = Math.max(0, Math.min(100, Number(c[1])));
     s.state = "done";
     s.finished = new Date().toISOString();
-    s.note = `Study done: ${s.evidence.filter((e) => !e.error).length} readings, ${s.hypotheses.length} hypotheses tested${s.confidence !== undefined ? `, ${s.confidence}% confident` : ""}.`;
+    s.note = `Study done: ${s.evidence.filter((e) => !e.error).length} readings, ${s.claims.length} claims checked, ${s.hypotheses.length} hypotheses tested${s.confidence !== undefined ? `, ${s.confidence}% confident` : ""}.${s.audit && !s.audit.ok ? " The fact check still flags parts of the conclusion (see the notebook)." : ""}`;
   } catch (e) {
     if ((e as Error).name !== "AbortError") {
       s.state = "failed";
@@ -463,8 +506,19 @@ async function collect(agent: Agent, s: Study, item: PlanItem, all: Instrument[]
     ev.images = files.filter((f) => /\.jpe?g$|\.png$/i.test(f));
     if (r.images?.length) events.image?.(inst.id, r.images);
     ev.text = r.text;
-    // Long web text is boiled down to the facts that matter, which keeps later prompts small.
-    if (inst.kind === "web" && r.text.length > 900) ev.text = (await distill(agent, s, r.text, signal)) || r.text.slice(0, 1200);
+    if (inst.kind === "web") {
+      // Web text is boiled down to tagged facts, each checked against the page it came from.
+      await writeFile(join(s.dir, "raw", `${id}.txt`), r.text).catch(() => {});
+      const facts = parseFacts(await distill(agent, s, r.text, signal));
+      const pages = splitPages(r.text);
+      for (const f of facts) addClaim(s, { ...f, kind: f.kind, evidence: id }, verify(f, pages));
+      const mine = s.claims.filter((c) => c.evidence === id);
+      if (mine.length) ev.text = mine.map((c) => `${c.id} [${c.status}] ${c.text}`).join("\n");
+      else if (r.text.length > 900) ev.text = r.text.slice(0, 1200);
+    } else if (r.rows?.length && r.keys?.length) {
+      // A measurement: each column's statistics are an observed claim.
+      for (const line of r.text.split("\n").filter((l) => /^[\w.]+: n=\d+/.test(l))) addClaim(s, { kind: "observed", text: line, evidence: id }, { status: "observed" });
+    }
     // Pictures: the vision model says what is in them, in the question's terms.
     if (r.images?.length) {
       const look = judgeLLM(agent.llm, agent.vision);
@@ -472,6 +526,8 @@ async function collect(agent: Agent, s: Study, item: PlanItem, all: Instrument[]
         try {
           const said = await agent.think([{ role: "user", content: [{ type: "text", text: `Research question: ${s.sharpened ?? s.question}\nDescribe what these camera frames show that matters for the question, in at most 4 short sentences. Mention changes between frames.` }, ...r.images.map(imagePart)] }], signal, look);
           ev.text += `\nThe vision model sees: ${strip(said).slice(0, 600)}`;
+          // What a model sees in a picture is an interpretation, not a measurement.
+          addClaim(s, { kind: "sourced", text: `In the photos: ${strip(said).slice(0, 300)}`, evidence: id }, { status: "unverified", note: "the vision model's description" });
         } catch (e) {
           if ((e as Error).name === "AbortError") throw e;
         }
@@ -490,11 +546,11 @@ async function collect(agent: Agent, s: Study, item: PlanItem, all: Instrument[]
 
 async function distill(agent: Agent, s: Study, text: string, signal?: AbortSignal): Promise<string> {
   const out = await agent.think([
-    { role: "system", content: "You extract facts for a research study. Only facts that are in the text; keep numbers, units and who said it." },
-    { role: "user", content: `Question: ${s.sharpened ?? s.question}\n\nText:\n${text.slice(0, 6000)}\n\nList up to 5 facts from the text that bear on the question, one per line starting with - , each ending with its source URL in <>. If none, reply NONE.` },
+    { role: "system", content: "You extract claims for a research study, without bias. Only what the text says; copy numbers and units exactly as written. Separate checkable facts from opinions, predictions and marketing." },
+    { role: "user", content: `Question: ${s.sharpened ?? s.question}\n\nText:\n${text.slice(0, 6000)}\n\nList up to 6 claims from the text that bear on the question, for and against, one per line as:\n- FACT: <a checkable statement> <source URL>\n- OPINION: <a judgement, recommendation or prediction, and whose> <source URL>\nIf none, reply NONE.` },
   ], signal);
   const t = strip(out);
-  return /^NONE\b/i.test(t) ? "" : t.slice(0, 1400);
+  return /^NONE\b/i.test(t) ? "" : t.slice(0, 2400);
 }
 
 async function testOne(agent: Agent, s: Study, h: Hypothesis, runtime: Runtime, set: LabSettings, emit: () => void, signal?: AbortSignal) {
@@ -524,13 +580,14 @@ async function testOne(agent: Agent, s: Study, h: Hypothesis, runtime: Runtime, 
   }
   if (!run?.ok) {
     h.status = "error";
-    h.posterior = h.prior;
+    h.posterior = h.posterior ?? h.prior;
     h.why = run ? `the test script kept failing (${run.timedOut ? "timeout" : `exit ${run.code}`})` : "the model wrote no script";
     emit();
     return;
   }
   const verdict = parseInterpretation(await agent.think(interpretMessages(h, run), signal), run, h.prior);
   Object.assign(h, { status: verdict.status, posterior: verdict.posterior, why: verdict.why });
+  h.trail = [...(h.trail ?? [h.prior]), verdict.posterior];
   emit();
 }
 
@@ -550,3 +607,79 @@ export function formatStudy(s: Study): string {
   return [steps, ...ev, ...hy].join("\n");
 }
 
+
+// ---------- the claim ledger ----------
+
+function addClaim(s: Study, c: { kind: Claim["kind"]; text: string; url?: string; evidence: string }, v: { status: Claim["status"]; note?: string }) {
+  const id = `C${s.claims.length + 1}`;
+  s.claims.push({ id, text: c.text, kind: c.kind, status: v.status, evidence: c.evidence, url: c.url, note: v.note, history: [{ round: s.round, status: v.status, why: v.note ?? (c.kind === "observed" ? "measured" : c.kind === "opinion" ? "a judgement, not a fact" : "found on the page it cites") }] });
+}
+
+// The web instrument's text holds several pages: "From <title> <url>:" blocks, and the result list.
+export function splitPages(text: string): { url: string; text: string }[] {
+  const pages: { url: string; text: string }[] = [];
+  const re = /^From .*?<(https?:\/\/[^>]+)>:\n([\s\S]*?)(?=^From .*?<https?:\/\/|$(?![\s\S]))/gm;
+  for (const m of text.matchAll(re)) pages.push({ url: m[1]!, text: m[2]! });
+  // Search-result snippets count as their own (thin) pages.
+  for (const m of text.matchAll(/^- (.+?) <(https?:\/\/[^>]+)>$/gm)) if (!pages.some((p) => p.url === m[2])) pages.push({ url: m[2]!, text: m[1]! });
+  return pages;
+}
+
+async function crossCheck(agent: Agent, s: Study, signal?: AbortSignal) {
+  const checkable = s.claims.filter((c) => c.status !== "fabricated" && c.status !== "opinion");
+  if (checkable.filter((c) => c.kind === "sourced").length < 2 && checkable.length < 3) return;
+  try {
+    applyCrossCheck(s.claims, parseCrossCheck(await agent.think(crossCheckMessages(checkable), signal)), s.round);
+  } catch (e) {
+    if ((e as Error).name === "AbortError") throw e;
+    agent.note(`(lab: the cross-check failed: ${(e as Error).message})`);
+  }
+}
+
+// Hypotheses rest on evidence; one that rests on nothing (or only on opinions and fabrications) is labelled speculative.
+function ground(s: Study, h: Hypothesis): Hypothesis {
+  const ok = (id: string) => s.evidence.some((e) => e.id === id && !e.error) || s.claims.some((c) => c.id === id && c.status !== "fabricated" && c.status !== "opinion");
+  h.because = (h.because ?? []).filter((id) => s.evidence.some((e) => e.id === id) || s.claims.some((c) => c.id === id));
+  h.speculative = !h.because.some(ok);
+  if (h.speculative) h.prior = Math.min(h.prior, 35);
+  h.trail = [h.prior];
+  return h;
+}
+
+// Everything the conclusion may take numbers from.
+function corpusOf(s: Study): string {
+  return [s.question, s.sharpened ?? "", ...s.evidence.map((e) => `${e.title}\n${e.text}`), ...s.claims.map((c) => c.text), ...s.hypotheses.map((h) => `${h.text} ${h.predicts} ${h.why ?? ""} ${h.output ?? ""} ${Object.values(h.metrics ?? {}).join(" ")} ${h.prior} ${h.posterior ?? ""}`), s.skeptic ?? ""].join("\n");
+}
+
+// ---------- the Research tab's own workspace ----------
+
+// Studies started from the Research tab live in one folder of their own
+// (like chat), so they list and reopen without a project.
+export const researchDir = () => join(maxxHome(), "research");
+export const isResearchDir = (dir: string) => resolve(dir).toLowerCase() === resolve(researchDir()).toLowerCase();
+export async function ensureResearchDir() {
+  await mkdir(researchDir(), { recursive: true });
+  return researchDir();
+}
+
+export type StudySummary = { id: string; question: string; state: Phase; confidence?: number; started: string; claims: number; hypotheses: number };
+export async function listStudies(cwd: string, max = 40): Promise<StudySummary[]> {
+  const root = join(cwd, ".maxx", "research");
+  const ids = await readdir(root).catch(() => [] as string[]);
+  const out: StudySummary[] = [];
+  for (const id of ids.sort().reverse().slice(0, max)) {
+    const s = await loadStudy(cwd, id);
+    if (s) out.push({ id: s.id, question: s.question, state: s.state, confidence: s.confidence, started: s.started, claims: s.claims?.length ?? 0, hypotheses: s.hypotheses.length });
+  }
+  return out;
+}
+export async function loadStudy(cwd: string, id: string): Promise<Study | null> {
+  if (!/^[\w-]+$/.test(id)) return null;
+  try {
+    const s = JSON.parse(await readFile(join(cwd, ".maxx", "research", id, "study.json"), "utf8")) as Study;
+    s.claims ??= [];
+    return s;
+  } catch {
+    return null;
+  }
+}

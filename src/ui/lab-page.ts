@@ -1,14 +1,56 @@
-// The research lab in `maxx ui`: the 🔬 chip, the live study board (phase
-// pipeline, evidence chips, hypothesis meters), the settings and instruments
+// The Research tab in `maxx ui`: a workspace of its own (sidebar entry, a
+// question box, past studies, the live study board with its phase pipeline,
+// evidence chips and hypothesis meters, panes for the claim ledger, evidence,
+// instrument log and the finished notebook), the settings and instruments
 // dialog, and the camera and microphone bridge (getUserMedia in the window,
 // so nothing needs installing). Plain strings spliced into page.ts; no
 // backticks or dollar-braces in the JS below.
 
 export const LAB_CSS = /* css */ `
-.chip.lab.on { background: #5f3dc4; border-color: #5f3dc4; color: #fff; }
-body.lab .composer textarea { border-color: #5f3dc4; }
-.study { display: none; margin: 10px 16px 0; padding: 8px 12px 10px; border: 1px solid var(--line); border-left: 3px solid #5f3dc4; border-radius: var(--radius); background: var(--panel); font-size: 13px; max-width: 860px; background-image: linear-gradient(color-mix(in srgb, var(--line) 45%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--line) 45%, transparent) 1px, transparent 1px); background-size: 18px 18px; }
-.study.on { display: block; max-height: 48vh; overflow: auto; }
+#rview { display: none; flex: 1; min-height: 0; }
+body.research #rview { display: grid; grid-template-columns: minmax(0, 1fr) 300px; }
+body.research { grid-template-columns: 260px 1fr; }
+body.research #stage, body.research #rfeed .msg:not(.user):not(.note):not(.err), body.research #board, body.research #plan, body.research .composer, body.research .projonly, body.research #micHint { display: none !important; }
+#rmain { overflow: auto; padding: 16px 16px 24px; min-width: 0; }
+#rfeed { border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; background: var(--panel); }
+#rfeed > .fh { padding: 10px 14px; font-weight: 600; border-bottom: 1px solid var(--line); font-size: 13px; }
+#rfeed #log { padding: 10px 12px; }
+.rhero { max-width: 900px; border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; background: var(--panel); background-image: linear-gradient(color-mix(in srgb, var(--line) 45%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--line) 45%, transparent) 1px, transparent 1px); background-size: 18px 18px; }
+.rhero h2 { margin: 0 0 2px; font-size: 18px; display: flex; gap: 8px; align-items: center; }
+.rhero h2 .sp { flex: 1; }
+.rhero h2 button { font-size: 13px; font-weight: 400; padding: 5px 10px; }
+.rhero p { margin: 0 0 10px; color: var(--mute); font-size: 13px; }
+.rhero textarea { width: 100%; min-height: 64px; resize: vertical; border-color: #5f3dc4; }
+.rhero .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+.rhero .row .grow { flex: 1; color: var(--mute); font-size: 12px; }
+.rhero button.go { background: #5f3dc4; border-color: #5f3dc4; color: #fff; }
+.rrules { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; color: var(--mute); margin-top: 8px; }
+.rpast { max-width: 900px; margin-top: 16px; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+.rpast .card { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; cursor: pointer; background: var(--panel); font-size: 13px; }
+.rpast .card:hover { border-color: #5f3dc4; }
+.rpast .card .m { color: var(--mute); font-size: 12px; margin-top: 4px; display: flex; gap: 8px; }
+.rpast h4 { grid-column: 1 / -1; margin: 6px 0 0; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--mute); }
+.rtabs { display: none; gap: 4px; max-width: 900px; margin: 14px 0 0; border-bottom: 1px solid var(--line); }
+.rtabs.on { display: flex; }
+.rtabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 6px 12px; color: var(--mute); }
+.rtabs button.on { color: var(--ink); border-bottom-color: #5f3dc4; font-weight: 600; }
+#rpane { max-width: 900px; padding-top: 8px; font-size: 13px; }
+#rpane iframe { width: 100%; height: 70vh; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+#rpane table { width: 100%; border-collapse: collapse; }
+#rpane td, #rpane th { border-bottom: 1px solid var(--line); padding: 5px 6px; text-align: left; vertical-align: top; }
+#rpane .sub { color: var(--mute); font-size: 12px; }
+#rpane td.st { white-space: nowrap; }
+#rpane .observed td.st, #rpane .verified td.st, #rpane .corroborated td.st { color: var(--ok); }
+#rpane .unverified td.st, #rpane .contested td.st { color: #b08400; }
+#rpane .fabricated td.st { color: var(--bad); } #rpane .fabricated td:nth-child(2) { text-decoration: line-through; }
+#rpane .evc { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 6px 0; }
+#rpane .evc pre { white-space: pre-wrap; margin: 6px 0 0; font: 12px/1.45 var(--mono); }
+.chip.research.on, button#researchBtn.on { background: #5f3dc4; border-color: #5f3dc4; color: #fff; }
+.study .tally { font-size: 12px; color: var(--mute); margin: 2px 0 4px; }
+.study .audit { font-size: 12px; } .study .audit.ok { color: var(--ok); } .study .audit.bad { color: #b08400; }
+.study .pill { font-size: 10.5px; padding: 0 6px; border-radius: 8px; border: 1px dashed var(--mute); color: var(--mute); margin-left: 4px; font-weight: 400; }
+.study { display: none; margin: 14px 0 0; padding: 8px 12px 10px; border: 1px solid var(--line); border-left: 3px solid #5f3dc4; border-radius: var(--radius); background: var(--panel); font-size: 13px; max-width: 860px; background-image: linear-gradient(color-mix(in srgb, var(--line) 45%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--line) 45%, transparent) 1px, transparent 1px); background-size: 18px 18px; }
+.study.on { display: block; }
 .study.failed { border-left-color: var(--bad); } .study.done { border-left-color: var(--ok); }
 .study .head { display: flex; gap: 8px; align-items: baseline; font-weight: 600; }
 .study .head .q { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -44,7 +86,25 @@ body.lab .composer textarea { border-color: #5f3dc4; }
 #labDlg pre { max-height: 180px; overflow: auto; font-size: 11.5px; background: var(--bg); padding: 6px 8px; border-radius: 6px; }
 `;
 
-export const LAB_CHIP = `<span class="chip lab" id="labBtn" title="Research lab: ask a question. Maxx collects data (the web, COM-port sensors, the camera, the microphone, your files), draws up rival hypotheses, tests each one with a script in a sandbox, has a skeptic review it, and writes a lab notebook.">🔬 Lab</span><span class="chip gear" id="labCfg" title="Research lab settings and instruments">⚙</span>`;
+export const LAB_NAV = `<div class="chathead">Research</div>
+  <div class="chatnav" id="researchNav"><button class="go" id="researchBtn" title="The research lab: ask a question; Maxx collects data from the web and your instruments, tests rival hypotheses in a sandbox, fact-checks everything and writes a lab notebook.">🔬 Research lab</button></div>`;
+
+export const LAB_VIEW = `<section id="rview">
+  <div id="rmain">
+    <div class="rhero">
+      <h2>🔬 Research lab<span class="sp"></span><button id="labInstBtn" title="What Maxx can measure from here">🧰 Instruments</button><button id="labCfg" title="Research lab settings">⚙</button></h2>
+      <p>Ask something that evidence can answer. Maxx sharpens the question, gathers data from the web and your instruments, writes rival hypotheses that must cite their evidence, tests each with a script in a sandbox, fact-checks every claim and number, lets a skeptic attack it, and writes a lab notebook.</p>
+      <textarea id="rq" placeholder="e.g. Does my desk get warmer while the PC runs, and is the fan what I hear?"></textarea>
+      <div class="row"><span class="grow" id="rsettings"></span><button class="danger" id="rstop" disabled>Stop</button><button class="go" id="rgo">Start study</button></div>
+      <div class="rrules"><span>📏 measured</span><span>✔ checked on its page</span><span>🔁 confirmed by another site</span><span>💬 opinion</span><span>⚠ unconfirmed</span><span>⚖ disputed</span><span>✗ fabricated</span></div>
+    </div>
+    <div class="study" id="lab"></div>
+    <div class="rtabs" id="rtabs"><button data-t="notebook">📒 Notebook</button><button data-t="claims">⚖ Claims</button><button data-t="evidence">📡 Evidence</button><button data-t="log">🗒 Instrument log</button></div>
+    <div id="rpane"></div>
+    <div class="rpast" id="rpast"></div>
+  </div>
+  <div id="rfeed"><div class="fh">Lab feed · approvals and notes</div></div>
+</section>`;
 
 export const LAB_HTML = `<dialog id="labDlg"><form method="dialog" id="labForm">
   <h3>🔬 Research lab</h3>
@@ -71,23 +131,80 @@ export const LAB_HTML = `<dialog id="labDlg"><form method="dialog" id="labForm">
 </form></dialog>`;
 
 export const LAB_JS = /* js */ `
-let labMode = false;
-try { labMode = localStorage.getItem("maxx.lab") === "1"; } catch {}
-const labOn = () => labMode && !!(state && state.current);
 const LAB_TOKEN = new URLSearchParams(location.search).get("t") || "";
-function drawLabChip() {
-  const on = labOn();
-  $("labBtn").classList.toggle("on", on);
-  document.body.classList.toggle("lab", on);
-  if (on) $("input").placeholder = "Ask a research question, e.g. \\u201cdoes my desk get warmer in the afternoon sun?\\u201d Maxx collects data, tests hypotheses and writes a lab notebook.";
+const inResearch = () => !!(state && state.current && state.current.research);
+let rtab = "claims";
+// Entering the tab moves the transcript into the feed column (approvals land there); leaving puts it back.
+function drawResearch() {
+  const on = inResearch();
+  document.body.classList.toggle("research", on);
+  $("researchBtn").classList.toggle("on", on);
+  const log = $("log");
+  if (on && log.parentElement !== $("rfeed")) $("rfeed").appendChild(log);
+  if (!on && log.parentElement === $("rfeed")) $("rview").parentElement.insertBefore(log, $("activity"));
+  if (!on) return;
+  $("where").textContent = "🔬 Research";
+  $("where").title = "Studies are saved in " + ((state.research && state.research.cwd) || "~/.maxx/research");
+  const st = (state.labMode && state.labMode.settings) || {};
+  $("rsettings").textContent = (st.rounds || 2) + " rounds · up to " + (st.hypotheses || 3) + " hypotheses · " + (st.readings || 5) + " readings per round · " + (st.parallel || 1) + " test" + (st.parallel > 1 ? "s" : "") + " at once · skeptic " + (st.skeptic === false ? "off" : "on") + " · 🌐 web " + (state.network ? "on" : "off (turn on Network above)");
+  $("rgo").disabled = busy; $("rstop").disabled = !busy;
+  drawPast();
 }
-$("labBtn").onclick = () => {
-  labMode = !labMode;
-  if (labMode && typeof agentMode !== "undefined" && (agentMode || (typeof crewMode !== "undefined" && crewMode))) { agentMode = false; try { localStorage.setItem("maxx.agent", "0"); } catch {} if (typeof crewMode !== "undefined") { crewMode = false; try { localStorage.setItem("maxx.crew", "0"); } catch {} } drawAgent(); }
-  try { localStorage.setItem("maxx.lab", labMode ? "1" : "0"); } catch {}
-  drawLabChip();
-  if (!labMode) drawAgent();
+function drawPast() {
+  const list = (state && state.research && state.research.studies) || [];
+  const box = $("rpast");
+  box.innerHTML = list.length ? "<h4>Studies</h4>" : "";
+  for (const x of list) {
+    const c = div("card");
+    c.innerHTML = "<div></div><div class=m><span>" + esc(x.started.slice(0, 16).replace("T", " ")) + "</span><span>" + (x.confidence != null ? x.confidence + "% confident" : esc(x.state)) + "</span><span>" + x.claims + " claims</span></div>";
+    c.firstChild.textContent = "🔬 " + x.question;
+    c.onclick = () => send({ type: "study", id: x.id });
+    box.appendChild(c);
+  }
+  const nav = $("researchNav"); nav.querySelectorAll(".sess").forEach((r) => r.remove());
+  for (const x of list.slice(0, 6)) {
+    const r = div("sess" + (lastStudy && lastStudy.id === x.id ? " on" : ""));
+    r.innerHTML = "<span></span><span class=when>" + (x.confidence != null ? x.confidence + "%" : "") + "</span>";
+    r.firstChild.textContent = x.question; r.title = x.question;
+    r.onclick = () => { if (!inResearch()) send({ type: "research" }); send({ type: "study", id: x.id }); };
+    nav.appendChild(r);
+  }
+}
+$("researchBtn").onclick = () => send({ type: "research" });
+$("rgo").onclick = () => {
+  const text = $("rq").value.trim();
+  if (!text || busy) return;
+  lastStudy = null; drawLab(null); $("rpane").innerHTML = "";
+  userMsg("🔬 " + text, []);
+  send({ type: "send", text, files: [], lab: true });
 };
+$("rq").onkeydown = (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("rgo").onclick(); } };
+$("rstop").onclick = () => send({ type: "stop" });
+$("rtabs").onclick = (e) => { const t = e.target.closest("button"); if (t) { rtab = t.dataset.t; drawPane(); } };
+const ST_ICON = { observed: "📏", verified: "✔", corroborated: "🔁", opinion: "💬", unverified: "⚠", contested: "⚖", fabricated: "✗" };
+function tallyOf(claims) {
+  return ["observed", "corroborated", "verified", "opinion", "unverified", "contested", "fabricated"].map((k) => [k, claims.filter((c) => c.status === k).length]).filter((x) => x[1]).map((x) => ST_ICON[x[0]] + " " + x[1] + " " + x[0]).join(" · ");
+}
+function drawPane() {
+  const s = lastStudy, pane = $("rpane");
+  $("rtabs").classList.toggle("on", !!s);
+  if (!s) return pane.innerHTML = "";
+  const ended = ["done", "stopped", "failed"].includes(s.state);
+  $("rtabs").querySelectorAll("button").forEach((b) => { b.classList.toggle("on", b.dataset.t === rtab); if (b.dataset.t === "notebook") b.disabled = !ended; });
+  if (rtab === "notebook" && ended) {
+    const src = "/lab/" + LAB_TOKEN + "/" + encodeURIComponent(s.id) + "/report.html";
+    if (!pane.querySelector("iframe") || pane.querySelector("iframe").dataset.src !== src) pane.innerHTML = '<iframe title="Lab notebook" data-src="' + src + '" src="' + src + '"></iframe><p class="sub"><a href="' + src + '" target="_blank">Open in its own window</a></p>';
+    return;
+  }
+  if (rtab === "claims") {
+    const cl = s.claims || [];
+    pane.innerHTML = cl.length ? '<p class="sub">' + esc(tallyOf(cl)) + "</p><table><tr><th></th><th>Claim</th><th>Status</th><th>From</th></tr>" + cl.map((c) => '<tr class="' + c.status + '"><td><b>' + c.id + "</b></td><td>" + esc(c.text) + (c.history && c.history.length > 1 ? '<div class="sub">' + c.history.map((h) => "round " + h.round + ": " + ST_ICON[h.status] + " " + esc(h.why)).join(" → ") + "</div>" : c.note ? '<div class="sub">' + esc(c.note) + "</div>" : "") + '</td><td class="st">' + ST_ICON[c.status] + " " + c.status + "</td><td>" + c.evidence + (c.url ? '<div class="sub">' + esc(c.url.split("//").pop().replace("www.", "").slice(0, 36)) + "</div>" : "") + "</td></tr>").join("") + "</table>" : '<p class="sub">No claims yet. Every fact Maxx collects lands here, tagged by how far it can be trusted.</p>';
+  } else if (rtab === "evidence") {
+    pane.innerHTML = s.evidence.length ? s.evidence.map((e) => '<div class="evc"><b>' + e.icon + " " + e.id + "</b> " + esc(e.title) + (e.error ? ' <span style="color:var(--bad)">failed: ' + esc(e.error) + "</span>" : "<pre>" + esc(e.text) + "</pre>") + "</div>").join("") : '<p class="sub">Nothing collected yet.</p>';
+  } else {
+    pane.innerHTML = s.log.length ? "<table><tr><th>Time</th><th>Instrument</th><th>Arguments</th><th>Approved</th><th>Result</th></tr>" + s.log.map((l) => "<tr><td>" + l.at.slice(11, 19) + "</td><td>" + esc(l.instrument) + "</td><td>" + esc(l.args) + "</td><td>" + l.approval + "</td><td>" + (l.ok ? "✓ " : "✗ ") + esc(l.note) + "</td></tr>").join("") + "</table>" : '<p class="sub">No readings yet.</p>';
+  }
+}
 const PHASES = [["framing", "❓ Question"], ["collecting", "📡 Data"], ["hypothesizing", "💡 Hypotheses"], ["testing", "🧪 Tests"], ["reviewing", "🧐 Review"], ["concluding", "📜 Conclusion"]];
 const H_ICON = { untested: "○", testing: "▸", supported: "✓", refuted: "✗", inconclusive: "?", error: "!" };
 let recording = "";
@@ -101,21 +218,33 @@ function drawLab(s) {
   const evs = s.evidence.map((e) => '<span class="ev' + (e.error ? " bad" : "") + '" title="' + esc((e.error || e.text || "").slice(0, 600)) + '">' + e.icon + " " + e.id + " " + esc(e.title) + "</span>").join("");
   const hys = s.hypotheses.map((h) => {
     const a = Math.round(h.prior), b = Math.round(h.posterior == null ? h.prior : h.posterior);
-    return '<div class="hy ' + h.status + '"><span class="ic">' + H_ICON[h.status] + '</span><span class="id">' + h.id + '</span><span class="t">' + esc(h.text) + (h.why ? '<span class="why">' + esc(h.why) + "</span>" : h.status === "testing" ? '<span class="why">writing and running a test' + (h.tries > 1 ? " (try " + h.tries + ")" : "") + "…</span>" : "") + "</span>" +
+    return '<div class="hy ' + h.status + '"><span class="ic">' + H_ICON[h.status] + '</span><span class="id">' + h.id + '</span><span class="t">' + esc(h.text) + (h.speculative ? '<span class="pill" title="Cites no evidence, so its prior is capped at 35%">speculative</span>' : "") + (h.wildcard ? '<span class="pill" title="A new perspective added in a later round">wildcard</span>' : "") + (h.why ? '<span class="why">' + esc(h.why) + "</span>" : h.status === "testing" ? '<span class="why">writing and running a test' + (h.tries > 1 ? " (try " + h.tries + ")" : "") + "…</span>" : "") + "</span>" +
       '<span class="meter" title="' + a + "% before, " + b + '% after"><b class="' + (b >= a ? "up" : "down") + '" style="left:' + Math.min(a, b) + "%;width:" + Math.abs(b - a) + '%"></b><i style="left:' + a + '%"></i>' + (h.posterior == null ? "" : '<i class="post" style="left:' + b + '%"></i>') + "</span>" +
-      '<span class="pc">' + a + "%" + (h.posterior == null ? "" : " → " + b + "%") + "</span></div>";
+      '<span class="pc">' + (h.trail && h.trail.length > 1 ? h.trail.map((x) => Math.round(x) + "%").join(" → ") : a + "%" + (h.posterior == null ? "" : " → " + b + "%")) + "</span></div>";
   }).join("");
-  const report = ended && LAB_TOKEN ? '<a href="/lab/' + LAB_TOKEN + "/" + encodeURIComponent(s.id) + '/report.html" target="_blank">📒 Open the lab notebook</a>' : "";
+  const report = ended && LAB_TOKEN ? '<a href="#" id="rnb">📒 Read the lab notebook</a>' : "";
+  const a = s.audit;
+  const audit = a ? '<span class="audit ' + (a.ok ? "ok" : "bad") + '">' + (a.ok ? "✔ Fact check passed: " + a.numbers + " numbers traced to the evidence" : "⚠ Fact check: " + [a.unsupported.length ? a.unsupported.length + " number(s) not in the evidence" : "", a.fakeCitations.length ? a.fakeCitations.length + " citation(s) to nothing" : "", a.uncited.length ? a.uncited.length + " uncited finding(s)" : ""].filter(Boolean).join(", ")) + (a.revised ? " (after one revision)" : "") + "</span>" : "";
   const st = ended ? s.state : (s.rounds > 1 && s.round ? "round " + s.round + " of " + s.rounds + " · " : "") + (PHASES[at] ? PHASES[at][1].slice(2).toLowerCase() + "…" : "");
   box.innerHTML = '<div class="head"><span>🔬</span><span class="q"></span><span class="st">' + esc(st) + "</span></div>" +
     (s.sharpened && s.sharpened !== s.question ? '<div class="sharp">→ ' + esc(s.sharpened) + "</div>" : "") +
-    '<div class="pipe">' + pipe + "</div>" + (evs ? '<div class="evs">' + evs + "</div>" : "") + hys +
-    '<div class="foot">' + (recording ? '<span class="rec">● ' + esc(recording) + "</span>" : "") + (s.confidence != null ? '<span class="conf">Confidence ' + s.confidence + "%</span>" : "") + (ended && s.note ? "<span>" + esc(s.note) + "</span>" : "") + report + "</div>";
+    '<div class="pipe">' + pipe + "</div>" + (evs ? '<div class="evs">' + evs + "</div>" : "") + (s.claims && s.claims.length ? '<div class="tally">Claims: ' + esc(tallyOf(s.claims)) + "</div>" : "") + hys +
+    '<div class="foot">' + (recording ? '<span class="rec">● ' + esc(recording) + "</span>" : "") + (s.confidence != null ? '<span class="conf">Confidence ' + s.confidence + "%</span>" : "") + audit + (ended && s.note ? "<span>" + esc(s.note) + "</span>" : "") + report + "</div>";
   box.querySelector(".q").textContent = s.question;
   box.querySelector(".q").title = s.question;
+  const nb = box.querySelector("#rnb");
+  if (nb) nb.onclick = (e) => { e.preventDefault(); rtab = "notebook"; drawPane(); };
 }
 let lastStudy = null;
-function onStudy(s) { lastStudy = s; drawLab(s); }
+let studyEnded = false;
+function onStudy(s, viewing) {
+  const ended = ["done", "stopped", "failed"].includes(s.state);
+  // Opening a finished study, or one finishing: show its notebook.
+  if (ended && (viewing || !studyEnded)) rtab = "notebook";
+  else if (!ended && (!lastStudy || lastStudy.id !== s.id)) rtab = "claims";
+  studyEnded = ended;
+  lastStudy = s; drawLab(s); drawPane(); drawPast();
+}
 // Camera and microphone readings for the lab, taken in this window.
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function b64(bytes) { let s = ""; for (let i = 0; i < bytes.length; i += 32768) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 32768)); return btoa(s); }
@@ -190,6 +319,7 @@ function drawInstruments(m) {
   $("labSketch").textContent = m.sketch;
 }
 $("labCfg").onclick = () => { labForm(); $("labInst").textContent = "Looking…"; send({ type: "instruments" }); $("labDlg").showModal(); };
+$("labInstBtn").onclick = () => { $("labCfg").onclick(); setTimeout(() => { const el = $("labInst"); if (el) el.scrollIntoView({ block: "start" }); }, 50); };
 $("labForm").onsubmit = (e) => {
   const how = e.submitter && e.submitter.value;
   if (how === "reset") { e.preventDefault(); return labForm((state && state.labMode && state.labMode.defaults) || {}); }
