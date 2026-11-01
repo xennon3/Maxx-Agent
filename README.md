@@ -325,6 +325,23 @@ File edits need no approval while a goal runs (every task can be rewound); comma
 
 Change them with the ⚙ next to 🤖 Agent (saved in `~/.maxx/agent.json`; only what differs from the defaults is saved, so the rest keeps following the context) or with `--max-tasks`, `--task-steps`, `--task-tries`, `--judge on|off` and `--map-tokens`. `MAXX_BROWSER` picks the browser the judge uses.
 
+## Crew mode: several workers on one goal at once
+
+Turn on **👥 Crew** in the app window (or run `maxx --crew "..."`, or `/crew ...` in a session). It works like Agent mode, but with a team:
+
+1. **Plans for a team.** The planner writes tasks that also say what they need first and which files they touch: `2. Add the forecast strip | check: five days show | after: 1 | files: index.html, forecast.js`.
+2. **Shares them out.** Up to `--workers` workers (default 3; they are called Ada, Bo, Cy...) take ready tasks. A task starts once the tasks it needs are merged, and two tasks that list the same file never run at once.
+3. **Separate copies.** Each worker gets its own git worktree, outside the project (in `~/.maxx/crew`), started from the shared work so far. It works its task there with Agent mode's snapshots, checks, judge and rewinds, and its own budget. Workers read what the others handed in and who is doing what.
+4. **Hands in and merges.** A finished task is committed in the worker's copy and merged into a shared integration copy. If it clashes with work merged meanwhile, the worker pulls that work into its copy and sorts out the conflict markers itself (twice at most), then hands in again.
+5. **Final check.** With more than one task merged, one worker runs the build over the merged whole and fixes names, imports or ids that don't line up.
+6. **Lands.** The result is written into your folder, after a snapshot, so `/rewind` undoes it all. Files you changed yourself while the crew worked are merged in, not overwritten. If you stop it, nothing in the folder changes (the merged work so far is kept as a git ref).
+
+A folder that is not a git repository works too (it uses the private `.maxx/git`). Without git at all, Crew mode runs as Agent mode. Workers get the plain tools: the phone and desktop tools, the app's preview and MAXX.md lessons stay with the main session, because several workers can't share one phone or append to one file without clashing. Your branch, index and stash are never touched; hooks don't run for the crew's commits.
+
+**Taking turns at the model.** LM Studio answers a set number of requests per model at once (its **Max Concurrent Predictions** load setting, 4 by default since 0.4) and quietly queues the rest. Maxx keeps that queue on its side instead: each model has a gate with that many slots, measured on the first crew run (one short request alone, then several together) unless you set `--slots`. A worker that is running a build or reading files doesn't hold a slot, so even at one request at a time the crew is faster than one agent, and the board shows who is "waiting for the model". For real parallel thinking, raise Max Concurrent Predictions, or give the crew two models (`--crew-models qwen-agentworld-35b-a3b,qwen3.8-27b`, or tick them in the ⚙), which share the workers out in turn. LM Studio shares one model's context between the requests it runs at once, so load it with about workers × the context one worker needs.
+
+The board shows each worker (its model, and whether it is thinking, working, waiting for the model or handing in), each model's slots, and the tasks in four lanes: to do, working, handing in, done. Settings: the ⚙ next to 👥 Crew (saved in `~/.maxx/crew.json`), or `--workers`, `--crew-models`, `--slots` and `--max-tasks`. Steps and tries per task come from Agent mode's settings.
+
 ## Follow-up questions
 
 When a request leaves a choice only you can make, the model calls `ask_user` instead of guessing or ending its turn with a question. The turn pauses and the app shows a card with the question, a few choices to click (Maxx's own guess is marked), a box for your own answer, and **Skip** to let Maxx go with its guess. In the terminal you type a number, your own answer, or Enter for the guess. Questions are never permission prompts, so they come up in every mode, even "Never ask". A small model may ask at most 3 per turn; after that it is told to decide. When input is piped (no one at the keyboard), the tool is not offered at all. Outside Agent mode a question waits as long as it takes; in Agent mode it waits `--ask-wait` minutes (default 5, 0 waits for ever).

@@ -165,6 +165,50 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
 .board .note { color: var(--mute); margin-top: 4px; }
 .chip.agent.on { background: #1971c2; border-color: #1971c2; }
 .chip.gear { padding: 4px 8px; }
+.chip.crew.on { background: #7048e8; border-color: #7048e8; color: #fff; }
+body.crew .composer textarea { border-color: #7048e8; }
+#crewDlg { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); padding: 0; width: min(480px, calc(100vw - 32px)); }
+#crewDlg::backdrop { background: rgba(0,0,0,.35); }
+#crewDlg form { display: flex; flex-direction: column; gap: 10px; padding: 16px; }
+#crewDlg h3 { margin: 0; }
+#crewDlg label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--mute); }
+#crewDlg label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--ink); }
+#crewDlg .row { display: flex; gap: 8px; } #crewDlg .row label { flex: 1; }
+#crewDlg .hint { font-size: 12px; color: var(--mute); margin: 0; }
+#crewDlg .btns { display: flex; gap: 8px; justify-content: flex-end; } #crewDlg .btns .left { margin-right: auto; }
+#crewDlg .models { display: flex; flex-wrap: wrap; gap: 6px; max-height: 120px; overflow: auto; }
+#crewDlg .models label { flex-direction: row; align-items: center; gap: 6px; color: var(--ink); border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; font-size: 12px; }
+.board.crew { border-left-color: #7048e8; } .board.crew.on { max-height: 58vh; } .board.crew .bar i { background: #7048e8; }
+.board.crew.done { border-left-color: var(--ok); } .board.crew.done .bar i { background: var(--ok); }
+.board.crew.stuck { border-left-color: var(--bad); }
+.crew-workers { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
+.wk { display: flex; gap: 8px; align-items: center; border: 1px solid var(--line); border-radius: 10px; padding: 5px 9px; min-width: 170px; flex: 1; max-width: 260px; background: var(--bg); }
+.wk .av { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 12px; flex: none; position: relative; }
+.wk .av::after { content: ""; position: absolute; right: -2px; bottom: -2px; width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--bg); background: var(--mute); }
+.wk.thinking .av::after { background: #1971c2; animation: pulse 1s infinite; }
+.wk.queued .av::after { background: #f08c00; }
+.wk.working .av::after { background: var(--ok); }
+.wk.merging .av::after { background: #7048e8; animation: pulse 1s infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+.wk .who { min-width: 0; flex: 1; line-height: 1.25; }
+.wk .who .l1 { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wk .who b { font-size: 13px; } .wk .who .m { color: var(--mute); font-size: 11px; margin-left: 4px; }
+.wk .who .st { display: block; font-size: 12px; color: var(--mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wk.queued .who .st { color: #e67700; }
+.crew-models { font-size: 12px; color: var(--mute); display: flex; gap: 14px; flex-wrap: wrap; margin: 2px 0 6px; }
+.crew-models .slots { letter-spacing: 2px; }
+.crew-lanes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.lane { background: var(--bg); border-radius: 8px; padding: 6px; min-height: 48px; }
+.lane h4 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--mute); display: flex; justify-content: space-between; }
+.card { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--line); border-radius: 6px; padding: 4px 6px; margin-bottom: 5px; font-size: 12.5px; line-height: 1.35; }
+.card .t { font-weight: 600; } .card .sub { display: block; color: var(--mute); font-size: 11.5px; }
+.card.failed { border-left-color: var(--bad); } .card.failed .sub { color: var(--bad); }
+.card.done { border-left-color: var(--ok); color: var(--mute); } .card.done .t { font-weight: 500; }
+.card.fixing { border-left-color: #f08c00; } .card.merging { border-left-color: #7048e8; }
+.crew-log { font-size: 12px; color: var(--mute); margin-top: 6px; border-top: 1px dashed var(--line); padding-top: 4px; }
+.crew-log div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 900px) { .crew-lanes { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
 body.agent .composer textarea { border-color: #1971c2; }
 #agentDlg { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); padding: 0; width: min(460px, calc(100vw - 32px)); }
 #agentDlg::backdrop { background: rgba(0,0,0,.35); }
@@ -273,6 +317,7 @@ ${SOUND_CSS}
     <span class="chip" id="palBtn" title="The colors Maxx designs with: charts, diagrams, pages, apps and games. You can also say it in a message: “make it in synthwave colors”">🎨 Colors: auto</span>
     <span class="chip rules projonly" id="rulesBtn" title="Rules Maxx learned when you corrected it (saying “no, use…”, denying a step with a reason, fixing its code by hand, or undoing a turn). They live in this project's MAXX.md.">📏 Rules</span>
     <span class="chip agent projonly" id="agentBtn" title="Agent mode: give Maxx a goal. It splits it into tasks and works through them on its own, checking each one and rewinding any that fail.">🤖 Agent</span><span class="chip gear projonly" id="agentCfg" title="Agent mode settings">⚙</span>
+    <span class="chip crew projonly" id="crewBtn" title="Crew mode: give Maxx a goal. It splits it into tasks and several workers do them at the same time, each in its own copy of the project, then Maxx merges their work.">👥 Crew</span><span class="chip gear projonly" id="crewCfg" title="Crew mode settings">⚙</span>
     <span class="chip helper projonly" id="helperBtn" title="A bigger model Maxx calls when the local one is stuck">🧠 Helper: off</span>
     <button id="newBtn" title="Start a new session">New</button>
   </header>
@@ -354,6 +399,20 @@ ${STAGE_HTML}
   <p class="hint" id="aHint"></p>
   <div class="btns"><button class="left" id="aReset" value="reset" formnovalidate>Defaults</button><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="save">Save</button></div>
 </form></dialog>
+<dialog id="crewDlg"><form method="dialog" id="crewForm">
+  <h3>👥 Crew mode</h3>
+  <p class="hint">Give Maxx a goal with 👥 Crew on. It plans tasks that say what they need first and which files they touch, and several workers do them at the same time, each in its own git worktree. Each hand-in is merged; a worker whose changes clash with merged work pulls it in and sorts the clash out. Then one last pass checks the pieces fit, and the result lands in your folder (/rewind undoes it). Each task uses the 🤖 Agent mode budgets.</p>
+  <div class="row">
+    <label>Workers <input id="cWorkers" type="number" min="1" max="8" title="Workers at the same time"></label>
+    <label>Most tasks <input id="cTasks" type="number" min="2" max="20"></label>
+    <label>At once per model <input id="cSlots" type="number" min="0" max="16" title="Requests LM Studio answers at the same time for one model (its Max Concurrent Predictions load setting). 0 measures it on the first run."></label>
+  </div>
+  <label>Worker models <span class="hint">Shared out in turn. None ticked: the model picked at the top. Two different models really think at the same time even when each takes one request at a time.</span></label>
+  <div class="models" id="cModels"></div>
+  <label class="check"><input type="checkbox" id="cFinal"> Final check: after the last merge, one worker runs the build and fixes what doesn't fit together</label>
+  <p class="hint" id="cHint"></p>
+  <div class="btns"><button class="left" value="reset" formnovalidate>Defaults</button><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="save">Save</button></div>
+</form></dialog>
 <div id="zoom"><img id="zoomImg" alt=""></div>
 <div id="drop">Drop files to attach them to your message</div>
 <div id="toast"><span id="toastText"></span><button id="toastBtn">Undo</button></div>
@@ -433,6 +492,7 @@ function drawBoard(b) {
   const box = $("board");
   box.classList.toggle("on", !!(b && b.tasks));
   if (!b) return box.innerHTML = "";
+  if (b.kind === "crew") return drawCrew(b);
   const done = b.tasks.filter((t) => t.status === "done").length, n = b.tasks.length;
   box.className = "board on " + b.state;
   const state = b.state === "planning" ? "planning…" : b.state === "running" ? "task " + Math.min(b.current + 1, n) + " of " + n : b.state === "done" ? "done" : b.state === "stuck" ? "stuck" : "stopped";
@@ -443,6 +503,38 @@ function drawBoard(b) {
     b.tasks.map((t) => '<div class="task ' + t.status + '"><span class="box">' + icon[t.status] + '</span><span class="n">' + esc(t.text) +
       (t.check && t.status !== "done" ? '<span class="sub">✔ when ' + esc(t.check) + "</span>" : "") + (t.note ? '<span class="sub">' + esc(t.note) + "</span>" : "") +
       "</span>" + (t.tries > 1 ? '<span class="tries">try ' + t.tries + "</span>" : "") + "</div>").join("") +
+    (b.note && b.state !== "running" ? '<div class="note">' + esc(b.note) + "</div>" : "");
+  box.querySelector(".goal").textContent = b.goal;
+  box.querySelector(".goal").title = b.goal;
+}
+// Crew mode's board: the workers and what each is doing, the models' queues, and the tasks in lanes.
+const CREW_COLORS = ["#1971c2", "#d9480f", "#2b8a3e", "#ae3ec9", "#e67700", "#0c8599", "#c2255c", "#5f3dc4"];
+const WK_SAY = { idle: "idle", queued: "waiting for the model", thinking: "thinking", working: "working", merging: "handing in" };
+function drawCrew(b) {
+  const box = $("board");
+  const done = b.tasks.filter((t) => t.status === "done").length, n = b.tasks.length;
+  box.className = "board crew on " + b.state;
+  const secs = Math.round((Date.now() - b.started) / 1000);
+  const state = b.state === "planning" ? "planning…" : b.state === "running" ? done + " of " + n + " done · " + clock(secs * 1000) : b.state === "checking" ? "final check…" : b.state === "applying" ? "applying…" : b.state;
+  const color = (name) => CREW_COLORS[Math.max(0, b.workers.findIndex((w) => w.name === name)) % CREW_COLORS.length];
+  const workers = b.workers.map((w, i) => {
+    const what = w.state === "working" && w.doing ? w.doing : w.state === "thinking" && w.tokens ? "thinking · " + w.tokens + " tokens" : WK_SAY[w.state];
+    return '<div class="wk ' + w.state + '" title="' + esc(w.model) + (w.done ? " · " + w.done + " handed in" : "") + '"><span class="av" style="background:' + CREW_COLORS[i % CREW_COLORS.length] + '">' + esc(w.name[0]) + '</span><span class="who"><span class="l1"><b>' + esc(w.name) + "</b>" +
+      '<span class="m">' + esc(w.model.split("/").pop()) + "</span></span>" +
+      '<span class="st">' + (w.done ? "✓" + w.done + " · " : "") + (w.task ? "#" + w.task + " · " : "") + esc(what) + "</span></span></div>";
+  }).join("");
+  const models = (b.models || []).map((m) => '<span title="' + esc(m.model) + ': LM Studio answers ' + m.slots + ' at once">' + esc(m.model.split("/").pop().slice(0, 30)) + ' <span class="slots">' + "●".repeat(Math.min(m.busy, m.slots)) + "○".repeat(Math.max(0, m.slots - m.busy)) + "</span>" + (m.waiting ? " · " + m.waiting + " in line" : "") + "</span>").join("");
+  const lanes = [["To do", ["waiting", "ready"]], ["Working", ["doing", "checking", "fixing"]], ["Handing in", ["merging"]], ["Done", ["done", "failed"]]];
+  const card = (t) => '<div class="card ' + t.status + '" style="' + (t.worker && t.status !== "done" && t.status !== "failed" && t.status !== "ready" && t.status !== "waiting" ? "border-left-color:" + color(t.worker) : "") + '"><span class="t">#' + t.id + " " + esc(t.text) + "</span>" +
+    (t.status === "waiting" && t.after.length ? '<span class="sub">after ' + t.after.map((a) => "#" + a).join(", ") + "</span>" : "") +
+    (t.worker && t.status !== "ready" && t.status !== "waiting" ? '<span class="sub">' + esc(t.worker) + (t.tries > 1 ? " · try " + t.tries : "") + (t.files ? " · " + t.files + " files" : "") + "</span>" : "") +
+    (t.status === "fixing" ? '<span class="sub">⚡ ' + esc(t.note || "sorting out a clash") + "</span>" : t.note ? '<span class="sub">' + esc(t.note) + "</span>" : "") + "</div>";
+  box.innerHTML = '<div class="head"><span>👥</span><span class="goal"></span><span class="state">' + state + "</span></div>" +
+    (b.brief ? '<div class="brief">' + esc(b.brief) + "</div>" : "") +
+    '<div class="bar"><i style="width:' + (n ? Math.round((done / n) * 100) : 0) + '%"></i></div>' +
+    '<div class="crew-workers">' + workers + "</div>" + (models ? '<div class="crew-models">' + models + "</div>" : "") +
+    (n ? '<div class="crew-lanes">' + lanes.map(([name, sts]) => { const ts = b.tasks.filter((t) => sts.includes(t.status)); return '<div class="lane"><h4>' + name + "<span>" + ts.length + "</span></h4>" + ts.map(card).join("") + "</div>"; }).join("") + "</div>" : "") +
+    (b.log.length ? '<div class="crew-log">' + b.log.slice(-3).map((l) => "<div>✓ " + esc(l) + "</div>").join("") + "</div>" : "") +
     (b.note && b.state !== "running" ? '<div class="note">' + esc(b.note) + "</div>" : "");
   box.querySelector(".goal").textContent = b.goal;
   box.querySelector(".goal").title = b.goal;
@@ -949,7 +1041,7 @@ async function submit() {
   files = []; drawFiles();
   userMsg(text, sending.map((f) => f.name));
   $("input").value = "";
-  send(Object.assign({ type: "send", text, files: sending.map((f) => ({ id: f.id, mode: f.mode })), agent: agentOn() }, voice.flags()));
+  send(Object.assign({ type: "send", text, files: sending.map((f) => ({ id: f.id, mode: f.mode })), agent: agentOn(), crew: crewOn() }, voice.flags()));
   if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
 }
 
@@ -1003,14 +1095,45 @@ $("helperBtn").onclick = helperForm;
 // Agent mode: a switch remembered in this browser, and its budgets in ~/.maxx/agent.json.
 let agentMode = false;
 try { agentMode = localStorage.getItem("maxx.agent") === "1"; } catch {}
-const agentOn = () => agentMode && !!(state && state.current && !state.current.chat);
+let crewMode = false;
+try { crewMode = localStorage.getItem("maxx.crew") === "1"; } catch {}
+const crewOn = () => crewMode && !!(state && state.current && !state.current.chat);
+const agentOn = () => agentMode && !crewMode && !!(state && state.current && !state.current.chat);
 function drawAgent() {
-  const on = agentOn();
+  const on = agentOn(), crew = crewOn();
   $("agentBtn").classList.toggle("on", on);
+  $("crewBtn").classList.toggle("on", crew);
   document.body.classList.toggle("agent", on);
-  if (state && state.current && !state.current.chat) $("input").placeholder = on ? "Give Maxx a goal, e.g. \u201cbuild a tip calculator web app and check it works\u201d. It plans the tasks and works through them on its own." : PROJECT_HINT;
+  document.body.classList.toggle("crew", crew);
+  if (state && state.current && !state.current.chat) $("input").placeholder = crew ? "Give the crew a goal, e.g. \u201cbuild a weather app with a search page, a 5-day forecast and a settings page\u201d. Workers do its tasks at the same time." : on ? "Give Maxx a goal, e.g. \u201cbuild a tip calculator web app and check it works\u201d. It plans the tasks and works through them on its own." : PROJECT_HINT;
 }
-$("agentBtn").onclick = () => { agentMode = !agentMode; try { localStorage.setItem("maxx.agent", agentMode ? "1" : "0"); } catch {} drawAgent(); };
+const remember = (k, v) => { try { localStorage.setItem(k, v ? "1" : "0"); } catch {} };
+$("agentBtn").onclick = () => { agentMode = !agentOn(); if (agentMode) crewMode = false; remember("maxx.agent", agentMode); remember("maxx.crew", crewMode); drawAgent(); };
+$("crewBtn").onclick = () => { crewMode = !crewMode; if (crewMode) agentMode = false; remember("maxx.agent", agentMode); remember("maxx.crew", crewMode); drawAgent(); };
+function crewForm(values) {
+  const c = (state && state.crewMode) || {};
+  const v = values || c.settings || {};
+  $("cWorkers").value = v.workers; $("cTasks").value = v.maxTasks; $("cSlots").value = v.slots;
+  $("cFinal").checked = v.finalCheck !== false;
+  const picked = new Set(v.models || []);
+  const all = [...new Set([...((state && state.models) || []), ...picked])];
+  $("cModels").innerHTML = all.map((m) => '<label><input type="checkbox" value="' + esc(m) + '"' + (picked.has(m) ? " checked" : "") + "> " + esc(m) + "</label>").join("") || '<span class="hint">No models listed; start the LM Studio server.</span>';
+  const p = Object.entries(c.probed || {});
+  $("cHint").textContent = (p.length ? "Measured: " + p.map(([m, n]) => m + " answers " + n + " at once").join("; ") + ". " : "") +
+    "LM Studio shares one model's context between the requests it runs at once, so load it with about workers \u00d7 the context one worker needs.";
+}
+$("crewCfg").onclick = () => { crewForm(); $("crewDlg").showModal(); };
+$("crewForm").onsubmit = (e) => {
+  const how = e.submitter && e.submitter.value;
+  if (how === "reset") { e.preventDefault(); return crewForm((state && state.crewMode && state.crewMode.defaults) || {}); }
+  if (how !== "save") return;
+  const d = (state && state.crewMode && state.crewMode.defaults) || {}, out = {};
+  for (const [id, k] of [["cWorkers", "workers"], ["cTasks", "maxTasks"], ["cSlots", "slots"]]) { const n = Number($(id).value); if ($(id).value !== "" && n !== d[k]) out[k] = n; }
+  if ($("cFinal").checked !== (d.finalCheck !== false)) out.finalCheck = $("cFinal").checked;
+  out.models = [...$("cModels").querySelectorAll("input:checked")].map((x) => x.value);
+  const prev = (state && state.crewMode && state.crewMode.settings) || {};
+  send({ type: "crewSettings", settings: out, reprobe: String(out.models) !== String(prev.models || []) });
+};
 const AGENT_FIELDS = { aTasks: "maxTasks", aSteps: "stepsPerTask", aTries: "tries", aMap: "mapTokens", aFixes: "judgeFixes", aWait: "askMinutes" };
 function agentForm(values) {
   const a = (state && state.agentMode) || {};

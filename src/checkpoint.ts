@@ -95,6 +95,20 @@ export class Checkpoints {
     return this.steps[step]?.sha;
   }
 
+  // For crew mode, which adds worktrees to the same repository (shadow or real).
+  async usable(): Promise<boolean> {
+    return this.ready();
+  }
+
+  // Git on this folder's repository; `worktree` commands need the git dir alone, not the work tree.
+  run(args: string[], env: Record<string, string> = {}) {
+    return this.git(args, env);
+  }
+
+  get gitDir(): string[] {
+    return this.shadow.filter((a) => a.startsWith("--git-dir="));
+  }
+
   list() {
     return this.steps.map((s, i) => `${i}: ${s.sha.slice(0, 8)}  ${s.label}`);
   }
