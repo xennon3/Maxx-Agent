@@ -219,9 +219,9 @@ if (positionals[0] === "ui" || (fromExplorer && !positionals.length && !values.p
   const port = values.port ? Number(values.port) : 4317;
   let ui;
   try {
-    ui = await startUI({ baseURL, port, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, brevity: values.brevity, palette: values.palette, ...voice });
+    ui = await startUI({ baseURL, model: values.model ?? process.env.MAXX_MODEL, port, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, brevity: values.brevity, palette: values.palette, ...voice });
   } catch {
-    ui = await startUI({ baseURL, port: 0, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, brevity: values.brevity, palette: values.palette, ...voice });
+    ui = await startUI({ baseURL, model: values.model ?? process.env.MAXX_MODEL, port: 0, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, brevity: values.brevity, palette: values.palette, ...voice });
   }
   // Dev servers started from the Run panel go down with Maxx.
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(sig, () => (ui.stop(), process.exit(0)));
@@ -383,6 +383,9 @@ if (resumed) await resumeInto(resumed);
 let replayFile = "";
 // Declared before the -p path below, which runs a turn right away.
 let controller: AbortController | null = null;
+// Files from /attach, sent with the next message. Also declared before the -p path:
+// turn() reads it, and the compiled maxx.exe hoists it as undefined, not a TDZ error.
+let staged: Upload[] = [];
 // The Agent mode board as last printed.
 let shownBoard = "";
 setReplayFile();
@@ -438,9 +441,6 @@ for (;;) {
   }
   await turn(line);
 }
-
-// Files from /attach, sent with the next message.
-let staged: Upload[] = [];
 
 async function turn(text: string) {
   controller = new AbortController();

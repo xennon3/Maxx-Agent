@@ -36,7 +36,7 @@ import { FIX_ROUNDS, describeWhisper, failed, findWhisper, fixPrompt, planRebuil
 type Client = ServerWebSocket<unknown>;
 type Out = Record<string, unknown> & { type: string };
 
-export type UIOptions = { baseURL: string; port?: number; previewPort?: number; open?: boolean; visionModel?: string; context?: number; whisper?: string; whisperModel?: string; network?: string; brevity?: string; palette?: string };
+export type UIOptions = { baseURL: string; port?: number; previewPort?: number; open?: boolean; model?: string; visionModel?: string; context?: number; whisper?: string; whisperModel?: string; network?: string; brevity?: string; palette?: string };
 
 export async function startUI(opts: UIOptions) {
   // Installs and downloads: the header's 🌐 switch, saved for next time.
@@ -164,6 +164,8 @@ export async function startUI(opts: UIOptions) {
       type: "state",
       platform: process.platform,
       models: await models(),
+      // What a new session starts on ($MAXX_MODEL / --model), so the picker shows it before one is open.
+      defaultModel: opts.model ?? null,
       baseURL: opts.baseURL,
       maxUpload: MAX_UPLOAD,
       imageSide: imageLimits(contextWindow).maxSide,
@@ -206,7 +208,8 @@ export async function startUI(opts: UIOptions) {
     if (state?.controller) throw new Error("stop the current turn first");
     await save();
     const saved = o.session ? await loadSession(dir, o.session) : null;
-    const model = o.model || saved?.model || (await models())[0];
+    // A resumed session keeps its model; otherwise --model / $MAXX_MODEL, like the terminal.
+    const model = o.model || saved?.model || opts.model || (await models())[0];
     if (!model) throw new Error(`no model at ${opts.baseURL}. Start LM Studio's server and load a model.`);
     const llm: LLMConfig = { baseURL: opts.baseURL, model };
     const permissions = await new Permissions(dir, o.mode ?? state?.permissions.mode ?? "ask").load();

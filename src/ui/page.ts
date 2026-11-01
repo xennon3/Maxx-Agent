@@ -757,9 +757,11 @@ function render(s) {
   }
   // Header
   const sel = $("model"); sel.innerHTML = "";
-  const models = s.models.length ? s.models : cur ? [cur.model] : [];
+  // The session's model (or $MAXX_MODEL before one is open) is shown even when the server lists it under another name.
+  const want = cur ? cur.model : s.defaultModel;
+  const models = want && !s.models.includes(want) ? [want, ...s.models] : s.models;
   if (!models.length) sel.innerHTML = "<option>No model: start LM Studio's server</option>";
-  for (const id of models) { const o = document.createElement("option"); o.value = o.textContent = id; if (cur && cur.model === id) o.selected = true; sel.appendChild(o); }
+  for (const id of models) { const o = document.createElement("option"); o.value = o.textContent = id; if (want === id) o.selected = true; sel.appendChild(o); }
   $("where").textContent = cur ? (cur.chat ? "💬 Chat" : cur.cwd) : "No project open";
   $("where").title = cur ? (cur.chat ? "No project: just ask. Charts and diagrams are drawn right here, and with 🌐 Network on Maxx can look things up on the web." : cur.cwd) : "";
   $("input").placeholder = cur && cur.chat ? "Ask anything. Try \u201cchart my monthly budget\u201d or \u201cdraw how a bill becomes a law\u201d  (Enter to send, Shift+Enter for a new line)" : PROJECT_HINT;

@@ -16,6 +16,8 @@ export class Checkpoints {
   private enabled: boolean | null = null;
   private shadow: string[] = [];
   private steps: { sha: string; label: string }[] = [];
+  // Why snapshots are off, once ready() has found out (git missing or broken).
+  off = "";
 
   constructor(private cwd: string, session: string) {
     this.ref = `refs/maxx/${session}`;
@@ -23,22 +25,32 @@ export class Checkpoints {
 
   private async git(args: string[], env: Record<string, string> = {}) {
     // Byte-exact snapshots: Git for Windows turns LF into CRLF on restore by default.
-    const proc = Bun.spawn(["git", "-c", "core.autocrlf=false", "-c", "core.safecrlf=false", ...this.shadow, ...args], { cwd: this.cwd, stdout: "pipe", stderr: "pipe", env: { ...process.env, ...env } });
-    const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    let proc: ReturnType<typeof Bun.spawn>;
+    try {
+      proc = Bun.spawn(["git", "-c", "core.autocrlf=false", "-c", "core.safecrlf=false", ...this.shadow, ...args], { cwd: this.cwd, stdout: "pipe", stderr: "pipe", env: { ...process.env, ...env } });
+    } catch (e) {
+      // Bun throws "Executable not found in $PATH" here when git is missing.
+      return { ok: false, out: (e as Error).message };
+    }
+    const [out, err] = await Promise.all([new Response(proc.stdout as ReadableStream).text(), new Response(proc.stderr as ReadableStream).text()]);
     await proc.exited;
     return { ok: proc.exitCode === 0, out: out.trim() || err.trim() };
   }
 
   private async ready(): Promise<boolean> {
     if (this.enabled !== null) return this.enabled;
+    if (!Bun.which("git", { PATH: process.env.PATH ?? "" })) {
+      this.off = "git is not installed (or not on PATH), so Maxx can't take snapshots: /rewind and Agent mode's undo are off. Install Git (git-scm.com) and restart Maxx to turn them on.";
+      return (this.enabled = false);
+    }
     // A folder the enclosing repository ignores (a project under build/ or out/) gets its own, too.
     if ((await this.git(["rev-parse", "--is-inside-work-tree"])).ok && !(await this.git(["check-ignore", "-q", "."])).ok) return (this.enabled = true);
-    if (!Bun.which("git")) return (this.enabled = false);
     const dir = join(this.cwd, ".maxx", "git");
     this.shadow = [`--git-dir=${dir}`, `--work-tree=${this.cwd}`];
     if (!existsSync(join(dir, "HEAD"))) {
       await mkdir(dir, { recursive: true });
-      if (!(await this.git(["init", "-q"])).ok) return (this.shadow = [], (this.enabled = false));
+      const init = await this.git(["init", "-q"]);
+      if (!init.ok) return (this.shadow = [], (this.off = `git could not set up snapshots here (${init.out}), so /rewind and Agent mode's undo are off.`), (this.enabled = false));
       await mkdir(join(dir, "info"), { recursive: true });
       await writeFile(join(dir, "info", "exclude"), SHADOW_EXCLUDE.join("\n") + "\n");
     }

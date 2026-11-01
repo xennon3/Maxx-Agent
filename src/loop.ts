@@ -626,7 +626,7 @@ export class Agent {
       if (answer === "always") await this.opts.permissions.remember(tool, args);
     }
 
-    if (tool.risk !== "read" && tool.checkpoint !== false) await this.checkpoints.snapshot(`before ${tool.name} ${tool.ruleKey?.(args) ?? ""}`.trim());
+    if (tool.risk !== "read" && tool.checkpoint !== false) await this.snapshotBefore(tool.name, tool.ruleKey?.(args) ?? "");
     let result: string;
     let images: Image[] | undefined;
     let glance: boolean | undefined;
@@ -640,6 +640,21 @@ export class Agent {
     result += coachNote(coach(tool.name, args, result, process.platform, this.network), result);
     this.io.toolEnd(tool.name, result);
     return { result, bad: false, images, glance, args };
+  }
+
+  // A snapshot must never stop the tool from running (or leave its card spinning).
+  // When snapshots are off, say why once.
+  private snapshotsOffSaid = false;
+  private async snapshotBefore(name: string, key: string) {
+    try {
+      await this.checkpoints.snapshot(`before ${name} ${key}`.trim());
+    } catch (e) {
+      this.checkpoints.off ||= `snapshots failed (${(e as Error).message}), so /rewind may not have this step.`;
+    }
+    if (this.checkpoints.off && !this.snapshotsOffSaid) {
+      this.snapshotsOffSaid = true;
+      this.io.note(`(${this.checkpoints.off})`);
+    }
   }
 
   private async maybeCompact() {
