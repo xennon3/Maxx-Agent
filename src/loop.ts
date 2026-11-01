@@ -18,6 +18,7 @@ import { BREVITY_PROMPT, DEFAULT_BREVITY, type Brevity } from "./brevity.ts";
 import { lookupPrompt, WEB_TOOLS } from "./web.ts";
 import { mcpHub } from "./mcp.ts";
 import { chatPrompt } from "./chat.ts";
+import { mentionedPalette, paletteNote, palettePrompt, type Palette } from "./palette.ts";
 import { brief, describeHelper, HELPER_DEFAULTS, helperLLM, type Helper } from "./escalate.ts";
 import { mapBudget, projectMap, projectMapTool } from "./projectmap.ts";
 import type { Board } from "./agentmode.ts";
@@ -64,6 +65,8 @@ export type AgentOptions = {
   network?: boolean;
   // How much the model says (default brief); only the prompt changes.
   brevity?: Brevity;
+  // The colors the model designs with (null or unset: it picks its own).
+  palette?: Palette | null;
   // Chat mode: no tools, no project, and a prompt about drawing visuals instead.
   chat?: boolean;
   // The look-up tools offered while network access is on (default: web search, web fetch and MCP servers).
@@ -144,6 +147,15 @@ export class Agent {
 
   async setBrevity(level: Brevity) {
     this.opts.brevity = level;
+    await this.refreshSystemPrompt();
+  }
+
+  get palette(): Palette | null {
+    return this.opts.palette ?? null;
+  }
+
+  async setPalette(p: Palette | null) {
+    this.opts.palette = p;
     await this.refreshSystemPrompt();
   }
 
@@ -232,7 +244,7 @@ export class Agent {
 
   async refreshSystemPrompt() {
     const notes = [this.opts.plan !== false ? PLAN_PROMPT : "", this.opts.memory !== false ? MEMORY_PROMPT : "", NETWORK_PROMPT[this.network ? "on" : "off"], this.lookupNote()].filter(Boolean).join(" ");
-    const style = BREVITY_PROMPT[this.brevity];
+    const style = [palettePrompt(this.palette), BREVITY_PROMPT[this.brevity]].filter(Boolean).join("\n");
     // Last, so it is what the model read most recently.
     // The map as it was when the session started; project_map gives a fresh one.
     const map = !this.opts.chat && this.mapTokens > 0 ? await projectMap(this.opts.cwd, this.mapTokens).catch(() => "") : "";
@@ -264,7 +276,7 @@ export class Agent {
   // A turn with attached images comes as parts (see attach.ts).
   // Agent mode gives each task its own step budget.
   async send(userText: string | ContentPart[], signal?: AbortSignal, o: { maxSteps?: number } = {}): Promise<string> {
-    this.history.push({ role: "user", content: userText });
+    this.history.push({ role: "user", content: withPalette(userText, this.palette) });
     this.lastCheck = null;
     if (Array.isArray(userText)) this.pruneImages();
     const specs = toolSpecs(this.tools);
@@ -623,4 +635,16 @@ function canonicalArgs(args: string): string {
   } catch {
     return args;
   }
+}
+
+// A message that names a palette ("make it in synthwave colors") gets that
+// palette's hex codes beside it, so the model doesn't have to remember them.
+export function withPalette<T extends string | ContentPart[]>(text: T, active: Palette | null): T {
+  const typed = typeof text === "string" ? text : text.map((p) => (p.type === "text" ? p.text : "")).join("\n");
+  const p = mentionedPalette(typed);
+  if (!p || (active && p.colors.join() === active.colors.join())) return text;
+  if (typeof text === "string") return (text + paletteNote(p)) as T;
+  const i = text.findIndex((x) => x.type === "text");
+  if (i < 0) return [...text, { type: "text", text: paletteNote(p).trim() }] as T;
+  return text.map((x, k) => (k === i && x.type === "text" ? { ...x, text: x.text + paletteNote(p) } : x)) as T;
 }
