@@ -5,6 +5,7 @@ import { defineTool, type ToolResult } from "./types.ts";
 import { truncate } from "../context.ts";
 import { run, text, record, sleep } from "../devices/run.ts";
 import * as A from "../devices/adb.ts";
+import { explore, describe as describeExplore } from "../devices/explore.ts";
 
 // Android: build, install, launch, look at and drive an app on a real phone
 // over adb (USB or wireless debugging). Coordinates are screenshot pixels.
@@ -302,11 +303,47 @@ export const androidLogcat = defineTool({
   },
 });
 
-export const ANDROID_TOOLS = [androidDevices, androidConnect, androidRun, androidScreen, androidTap, androidSwipe, androidType, androidKey, androidLogcat];
+export const androidExplore = defineTool({
+  name: "android_explore",
+  description:
+    "Test the app on the phone by itself: launch it, tap every button on every screen it can reach, type a sample into text fields, and report crashes " +
+    "(with the taps that cause them, saved as a replay), taps that change nothing, buttons that leave the app, and a picture of every screen found. " +
+    "Use it after android_run to check a whole app in one call. Skips buttons that could delete, pay or send unless bold is true.",
+  schema: z.object({
+    package: z.string().optional().describe("Application id (read from build.gradle in project_dir when omitted)"),
+    project_dir: z.string().optional().describe("Directory with the app's build.gradle, relative to the workspace (default: the workspace)"),
+    steps: z.number().int().min(5).max(150).optional().describe("Actions to spend, default 30"),
+    sample: z.string().optional().describe('Text to type into fields, default "42"'),
+    bold: z.boolean().optional().describe("Also press buttons like Delete, Buy, Send, Log out"),
+  }),
+  risk: "exec",
+  ...NO_CKPT,
+  ruleKey: (a) => a.package ?? a.project_dir ?? ".",
+  preview: (a) => `explore ${a.package ?? "the app"} on the phone: tap through every screen (${a.steps ?? 30} actions${a.bold ? ", including risky buttons" : ""})`,
+  async run(a, { cwd }) {
+    await A.ensureDevice();
+    const pkg = a.package ?? applicationId(resolve(cwd, a.project_dir ?? "."));
+    if (!pkg) return "error: the application id is unknown; pass package (e.g. com.example.app).";
+    const r = await explore({
+      pkg, steps: a.steps, sample: a.sample, bold: a.bold, cwd,
+      launch: (p) => launch(p, 2),
+      crashLog: async (p) => {
+        const c = await crashLog(p);
+        if (c) await A.adbText(["logcat", "-c"]).catch(() => {});
+        return c;
+      },
+    });
+    const { text, images } = describeExplore(r, (p) => relative(cwd, p).replace(/\\/g, "/"));
+    return { text, images };
+  },
+});
+
+export const ANDROID_TOOLS = [androidDevices, androidConnect, androidRun, androidScreen, androidTap, androidSwipe, androidType, androidKey, androidLogcat, androidExplore];
 
 export const ANDROID_PROMPT = `Android tools are enabled. The user's phone is reachable over adb.
 - To build and test an app: write the code, call android_run (it builds, installs, launches, reports crashes and returns a screenshot), then look at the screenshot.
 - Drive the app with android_tap / android_type / android_swipe / android_key, preferring element numbers from the latest screenshot. Each action returns a new screenshot: check that it did what you expected before the next step.
 - New apps: start with use_template android-compose (Kotlin + Jetpack Compose with a Gradle wrapper that builds), then change it.
+- To test a whole app in one go, call android_explore after android_run: it taps through every screen and reports crashes (with the steps), buttons that do nothing and a picture of each screen. Fix what it finds, then explore again.
 - If the app crashes, read android_logcat with crashes: true, fix the code, and run again.
 - Never open other apps' private data, send messages, make calls or purchases on the phone unless the user asked.`;

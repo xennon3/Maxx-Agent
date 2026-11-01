@@ -89,6 +89,17 @@ export function tap(s: PhoneState, x: number, y: number) {
   if (!hit) return;
   if (s.foreground === "launcher" && hit.text === "Tip Calculator") return void launch(s, s.installed!.pkg);
   if (hit.id === "bill" || hit.id === "tip") s.focus = hit.id;
+  if (hit.id === "calculate" && s.installed!.src.includes("CRASH_ON_BIG_BILL") && Number(s.fields.bill) > 40) {
+    s.crash.push(
+      `E/AndroidRuntime( 4242): FATAL EXCEPTION: main`,
+      `E/AndroidRuntime( 4242): Process: ${s.installed!.pkg}, PID: 4242`,
+      `E/AndroidRuntime( 4242): java.lang.ArithmeticException: Rounding necessary`,
+      `E/AndroidRuntime( 4242): \tat java.math.BigDecimal.setScale(BigDecimal.java:2952)`,
+      `E/AndroidRuntime( 4242): \tat ${s.installed!.pkg}.MainActivityKt.tipFor(MainActivity.kt:58)`,
+    );
+    s.foreground = "launcher";
+    return;
+  }
   if (hit.id === "calculate") {
     const bill = Number(s.fields.bill) || 0, pct = Number(s.fields.tip) || 0;
     const tip = (bill * pct) / 100;

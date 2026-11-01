@@ -29,11 +29,22 @@ export function findAdb(env = process.env, exists = existsSync, which = (b: stri
 let adbPath: string | null | undefined;
 const NO_ADB = "adb not found. Install Android platform-tools (Android Studio, or `winget install Google.PlatformTools`), or set ANDROID_HOME.";
 
-export async function adb(args: string[], opts: { timeout?: number; device?: boolean } = {}): Promise<RunResult> {
+export function adbArgv(args: string[], device = true): string[] {
   adbPath ??= findAdb();
   if (!adbPath) throw new Error(NO_ADB);
-  const argv = [adbPath, ...(opts.device !== false && serial ? ["-s", serial] : []), ...args];
-  return run(argv, { timeout: opts.timeout ?? 30 });
+  return [adbPath, ...(device && serial ? ["-s", serial] : []), ...args];
+}
+
+export async function adb(args: string[], opts: { timeout?: number; device?: boolean } = {}): Promise<RunResult> {
+  return run(adbArgv(args, opts.device !== false), { timeout: opts.timeout ?? 30 });
+}
+
+// The screen size input events use; an "Override size" (wm size 720x1600) wins over the physical one.
+export async function screenSize(): Promise<{ w: number; h: number }> {
+  const out = await adbText(["shell", "wm", "size"]);
+  const m = out.match(/Override size:\s*(\d+)x(\d+)/) ?? out.match(/(\d+)x(\d+)/);
+  if (!m) throw new Error(`can't read the screen size from: ${out.trim()}`);
+  return { w: Number(m[1]), h: Number(m[2]) };
 }
 
 export async function adbText(args: string[], opts?: { timeout?: number; device?: boolean }) {
@@ -43,9 +54,44 @@ export async function adbText(args: string[], opts?: { timeout?: number; device?
   return out;
 }
 
+// What Maxx does to the phone, in device pixels, for the live view to draw
+// (a ghost finger on the mirror while the model taps through the app).
+export type PhoneAct =
+  | { kind: "tap"; x: number; y: number; long?: boolean; note: string }
+  | { kind: "swipe"; x1: number; y1: number; x2: number; y2: number; ms: number; note: string }
+  | { kind: "key"; key: string; note: string }
+  | { kind: "type"; text: string; note: string };
+const watchers = new Set<(a: PhoneAct) => void>();
+export function onAct(fn: (a: PhoneAct) => void) {
+  watchers.add(fn);
+  return () => void watchers.delete(fn);
+}
+
+export function describeAct(args: string[], note: string): PhoneAct | null {
+  if (args[0] !== "shell" || args[1] !== "input") return null;
+  const n = args.slice(3).map(Number);
+  switch (args[2]) {
+    case "tap":
+      return { kind: "tap", x: n[0]!, y: n[1]!, note };
+    case "swipe":
+      // A swipe that doesn't move is how a long press is sent.
+      if (n[0] === n[2] && n[1] === n[3]) return { kind: "tap", x: n[0]!, y: n[1]!, long: true, note };
+      return { kind: "swipe", x1: n[0]!, y1: n[1]!, x2: n[2]!, y2: n[3]!, ms: n[4] || 300, note };
+    case "keyevent": {
+      const code = Number(args[3]);
+      return { kind: "key", key: Object.entries(KEYCODES).find(([, c]) => c === code)?.[0] ?? String(code), note };
+    }
+    case "text":
+      return { kind: "type", text: args.slice(3).join(" ").replace(/^'|'$/g, "").replace(/'\\''/g, "'").replace(/%s/g, " ").replace(/\\%/g, "%"), note };
+  }
+  return null;
+}
+
 // Same as adbText, but recorded so `maxx replay` can run it again.
 export async function act(args: string[], note: string) {
   await record({ kind: "adb", args, note });
+  const seen = watchers.size ? describeAct(args, note) : null;
+  if (seen) for (const w of watchers) w(seen);
   return adbText(args);
 }
 
@@ -82,7 +128,7 @@ export async function ensureDevice() {
   throw new Error(`several devices are connected: ${list.map((d) => d.serial).join(", ")}. Call android_devices with use set to one of them.`);
 }
 
-export type UiNode = { text: string; desc: string; id: string; cls: string; clickable: boolean; scrollable: boolean; bounds: { x1: number; y1: number; x2: number; y2: number } };
+export type UiNode = { pkg: string; text: string; desc: string; id: string; cls: string; clickable: boolean; scrollable: boolean; bounds: { x1: number; y1: number; x2: number; y2: number } };
 
 export function parseUi(xml: string): UiNode[] {
   const nodes: UiNode[] = [];
@@ -92,6 +138,7 @@ export function parseUi(xml: string): UiNode[] {
     if (!b) continue;
     const [x1, y1, x2, y2] = b.slice(1).map(Number) as [number, number, number, number];
     nodes.push({
+      pkg: attr("package"),
       text: attr("text"),
       desc: attr("content-desc"),
       id: attr("resource-id").replace(/^.*:id\//, ""),
