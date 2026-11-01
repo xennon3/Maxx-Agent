@@ -3,6 +3,7 @@ import { VIS_CSS, VIS_JS } from "./visuals-page.ts";
 import { SOUND_CSS, SOUND_JS } from "./sound-page.ts";
 import { BREVITY_LABEL } from "../brevity.ts";
 import { VOICE_CSS, VOICE_HINT, VOICE_HTML, VOICE_JS } from "./voice-page.ts";
+import { LAB_CHIP, LAB_CSS, LAB_HTML, LAB_JS } from "./lab-page.ts";
 
 // The whole web UI in one string, so the compiled maxx.exe carries it.
 export const PAGE = /* html */ `<!doctype html>
@@ -285,6 +286,7 @@ body.agent .composer textarea { border-color: #1971c2; }
 }
 ${STAGE_CSS}
 ${VOICE_CSS}
+${LAB_CSS}
 ${VIS_CSS}
 ${SOUND_CSS}
 </style>
@@ -316,12 +318,13 @@ ${SOUND_CSS}
     <span class="chip" id="briefBtn" title="How much Maxx says. Click to switch: Brief (short answers, no padding), Normal, Detailed (explanations and examples)">✂ Brief</span>
     <span class="chip" id="palBtn" title="The colors Maxx designs with: charts, diagrams, pages, apps and games. You can also say it in a message: “make it in synthwave colors”">🎨 Colors: auto</span>
     <span class="chip rules projonly" id="rulesBtn" title="Rules Maxx learned when you corrected it (saying “no, use…”, denying a step with a reason, fixing its code by hand, or undoing a turn). They live in this project's MAXX.md.">📏 Rules</span>
-    <span class="chip agent projonly" id="agentBtn" title="Agent mode: give Maxx a goal. It splits it into tasks and works through them on its own, checking each one and rewinding any that fail.">🤖 Agent</span><span class="chip gear projonly" id="agentCfg" title="Agent mode settings">⚙</span>
+    <span class="chip agent projonly" id="agentBtn" title="Agent mode: give Maxx a goal. It splits it into tasks and works through them on its own, checking each one and rewinding any that fail.">🤖 Agent</span><span class="chip gear projonly" id="agentCfg" title="Agent mode settings">⚙</span>${LAB_CHIP}
     <span class="chip crew projonly" id="crewBtn" title="Crew mode: give Maxx a goal. It splits it into tasks and several workers do them at the same time, each in its own copy of the project, then Maxx merges their work.">👥 Crew</span><span class="chip gear projonly" id="crewCfg" title="Crew mode settings">⚙</span>
     <span class="chip helper projonly" id="helperBtn" title="A bigger model Maxx calls when the local one is stuck">🧠 Helper: off</span>
     <button id="newBtn" title="Start a new session">New</button>
   </header>
   <div class="board" id="board"></div>
+  <div class="study" id="lab"></div>
   <div class="plan" id="plan"></div>
   <div id="log"></div>
   <div class="activity" id="activity"><span class="spin" id="actSpin">⠋</span><span class="what" id="actWhat"></span><span class="meta" id="actMeta"></span><span class="tail" id="actTail"></span></div>
@@ -413,6 +416,7 @@ ${STAGE_HTML}
   <p class="hint" id="cHint"></p>
   <div class="btns"><button class="left" value="reset" formnovalidate>Defaults</button><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="save">Save</button></div>
 </form></dialog>
+${LAB_HTML}
 <div id="zoom"><img id="zoomImg" alt=""></div>
 <div id="drop">Drop files to attach them to your message</div>
 <div id="toast"><span id="toastText"></span><button id="toastBtn">Undo</button></div>
@@ -658,6 +662,9 @@ function on(m) {
     }
     case "plan": return drawPlan(m.steps);
     case "board": return drawBoard(m.board);
+    case "lab": return onStudy(m.study);
+    case "capture": return labCapture(m);
+    case "instruments": return drawInstruments(m);
     case "escalation":
       helperLive = m.active ? m.model : null;
       $("activity").classList.toggle("helper", !!helperLive);
@@ -912,7 +919,9 @@ function render(s) {
   }
   drawPlan(cur && cur.plan);
   drawBoard(cur && cur.board);
+  lastStudy = cur && cur.lab; drawLab(lastStudy);
   drawAgent();
+  drawLabChip();
   const nb = $("netBtn");
   nb.classList.toggle("on", !!s.network);
   nb.textContent = s.network ? "🌐 Network: on" : "🌐 Network: off";
@@ -1041,7 +1050,7 @@ async function submit() {
   files = []; drawFiles();
   userMsg(text, sending.map((f) => f.name));
   $("input").value = "";
-  send(Object.assign({ type: "send", text, files: sending.map((f) => ({ id: f.id, mode: f.mode })), agent: agentOn(), crew: crewOn() }, voice.flags()));
+  send(Object.assign({ type: "send", text, files: sending.map((f) => ({ id: f.id, mode: f.mode })), agent: agentOn() && !labOn(), crew: crewOn() && !labOn(), lab: labOn() }, voice.flags()));
   if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
 }
 
@@ -1108,8 +1117,8 @@ function drawAgent() {
   if (state && state.current && !state.current.chat) $("input").placeholder = crew ? "Give the crew a goal, e.g. \u201cbuild a weather app with a search page, a 5-day forecast and a settings page\u201d. Workers do its tasks at the same time." : on ? "Give Maxx a goal, e.g. \u201cbuild a tip calculator web app and check it works\u201d. It plans the tasks and works through them on its own." : PROJECT_HINT;
 }
 const remember = (k, v) => { try { localStorage.setItem(k, v ? "1" : "0"); } catch {} };
-$("agentBtn").onclick = () => { agentMode = !agentOn(); if (agentMode) crewMode = false; remember("maxx.agent", agentMode); remember("maxx.crew", crewMode); drawAgent(); };
-$("crewBtn").onclick = () => { crewMode = !crewMode; if (crewMode) agentMode = false; remember("maxx.agent", agentMode); remember("maxx.crew", crewMode); drawAgent(); };
+$("agentBtn").onclick = () => { agentMode = !agentOn(); if (agentMode) crewMode = false; remember("maxx.agent", agentMode); remember("maxx.crew", crewMode); if (agentMode) if (labMode) { labMode = false; try { localStorage.setItem("maxx.lab", "0"); } catch {} drawLabChip(); } drawAgent(); };
+$("crewBtn").onclick = () => { crewMode = !crewMode; if (crewMode) agentMode = false; remember("maxx.agent", agentMode); remember("maxx.crew", crewMode); if (crewMode) if (labMode) { labMode = false; try { localStorage.setItem("maxx.lab", "0"); } catch {} drawLabChip(); } drawAgent(); };
 function crewForm(values) {
   const c = (state && state.crewMode) || {};
   const v = values || c.settings || {};
@@ -1157,6 +1166,7 @@ $("agentForm").onsubmit = (e) => {
   if ($("aBrief").checked !== (d.briefing !== false)) out.briefing = $("aBrief").checked;
   send({ type: "agentSettings", settings: out });
 };
+${LAB_JS}
 $("briefBtn").onclick = () => {
   const order = Object.keys(BREVITY_LABEL);
   send({ type: "brevity", level: order[(order.indexOf((state && state.brevity) || "brief") + 1) % order.length] });

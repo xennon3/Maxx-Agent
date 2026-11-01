@@ -27,6 +27,9 @@ import { loadRules, resolveLearn, saveLearn, saveRules, tidyRules } from "./lear
 import { describePalette, parsePalette, presetList, resolvePalette, savePalette, swatches } from "./palette.ts";
 import { agentSettings, cleanSettings, loadAgentSettings, runGoal, type Board } from "./agentmode.ts";
 import { cleanCrew, crewSettings, loadCrewSettings, runCrew, type CrewBoard } from "./crew.ts";
+import { formatStudy, labSettings, loadLab, runStudy, type Study } from "./lab/lab.ts";
+import { discover, ffmpegCapture } from "./lab/instruments.ts";
+import { labCommand } from "./lab/cli.ts";
 
 // Before any command runs, so Gradle and adb find Android Studio's JDK and SDK.
 useAndroidToolchain();
@@ -41,6 +44,11 @@ usage:
   maxx -p "fix the tests"     run one prompt and exit
   maxx --agent "build a tip calculator web app"
                               Agent mode: split the goal into tasks and work through them alone
+  maxx --lab "does my desk get warmer in the afternoon sun?"
+                              Research lab: collect data (web, COM-port sensors, camera, mic, files),
+                              test rival hypotheses with sandboxed scripts, write a lab notebook
+  maxx lab [instruments|ports|sketch]
+                              what the lab can measure from here; an Arduino starter sketch
   maxx doctor                 check that the model makes valid tool calls
   maxx doctor android         check adb, the JDK and the connected phone
   maxx doctor desktop         check screenshots and UI Automation on Windows
@@ -114,11 +122,14 @@ options:
                      (default 5; 0 waits for ever). Outside Agent mode questions always wait.
   --map-tokens <n>   size of the project map of files and functions the model gets (default 5%
                      of --context; 0 turns it off)
+  --lab <question>   run one study in the research lab and exit (in a session: /lab <question>)
+                     Settings in ~/.maxx/lab.json or the app's 🔬 ⚙; your own instruments in
+                     ~/.maxx/instruments.json. Sensors, camera and mic ask first (Always saves a rule).
   -c, --continue     continue the latest session in this project
   --resume <ref>     continue a session by number (from \`maxx sessions\`), id, or words from its title
 
 in a session:
-  /agent <goal>  /crew <goal>  /help  /mode <m>  /with <sets|none>  /plan  /helper [off|on]  /network [on|off]  /brevity [brief|normal|detailed]  /palette [name|#hex...|random|auto|list]  /rules [on|off|add <rule>|rm <n>]  /undo  /checkpoints  /rewind <n>  /clear  /exit
+  /agent <goal>  /crew <goal>  /lab <question>  /help  /mode <m>  /with <sets|none>  /plan  /helper [off|on]  /network [on|off]  /brevity [brief|normal|detailed]  /palette [name|#hex...|random|auto|list]  /rules [on|off|add <rule>|rm <n>]  /undo  /checkpoints  /rewind <n>  /clear  /exit
   /sessions  /resume <ref>  /new  /title <text>   (sessions are saved per project after every turn)
   /delete <ref>  /undelete     delete a session (this one if no ref), bring it back
   /attach <file...>            send files with your next message: images to the vision model, text inline
@@ -152,6 +163,7 @@ const { values, positionals } = parseArgs({
     workers: { type: "string" },
     "crew-models": { type: "string" },
     slots: { type: "string" },
+    lab: { type: "string" },
     "max-tasks": { type: "string" },
     "task-steps": { type: "string" },
     "task-tries": { type: "string" },
@@ -257,9 +269,10 @@ const voice = { whisper: values.whisper ?? process.env.MAXX_WHISPER, whisperMode
 
 if (positionals[0] === "doctor" && positionals[1] === "web") process.exit((await doctorWeb()) ? 0 : 1);
 if (positionals[0] === "mcp") process.exit(await mcpCommand(positionals.slice(1)).catch((e) => (console.error(String((e as Error).message)), 1)));
+if (positionals[0] === "lab") process.exit(await labCommand(positionals.slice(1), await resolveNetwork(values.network).catch(() => false)));
 if (positionals[0] === "doctor" && positionals[1] === "voice") process.exit((await doctorVoice({ whisper: voice.whisper, model: voice.whisperModel })) ? 0 : 1);
 
-if (positionals[0] === "ui" || (fromExplorer && !positionals.length && !values.prompt && !values.agent)) {
+if (positionals[0] === "ui" || (fromExplorer && !positionals.length && !values.prompt && !values.agent && !values.lab)) {
   const port = values.port ? Number(values.port) : 4317;
   let ui;
   try {
@@ -439,6 +452,8 @@ let controller: AbortController | null = null;
 let staged: Upload[] = [];
 // The Agent mode board as last printed.
 let shownBoard = "";
+// The research lab's study as last printed (declared up here for the same reason).
+let shownStudy = "";
 setReplayFile();
 
 function setReplayFile() {
@@ -466,8 +481,8 @@ async function save() {
 }
 if (toolsets.length && visionNote) io.note(visionNote);
 
-if (values.prompt || values.agent || values.crew) {
-  await (values.crew ? goal(values.crew, true) : values.agent ? goal(values.agent) : turn(values.prompt!));
+if (values.prompt || values.agent || values.crew || values.lab) {
+  await (values.lab ? study(values.lab) : values.crew ? goal(values.crew, true) : values.agent ? goal(values.agent) : turn(values.prompt!));
   rl.close();
   process.exit(0);
 }
@@ -558,6 +573,30 @@ async function goal(text: string, asCrew = false) {
   }
 }
 
+// The research lab: the study's picture, printed again whenever it moves.
+async function study(question: string) {
+  controller = new AbortController();
+  status.bol = true;
+  shownStudy = "";
+  const show = (s: Study) => {
+    const text = `${C.bold}🔬 ${s.question}${C.reset} ${C.dim}${s.state}${C.reset}\n${formatStudy(s)}`;
+    if (text === shownStudy) return;
+    shownStudy = text;
+    status.say(`${status.bol ? "" : "\n"}${text}`);
+  };
+  try {
+    const s = await runStudy(agent, question, { study: show }, { settings: labSettings(await loadLab()), instruments: await discover({ network: agent.network, capture: ffmpegCapture() }), signal: controller.signal });
+    if (s.answer) console.log(`\n${s.answer}\n`);
+    io.note(`${s.note ?? ""}\nLab notebook: ${join(s.dir, "report.html")}`);
+  } catch (e) {
+    console.log(`\n${C.yellow}error: ${(e as Error).message}${C.reset}`);
+  } finally {
+    status.stop();
+    controller = null;
+    await save();
+  }
+}
+
 async function command(line: string) {
   const [cmd, arg] = line.split(/\s+/, 2);
   switch (cmd) {
@@ -629,6 +668,11 @@ async function command(line: string) {
       }
       const sets = Object.entries(TOOLSETS).map(([n, t]) => `  ${agent.toolsets.includes(n) ? "*" : " "} ${n.padEnd(8)} ${t.about}`);
       return console.log(`toolsets (* = on; /with android,desktop or /with none):\n${sets.join("\n")}\nreplay of this session: ${replayFile}`);
+    }
+    case "/lab": {
+      const q = line.slice(cmd!.length).trim();
+      if (q) return study(q);
+      return console.log("Research lab: /lab <question>. `maxx lab` lists the instruments; settings are in ~/.maxx/lab.json.");
     }
     case "/agent": {
       const g = line.slice(cmd!.length).trim();

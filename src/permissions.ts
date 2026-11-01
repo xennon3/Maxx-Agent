@@ -32,6 +32,12 @@ export class Permissions {
     return !this.rules.some((r) => matches(r, tool.name, key));
   }
 
+  // A saved rule covers this call.
+  allows(tool: Tool<any>, args: unknown): boolean {
+    const key = tool.ruleKey?.(args as never) ?? "";
+    return this.rules.some((r) => matches(r, tool.name, key));
+  }
+
   async remember(tool: Tool<any>, args: unknown) {
     const key = tool.ruleKey?.(args as never) ?? "";
     // For bash, trust the program and first word ("npm test*"), not the exact line.

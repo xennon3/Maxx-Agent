@@ -25,12 +25,13 @@ async function withoutGit<T>(fn: () => Promise<T>): Promise<T> {
 
 test("-p runs a turn before the REPL's declarations below it (no 'files.length' crash)", async () => {
   const src = await readFile(join(import.meta.dir, "..", "src", "cli.ts"), "utf8");
-  const oneShot = src.indexOf("if (values.prompt || values.agent || values.crew)");
+  const oneShot = src.indexOf("if (values.prompt || values.agent || values.crew || values.lab)");
   expect(oneShot).toBeGreaterThan(0);
   // Everything turn() and goal() read at module level must be declared above the -p path,
   // because the compiled maxx.exe hoists a later `let` as undefined.
   expect(src.indexOf("let staged")).toBeGreaterThan(0);
   expect(src.indexOf("let staged")).toBeLessThan(oneShot);
+  expect(src.indexOf("let shownStudy")).toBeLessThan(oneShot);
   expect(src.slice(oneShot).match(/^(let|var) /m)).toBeNull();
 });
 

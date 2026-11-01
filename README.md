@@ -342,6 +342,40 @@ A folder that is not a git repository works too (it uses the private `.maxx/git`
 
 The board shows each worker (its model, and whether it is thinking, working, waiting for the model or handing in), each model's slots, and the tasks in four lanes: to do, working, handing in, done. Settings: the ⚙ next to 👥 Crew (saved in `~/.maxx/crew.json`), or `--workers`, `--crew-models`, `--slots` and `--max-tasks`. Steps and tries per task come from Agent mode's settings.
 
+## Research lab: ask a question, get a lab notebook
+
+Turn on **🔬 Lab** in `maxx ui` (or run `maxx --lab "question"`, or `/lab question` in a session) and ask
+something you could measure: "does my desk get warmer while the PC runs, and is the fan what I hear?".
+Maxx runs a small scientific loop, one short request per phase so small local models keep up:
+
+1. **Frame**: makes the question measurable and plans readings with the instruments it has.
+2. **Collect**: the web (with 🌐 Network on), every COM port that shows up (Arduino and other USB
+   serial boards), the camera and the microphone (through the app window, nothing to install; ffmpeg
+   in the terminal), a data file in the project, and any command you register in
+   `~/.maxx/instruments.json`. Sensors, the camera and the mic ask first (camera and mic even in
+   "never ask" mode, unless you picked Always), and every reading goes into the study's instrument log.
+3. **Hypothesize**: 2 to 6 rival explanations, each with a prediction and a prior.
+4. **Test**: one script per hypothesis (Python if installed, else JavaScript run by maxx.exe itself),
+   in the study folder, with a time limit, a clean environment and sockets blocked while network access
+   is off. A broken script goes back to the model to fix. Each verdict moves the confidence meter.
+5. **Follow up**: if something is still inconclusive, it plans more readings for another round.
+6. **Review**: a skeptic pass names the weakest link; with `--vision-model` set to a different model,
+   that model is the reviewer, a genuine second opinion.
+7. **Conclude**: answer, overall confidence, findings with `[E1]`/`[H2]` citations, caveats, next experiments.
+
+Everything lands in `.maxx/research/<id>/`: `data/*.csv`, `tests/*.py`, `raw/` (photos, WAVs, serial
+logs), `instruments.jsonl`, `REPORT.md` and a self-contained `report.html` notebook. `maxx lab`
+lists the instruments, `maxx lab sketch` prints an Arduino starter sketch, and
+`MAXX_FAKE_SERIAL="COM3=Arduino Uno"` adds a simulated board for trying it without hardware.
+Settings (rounds, hypotheses, tests at once, time limit...) are in the 🔬 ⚙ dialog and `~/.maxx/lab.json`.
+
+A custom instrument is any command that prints readings (`key=value`, CSV or bare numbers per line):
+
+```json
+{ "instruments": [ { "id": "station", "about": "backyard weather station",
+  "command": "python C:/tools/station.py --seconds {seconds}", "seconds": 10 } ] }
+```
+
 ## Follow-up questions
 
 When a request leaves a choice only you can make, the model calls `ask_user` instead of guessing or ending its turn with a question. The turn pauses and the app shows a card with the question, a few choices to click (Maxx's own guess is marked), a box for your own answer, and **Skip** to let Maxx go with its guess. In the terminal you type a number, your own answer, or Enter for the guess. Questions are never permission prompts, so they come up in every mode, even "Never ask". A small model may ask at most 3 per turn; after that it is told to decide. When input is piped (no one at the keyboard), the tool is not offered at all. Outside Agent mode a question waits as long as it takes; in Agent mode it waits `--ask-wait` minutes (default 5, 0 waits for ever).

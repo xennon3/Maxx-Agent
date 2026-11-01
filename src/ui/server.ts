@@ -28,6 +28,9 @@ import * as A from "../devices/adb.ts";
 import { agentDefaults, agentSettings, cleanSettings, loadAgentSettings, runGoal, saveAgentSettings } from "../agentmode.ts";
 import { cleanCrew, CREW_DEFAULTS, crewSettings, loadCrewSettings, runCrew, saveCrewSettings } from "../crew.ts";
 import { findBrowser } from "../judge.ts";
+import { cleanLab, LAB_DEFAULTS, labSettings, loadLab, runStudy, saveLab } from "../lab/lab.ts";
+import { discover, ffmpegCapture, instrumentsFile, type Capture, type Captured } from "../lab/instruments.ts";
+import { ARDUINO_SKETCH } from "../lab/serial.ts";
 import { FIX_ROUNDS, describeWhisper, failed, findWhisper, fixPrompt, planRebuild, speakable, transcribe, type TurnCall } from "./voice.ts";
 
 // `maxx ui`: the agent behind a local web page. One WebSocket carries
@@ -82,6 +85,36 @@ export async function startUI(opts: UIOptions) {
   // How many requests LM Studio runs at once, by model, measured on the first crew run.
   const probed = new Map<string, number>();
   const browser = !!findBrowser();
+  // Research lab settings the user changed.
+  let labSaved = await loadLab();
+  // Camera and mic readings the page is taking for the lab.
+  const captures = new Map<string, { res: (c: Captured) => void; rej: (e: Error) => void }>();
+  // The lab's camera and mic go through the app window (getUserMedia), so
+  // they need nothing installed; with no window open, ffmpeg if there is one.
+  const ffmpeg = ffmpegCapture();
+  const capture: Capture = (kind, args, signal) => {
+    const client = [...clients].at(-1);
+    if (!client) {
+      if (ffmpeg) return ffmpeg(kind, args, signal);
+      return Promise.reject(new Error("the app window is closed"));
+    }
+    return new Promise<Captured>((res, rej) => {
+      const id = crypto.randomUUID();
+      const ms = ((args.frames ?? 1) * (args.every ?? 2) + (args.seconds ?? 0) + 45) * 1000;
+      const timer = setTimeout(() => done(() => rej(new Error("the window did not answer (camera or microphone blocked?)"))), ms);
+      const gone = () => done(() => rej(Object.assign(new Error("stopped"), { name: "AbortError" })));
+      const done = (f: () => void) => {
+        if (!captures.delete(id)) return;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", gone);
+        f();
+      };
+      captures.set(id, { res: (c) => done(() => res(c)), rej: (e) => done(() => rej(e)) });
+      signal?.addEventListener("abort", gone);
+      client.send(JSON.stringify({ type: "capture", id, kind, args }));
+    });
+  };
+  const instruments = () => discover({ network, capture });
 
   const progress = throttle((p: StreamProgress) => send(progressMessage(p)), 120);
   const io: AgentIO = {
@@ -192,6 +225,7 @@ export async function startUI(opts: UIOptions) {
         busy: !!s.controller,
         plan: s.agent.plan,
         board: s.agent.board,
+        lab: s.agent.lab && { ...s.agent.lab, dir: undefined },
         history: transcript(s.agent),
         helper: s.agent.helper && { model: s.agent.helper.model, kind: s.agent.helper.kind },
         rules: s.agent.chat ? [] : await loadRules(s.cwd),
@@ -203,6 +237,7 @@ export async function startUI(opts: UIOptions) {
       brevity,
       palette,
       palettes: presetList(),
+      labMode: { settings: labSettings(labSaved), defaults: LAB_DEFAULTS, saved: labSaved },
       agentMode: { settings: agentSettings(contextWindow, goalSaved), defaults: agentDefaults(contextWindow), saved: goalSaved, context: contextWindow, browser },
       crewMode: { settings: crewSettings(crewSaved), defaults: CREW_DEFAULTS, probed: Object.fromEntries(probed) },
     };
@@ -402,6 +437,21 @@ export async function startUI(opts: UIOptions) {
         // A new slot count is a new measurement.
         if (m.reprobe) probed.clear();
         return send(await snapshot());
+      case "labSettings":
+        labSaved = m.reset ? {} : cleanLab(m.settings ?? {});
+        await saveLab(labSaved);
+        return send(await snapshot());
+      case "instruments": {
+        const list = await instruments();
+        return send({ type: "instruments", list: list.map(({ id, kind, label, about, usage, gated, unavailable }) => ({ id, kind, label, about, usage, gated, unavailable })), file: instrumentsFile(), sketch: ARDUINO_SKETCH, ffmpeg: !!ffmpeg });
+      }
+      case "captured": {
+        const c = captures.get(String(m.id));
+        if (!c) return;
+        if (m.error) return c.rej(new Error(String(m.error)));
+        const b64 = (x: unknown) => new Uint8Array(Buffer.from(String(x), "base64"));
+        return c.res({ frames: Array.isArray(m.frames) ? m.frames.slice(0, 8).map(b64) : undefined, wav: m.wav ? b64(m.wav) : undefined, device: typeof m.device === "string" ? m.device.slice(0, 80) : undefined });
+      }
       case "answer":
         // Deny can carry the user's reason, which the model reads and Maxx learns a rule from.
         pending.get(m.id)?.(m.answer === "no" && typeof m.why === "string" && m.why.trim() ? `no: ${m.why.trim().slice(0, 600)}` : m.answer);
@@ -415,6 +465,7 @@ export async function startUI(opts: UIOptions) {
         state?.controller?.abort();
         for (const [id, res] of pending) (res("no"), pending.delete(id));
         for (const done of [...questions.values()]) done(null);
+        for (const c of [...captures.values()]) c.rej(Object.assign(new Error("stopped"), { name: "AbortError" }));
         return;
       case "send": {
         if (!state) throw new Error("open a project folder first");
@@ -427,6 +478,7 @@ export async function startUI(opts: UIOptions) {
           files.push({ ...u, mode: f.mode === "save" ? "save" : "attach" });
         }
         for (const f of m.files ?? []) uploads.delete(String(f.id));
+        if (m.lab && files.length) throw new Error("The lab takes a question in words; send attachments as a normal message");
         if ((m.agent || m.crew) && s.agent.chat) throw new Error(`${m.crew ? "Crew" : "Agent"} mode works on a project; open a project folder first`);
         if ((m.agent || m.crew) && files.length) throw new Error(`${m.crew ? "Crew" : "Agent"} mode takes a goal in words; send attachments as a normal message`);
         const controller = (s.controller = new AbortController());
@@ -441,6 +493,15 @@ export async function startUI(opts: UIOptions) {
               probed,
             });
             send({ type: "done", text: b.note ?? "" });
+            return;
+          }
+          if (m.lab) {
+            const st = await runStudy(s.agent, String(m.text ?? ""), { study: (study) => send({ type: "lab", study: { ...study, dir: undefined } }), image: (tool, images) => io.image!(tool, images) }, {
+              settings: labSettings(labSaved),
+              instruments: await instruments(),
+              signal: controller.signal,
+            });
+            send({ type: "done", text: st.note ?? "" });
             return;
           }
           if (m.agent) {
@@ -521,6 +582,9 @@ export async function startUI(opts: UIOptions) {
     port: opts.port ?? 4317,
     async fetch(req, srv) {
       const url = new URL(req.url);
+      // The token sits in the path here, so the notebook's relative links keep it.
+      const lab = url.pathname.match(/^\/lab\/(\w+)\/([\w-]+)\/(.+)$/);
+      if (lab) return lab[1] === token ? labFile(lab[2]!, decodeURIComponent(lab[3]!)) : new Response("forbidden", { status: 403 });
       if (url.searchParams.get("t") !== token) return new Response("Open the link Maxx printed in the terminal.", { status: 403 });
       // Recorded speech (16 kHz WAV) in, text out, through the local Whisper.
       if (url.pathname === "/voice" && req.method === "POST") {
@@ -548,7 +612,8 @@ export async function startUI(opts: UIOptions) {
       return new Response("not found", { status: 404 });
     },
     websocket: {
-      maxPayloadLength: 1 << 20,
+      // Camera frames and recordings come back from the page for the lab.
+      maxPayloadLength: 16 << 20,
       open: (ws) => void clients.add(ws),
       close: (ws) => void clients.delete(ws),
       async message(ws, raw) {
@@ -560,6 +625,20 @@ export async function startUI(opts: UIOptions) {
       },
     },
   });
+
+  // A study's notebook and its files, from the open project. The token is in
+  // the path, /lab/<token>/<id>/<file>, so relative links inside report.html
+  // (data/E1-serial.csv) carry it too.
+  async function labFile(id: string, path: string): Promise<Response> {
+    if (!state) return new Response("no project open", { status: 404 });
+    const root = resolve(state.cwd, ".maxx", "research", id);
+    const file = resolve(root, path);
+    if (!file.startsWith(root + (process.platform === "win32" ? "\\" : "/"))) return new Response("not found", { status: 404 });
+    const f = Bun.file(file);
+    if (!(await f.exists())) return new Response("not found", { status: 404 });
+    const type = /\.html$/.test(file) ? "text/html; charset=utf-8" : /\.(csv|py|js|log|md|jsonl?)$/.test(file) ? "text/plain; charset=utf-8" : f.type;
+    return new Response(f, { headers: { "content-type": type, "cache-control": "no-store", "content-security-policy": "script-src 'none'" } });
+  }
 
   async function upload(req: Request, url: URL): Promise<Response> {
     const origin = req.headers.get("origin");
