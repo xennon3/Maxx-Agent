@@ -22,6 +22,7 @@ import { mentionedPalette, paletteNote, palettePrompt, type Palette } from "./pa
 import { brief, describeHelper, HELPER_DEFAULTS, helperLLM, type Helper } from "./escalate.ts";
 import { mapBudget, projectMap, projectMapTool } from "./projectmap.ts";
 import type { Board } from "./agentmode.ts";
+import type { CrewBoard } from "./crew.ts";
 import { answerText, ASK_PROMPT, askTool, MAX_QUESTIONS, type AskFn, type Question } from "./ask.ts";
 
 // The local model got stuck and a helper took over (active), or handed back.
@@ -116,18 +117,25 @@ export class Agent {
   // The last check the fix-it loop ran in the latest turn (null: none ran).
   lastCheck: CheckResult | null = null;
   // Agent mode's task board, while a goal runs and after.
-  board: Board | null = null;
+  board: Board | CrewBoard | null = null;
   // How long a follow-up question waits before the model's guess is used (Agent mode); unset waits for ever.
   askWaitMs?: number;
   // Questions asked in the current turn, and the turn's stop signal (a question must not outlive it).
   private asked = 0;
   private turnSignal?: AbortSignal;
 
-  constructor(private opts: AgentOptions, private io: AgentIO) {
+  constructor(private opts: AgentOptions, readonly io: AgentIO) {
     this.tools = this.baseTools();
     this.session = opts.session ?? newSessionId();
     this.checkpoints = new Checkpoints(opts.cwd, this.session);
     if (opts.toolsets?.length) this.useToolsets(opts.toolsets);
+  }
+
+  // Another agent on the same settings, in another folder: a crew worker in its worktree.
+  // It gets the plain tools (no app-window stage, no phone or desktop: those are shared).
+  fork(o: Partial<AgentOptions>, io: AgentIO): Agent {
+    const { session: _s, tools: _t, toolsets: _ts, ...rest } = this.opts;
+    return new Agent({ ...rest, ...o }, io);
   }
 
   get helper(): Helper | null {

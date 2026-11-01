@@ -25,6 +25,7 @@ import { parseSwitch, resolveNetwork, saveNetwork } from "./network.ts";
 import { BREVITY, parseBrevity, resolveBrevity, saveBrevity } from "./brevity.ts";
 import { describePalette, parsePalette, presetList, resolvePalette, savePalette, swatches } from "./palette.ts";
 import { agentSettings, cleanSettings, loadAgentSettings, runGoal, type Board } from "./agentmode.ts";
+import { cleanCrew, crewSettings, loadCrewSettings, runCrew, type CrewBoard } from "./crew.ts";
 
 // Before any command runs, so Gradle and adb find Android Studio's JDK and SDK.
 useAndroidToolchain();
@@ -90,6 +91,13 @@ options:
                      Each task starts from a snapshot; a failed task is rewound and tried another
                      way; edits need no approval (commands still follow --mode). Budgets default
                      from --context (saved ones in ~/.maxx/agent.json, or the app's 🤖 settings):
+  --crew <goal>      run one goal in Crew mode and exit (in a session: /crew <goal>): the tasks
+                     are shared out to several workers at once, each in its own git worktree,
+                     and merged back. Saved settings in ~/.maxx/crew.json, or the app's 👥 settings:
+  --workers <n>      workers at the same time (default 3)
+  --crew-models <a,b> models the workers use, in turn (default: the session's model)
+  --slots <n>        requests LM Studio runs at once per model (default: measured at the start;
+                     LM Studio's "Max Concurrent Predictions" load setting)
   --max-tasks <n>    most tasks a goal is split into (default 6 at 16K context, 12 at 64K+)
   --task-steps <n>   model steps per try at a task (default 20 at 16K, 60 at 64K+)
   --task-tries <n>   tries per task before Agent mode stops (default 2, 3 at 64K+)
@@ -104,7 +112,7 @@ options:
   --resume <ref>     continue a session by number (from \`maxx sessions\`), id, or words from its title
 
 in a session:
-  /agent <goal>  /help  /mode <m>  /with <sets|none>  /plan  /helper [off|on]  /network [on|off]  /brevity [brief|normal|detailed]  /palette [name|#hex...|random|auto|list]  /checkpoints  /rewind <n>  /clear  /exit
+  /agent <goal>  /crew <goal>  /help  /mode <m>  /with <sets|none>  /plan  /helper [off|on]  /network [on|off]  /brevity [brief|normal|detailed]  /palette [name|#hex...|random|auto|list]  /checkpoints  /rewind <n>  /clear  /exit
   /sessions  /resume <ref>  /new  /title <text>   (sessions are saved per project after every turn)
   /delete <ref>  /undelete     delete a session (this one if no ref), bring it back
   /attach <file...>            send files with your next message: images to the vision model, text inline
@@ -133,6 +141,10 @@ const { values, positionals } = parseArgs({
     palette: { type: "string" },
     prompt: { type: "string", short: "p" },
     agent: { type: "string" },
+    crew: { type: "string" },
+    workers: { type: "string" },
+    "crew-models": { type: "string" },
+    slots: { type: "string" },
     "max-tasks": { type: "string" },
     "task-steps": { type: "string" },
     "task-tries": { type: "string" },
@@ -376,6 +388,9 @@ const goalSettings = agentSettings(Number(values.context), {
   ...(await loadAgentSettings()),
   ...cleanSettings({ maxTasks: values["max-tasks"], stepsPerTask: values["task-steps"], tries: values["task-tries"], mapTokens: values["map-tokens"], judge: judgeFlag, briefing: briefingFlag, askMinutes: values["ask-wait"] }),
 });
+const crew = crewSettings({ ...(await loadCrewSettings()), ...cleanCrew({ workers: values.workers, slots: values.slots, models: values["crew-models"] }) });
+if (values["max-tasks"]) crew.maxTasks = goalSettings.maxTasks;
+const probed = new Map<string, number>();
 const agent = await new Agent({ llm, cwd, permissions, contextWindow: Number(values.context), toolsets, vision, check, fixTries, plan: !values["no-plan"], helper, network, brevity, palette, mapTokens: goalSettings.mapTokens }, io).init();
 let created = new Date().toISOString();
 let title = "";
@@ -415,8 +430,8 @@ async function save() {
 }
 if (toolsets.length && visionNote) io.note(visionNote);
 
-if (values.prompt || values.agent) {
-  await (values.agent ? goal(values.agent) : turn(values.prompt!));
+if (values.prompt || values.agent || values.crew) {
+  await (values.crew ? goal(values.crew, true) : values.agent ? goal(values.agent) : turn(values.prompt!));
   rl.close();
   process.exit(0);
 }
@@ -462,6 +477,22 @@ async function turn(text: string) {
   }
 }
 
+// The crew board: one line per worker, then the tasks.
+function printCrew(b: CrewBoard) {
+  const icon: Record<string, string> = { done: "✓", failed: "✗", doing: "▸", checking: "👁", merging: "⇢", fixing: "⚡", ready: "○", waiting: "·" };
+  const say: Record<string, string> = { idle: "idle", queued: "waiting for the model", thinking: "thinking", working: "working", merging: "merging" };
+  const head = b.state === "planning" ? "planning…" : b.state === "running" ? `${b.tasks.filter((t) => t.status === "done").length} of ${b.tasks.length} done` : b.note ?? b.state;
+  const text = [
+    `${C.bold}👥 ${b.goal}${C.reset} ${C.dim}${head}${C.reset}`,
+    ...b.workers.map((w) => `  ${C.cyan}${w.name}${C.reset} ${C.dim}${w.model}${C.reset} ${say[w.state]}${w.task ? ` #${w.task}` : ""}${w.doing && w.state === "working" ? `${C.dim} · ${w.doing}${C.reset}` : ""}`),
+    ...b.tasks.map((t) => `  ${icon[t.status] ?? "○"} ${t.id}. ${t.text}${t.after.length && t.status === "waiting" ? `${C.dim} (after ${t.after.map((a) => "#" + a).join(", ")})${C.reset}` : ""}${t.worker && t.status !== "ready" ? ` ${C.dim}[${t.worker}]${C.reset}` : ""}${t.note ? `${C.dim} · ${t.note}${C.reset}` : ""}`),
+  ].join("\n");
+  // Token counts change all the time; only a change of state reprints.
+  if (text === shownBoard) return;
+  shownBoard = text;
+  status.say(`${status.bol ? "" : "\n"}${text}`);
+}
+
 // The task board, printed again whenever a task moves.
 function printBoard(b: Board) {
   const icon = (i: number) => { const t = b.tasks[i]!; return t.status === "done" ? "✓" : t.status === "failed" ? "✗" : t.status === "checking" ? "👁" : t.status === "doing" ? "▸" : "○"; };
@@ -472,12 +503,15 @@ function printBoard(b: Board) {
   status.say(`${status.bol ? "" : "\n"}${text}`);
 }
 
-async function goal(text: string) {
+async function goal(text: string, asCrew = false) {
   controller = new AbortController();
   status.bol = true;
   shownBoard = "";
   try {
-    const b = await runGoal(agent, text, { board: printBoard }, { settings: goalSettings, signal: controller.signal });
+    const show = (b: Board | CrewBoard) => ("kind" in b ? printCrew(b) : printBoard(b));
+    const b = asCrew
+      ? await runCrew(agent, text, { board: show }, { crew, settings: goalSettings, signal: controller.signal, probed })
+      : await runGoal(agent, text, { board: printBoard }, { settings: goalSettings, signal: controller.signal });
     if (b.note) io.note(b.note);
   } catch (e) {
     console.log(`\n${C.yellow}error: ${(e as Error).message}${C.reset}`);
@@ -565,6 +599,11 @@ async function command(line: string) {
       if (g) return goal(g);
       const s = goalSettings;
       return console.log(`Agent mode: /agent <goal>. Up to ${s.maxTasks} tasks, ${s.stepsPerTask} steps per try, ${s.tries} tries per task, screenshot judge ${s.judge ? "on" : "off"}, project map ${s.mapTokens} tokens, ask first ${s.briefing ? "on" : "off"}, questions wait ${s.askMinutes ? `${s.askMinutes} min` : "for ever"}.`);
+    }
+    case "/crew": {
+      const g = line.slice(cmd!.length).trim();
+      if (g) return goal(g, true);
+      return console.log(`Crew mode: /crew <goal>. ${crew.workers} workers on ${crew.models.length ? crew.models.join(", ") : llm.model}, up to ${crew.maxTasks} tasks, ${crew.slots ? `${crew.slots} request(s) at once per model` : "requests at once measured at the start"}, final check ${crew.finalCheck ? "on" : "off"}. Each task uses Agent mode's budgets (/agent).`);
     }
     case "/plan": return agent.plan.length ? io.plan!(agent.plan) : console.log("(no plan yet; the model writes one for bigger tasks)");
     case "/helper": {
