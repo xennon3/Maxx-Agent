@@ -20,6 +20,7 @@ import { TOOLS, TOOLSETS } from "../tools/index.ts";
 import { TEMPLATES, findTemplate, freeFolder, isEmptyFolder, scaffold } from "../templates/index.ts";
 import { resolveNetwork, saveNetwork } from "../network.ts";
 import { parseBrevity, resolveBrevity, saveBrevity } from "../brevity.ts";
+import { checkPalette, parsePalette, presetList, resolvePalette, savePalette, withBackdrop } from "../palette.ts";
 import { CLAUDE_MODELS, HELPER_DEFAULTS, loadHelper, resolveHelper, saveHelper, type Helper } from "../escalate.ts";
 import { htmlFiles } from "./preview.ts";
 import * as A from "../devices/adb.ts";
@@ -35,13 +36,15 @@ import { FIX_ROUNDS, describeWhisper, failed, findWhisper, fixPrompt, planRebuil
 type Client = ServerWebSocket<unknown>;
 type Out = Record<string, unknown> & { type: string };
 
-export type UIOptions = { baseURL: string; port?: number; previewPort?: number; open?: boolean; visionModel?: string; context?: number; whisper?: string; whisperModel?: string; network?: string; brevity?: string };
+export type UIOptions = { baseURL: string; port?: number; previewPort?: number; open?: boolean; visionModel?: string; context?: number; whisper?: string; whisperModel?: string; network?: string; brevity?: string; palette?: string };
 
 export async function startUI(opts: UIOptions) {
   // Installs and downloads: the header's 🌐 switch, saved for next time.
   let network = await resolveNetwork(opts.network);
   // How much Maxx says: the header's ✂ switch, saved too.
   let brevity = await resolveBrevity(opts.brevity);
+  // The colors Maxx designs with: the header's 🎨 picker, saved too.
+  let palette = await resolvePalette(opts.palette);
   const token = crypto.randomUUID().replace(/-/g, "");
   const clients = new Set<Client>();
   const send = (m: Out) => {
@@ -168,6 +171,8 @@ export async function startUI(opts: UIOptions) {
       helper: await helperInfo(),
       network,
       brevity,
+      palette,
+      palettes: presetList(),
       agentMode: { settings: agentSettings(contextWindow, goalSaved), defaults: agentDefaults(contextWindow), saved: goalSaved, context: contextWindow, browser },
     };
   }
@@ -194,8 +199,8 @@ export async function startUI(opts: UIOptions) {
     const helper = chat ? null : await resolveHelper({}).catch(() => null);
     const agent = await new Agent(
       chat
-        ? { llm, cwd: dir, permissions, vision, network, brevity, contextWindow: opts.context, chat: true, plan: false, memory: false, fixTries: 0 }
-        : { llm, cwd: dir, permissions, toolsets, vision, helper, network, brevity, contextWindow: opts.context, tools: [...TOOLS, ...stage!.tools()], mapTokens: agentSettings(contextWindow, goalSaved).mapTokens },
+        ? { llm, cwd: dir, permissions, vision, network, brevity, palette, contextWindow: opts.context, chat: true, plan: false, memory: false, fixTries: 0 }
+        : { llm, cwd: dir, permissions, toolsets, vision, helper, network, brevity, palette, contextWindow: opts.context, tools: [...TOOLS, ...stage!.tools()], mapTokens: agentSettings(contextWindow, goalSaved).mapTokens },
       io,
     ).init();
     if (saved) await agent.restore(saved.id, saved.history);
@@ -316,6 +321,17 @@ export async function startUI(opts: UIOptions) {
         brevity = level;
         await saveBrevity(brevity);
         await state?.agent.setBrevity(brevity);
+        return send(await snapshot());
+      }
+      case "palette": {
+        // A spec typed in the picker ("#ff6600 triad", "random", a preset), or colors it already worked out (from an image).
+        if (m.colors) {
+          const c = checkPalette({ name: m.name, colors: m.colors });
+          if (!c) throw new Error("a palette needs at least two hex colors");
+          palette = withBackdrop(c.name, c.colors);
+        } else palette = parsePalette(String(m.spec ?? ""));
+        await savePalette(palette);
+        await state?.agent.setPalette(palette);
         return send(await snapshot());
       }
       case "agentSettings":

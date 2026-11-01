@@ -179,6 +179,26 @@ body.agent .composer textarea { border-color: #1971c2; }
 #helperDlg .row label { flex: 1; }
 #helperDlg .hint { font-size: 12px; color: var(--mute); margin: 0; }
 #helperDlg .btns { display: flex; gap: 8px; justify-content: flex-end; }
+.chip .sw { display: inline-flex; margin-left: 6px; vertical-align: -2px; border-radius: 3px; overflow: hidden; }
+.sw i { display: block; width: 8px; height: 12px; }
+.sw.big { display: flex; border-radius: 6px; overflow: hidden; min-height: 28px; border: 1px solid var(--line); }
+.sw.big i { flex: 1; height: auto; min-height: 28px; }
+.sw.big:empty { border-style: dashed; }
+#palDlg { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); padding: 0; width: min(620px, calc(100vw - 32px)); }
+#palDlg::backdrop { background: rgba(0,0,0,.35); }
+#palDlg form { display: flex; flex-direction: column; gap: 10px; padding: 16px; }
+#palDlg h3 { margin: 0; }
+#palDlg label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--mute); }
+#palDlg .hint { font-size: 12px; color: var(--mute); margin: 0; }
+#palDlg .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+#palDlg .btns .left { margin-right: auto; }
+.pals { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 8px; max-height: 46vh; overflow: auto; padding: 2px; }
+.pal { border: 1px solid var(--line); border-radius: 8px; padding: 0; overflow: hidden; text-align: left; cursor: pointer; background: var(--panel); color: var(--ink); font: inherit; }
+.pal:hover { border-color: var(--accent); }
+.pal.on { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pal .sw.big { border: 0; border-radius: 0; min-height: 34px; }
+.pal .nm { display: block; padding: 4px 8px 0; font-weight: 600; font-size: 13px; }
+.pal .vb { display: block; padding: 0 8px 6px; font-size: 11px; color: var(--mute); line-height: 1.3; }
 @keyframes blink { 50% { opacity: 0; } }
 @media (max-width: 860px) {
   body { grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; }
@@ -215,6 +235,7 @@ ${VIS_CSS}
     <span id="sets" class="projonly"></span>
     <span class="chip" id="netBtn" title="Let Maxx look things up on the web (and in the MCP servers in ~/.maxx/mcp.json), install packages (pip, npm...) and download files">🌐 Network: off</span>
     <span class="chip" id="briefBtn" title="How much Maxx says. Click to switch: Brief (short answers, no padding), Normal, Detailed (explanations and examples)">✂ Brief</span>
+    <span class="chip" id="palBtn" title="The colors Maxx designs with: charts, diagrams, pages, apps and games. You can also say it in a message: “make it in synthwave colors”">🎨 Colors: auto</span>
     <span class="chip agent projonly" id="agentBtn" title="Agent mode: give Maxx a goal. It splits it into tasks and works through them on its own, checking each one and rewinding any that fail.">🤖 Agent</span><span class="chip gear projonly" id="agentCfg" title="Agent mode settings">⚙</span>
     <span class="chip helper projonly" id="helperBtn" title="A bigger model Maxx calls when the local one is stuck">🧠 Helper: off</span>
     <button id="newBtn" title="Start a new session">New</button>
@@ -238,6 +259,16 @@ ${VIS_CSS}
   </div>
 </main>
 ${STAGE_HTML}
+<dialog id="palDlg"><form method="dialog" id="palForm">
+  <h3>🎨 Color palette</h3>
+  <p class="hint">Maxx designs with these colors: charts and diagrams in chat, and the pages, apps and games it builds. For a single request you can also just say it: “draw it in sunset colors”, “use the palette #0b132b #3a506b #5bc0be”.</p>
+  <div class="pals" id="palGrid"></div>
+  <label>Your own colors <input id="palSpec" autocomplete="off" placeholder="#264653 #2a9d8f #e9c46a  ·  #ff6600 triad  ·  a coolors.co link"></label>
+  <div class="sw big" id="palPreview"></div>
+  <p class="hint">One color grows into five: add analogous, complementary, triad, split, tetrad or mono after it.</p>
+  <input type="file" id="palFile" accept="image/*" hidden>
+  <div class="btns"><button class="left" value="auto" formnovalidate title="No palette: the model picks its own colors">Auto</button><button value="random" title="A fresh palette that still hangs together">🎲 Surprise me</button><button type="button" id="palImgBtn" title="Pull the main colors out of a picture, a logo or a screenshot">🖼 From an image</button><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="save">Use these</button></div>
+</form></dialog>
 <dialog id="helperDlg"><form method="dialog" id="helperForm">
   <h3>🧠 Helper model</h3>
   <p class="hint">The local model does the routine steps. When it is stuck (the same call over and over, or several failures in a row), Maxx hands that one step to a bigger model, then hands back.</p>
@@ -673,6 +704,9 @@ function render(s) {
   const bb = $("briefBtn");
   bb.textContent = BREVITY_LABEL[s.brevity] || BREVITY_LABEL.brief;
   bb.classList.toggle("on", s.brevity === "brief");
+  const pb = $("palBtn"), pal = s.palette;
+  pb.classList.toggle("on", !!pal);
+  pb.innerHTML = "🎨 " + (pal ? esc(pal.name) + swatchHtml(pal.colors.slice(0, 8), "sw") : "Colors: auto");
   const hb = $("helperBtn"), hs = s.helper;
   const helperOn = hs && !hs.off && hs.model;
   hb.classList.toggle("on", !!helperOn);
@@ -883,6 +917,69 @@ $("helperForm").onsubmit = (e) => {
   send({ type: "helper", off: k === "off", kind: k === "off" ? prev.kind || "lmstudio" : k, model: k === "off" ? prev.model || "" : $("hModel").value,
     baseURL: $("hUrl").value, apiKey: $("hKey").value, afterFailures: $("hAfter").value, maxSteps: $("hSteps").value, maxPerTurn: $("hTurn").value });
 };
+$("palBtn").onclick = () => {
+  const grid = $("palGrid"), cur = state && state.palette;
+  grid.innerHTML = "";
+  for (const p of (state && state.palettes) || []) {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "pal" + (cur && cur.colors.join() === p.colors.join() ? " on" : "");
+    b.title = p.colors.join(" ");
+    b.innerHTML = swatchHtml(p.colors, "sw big") + '<span class="nm">' + esc(p.name) + '</span><span class="vb">' + esc(p.vibe) + "</span>";
+    b.onclick = () => { send({ type: "palette", spec: p.name }); $("palDlg").close(); };
+    grid.appendChild(b);
+  }
+  $("palSpec").value = cur && !(state.palettes || []).some((p) => p.name === cur.name) ? cur.colors.join(" ") : "";
+  palPreview();
+  $("palDlg").showModal();
+};
+function swatchHtml(colors, cls) { return '<span class="' + cls + '">' + colors.map((c) => '<i style="background:' + esc(c) + '"></i>').join("") + "</span>"; }
+function palPreview() {
+  const hexes = ($("palSpec").value.match(/#[0-9a-f]{6}\\b|#[0-9a-f]{3}\\b|\\b[0-9a-f]{6}\\b/gi) || []).map((h) => "#" + h.replace("#", ""));
+  $("palPreview").innerHTML = hexes.length ? swatchHtml(hexes, "sw big").replace(/^<span class="sw big">|<\\/span>$/g, "") : "";
+}
+$("palSpec").oninput = palPreview;
+$("palForm").onsubmit = (e) => {
+  const how = e.submitter && e.submitter.value;
+  if (how === "auto") send({ type: "palette", spec: "auto" });
+  if (how === "random") send({ type: "palette", spec: "random" });
+  if (how === "save") { if (!$("palSpec").value.trim()) return; send({ type: "palette", spec: $("palSpec").value }); }
+};
+$("palImgBtn").onclick = () => $("palFile").click();
+$("palFile").onchange = async () => {
+  const f = $("palFile").files[0]; $("palFile").value = "";
+  if (!f) return;
+  const img = new Image(), url = URL.createObjectURL(f);
+  img.onload = () => {
+    const colors = imagePalette(img);
+    URL.revokeObjectURL(url);
+    if (colors.length < 2) return alert("Couldn't find two different colors in that picture.");
+    send({ type: "palette", name: (f.name.replace(/\\.[^.]+$/, "") || "image").slice(0, 30), colors });
+    $("palDlg").close();
+  };
+  img.src = url;
+};
+// The picture's main colors, all in the browser: shrink it, count colors in
+// coarse buckets, then keep the commonest ones that look different from each other.
+function imagePalette(img, most = 6) {
+  const n = 72, c = document.createElement("canvas");
+  c.width = c.height = n;
+  const g = c.getContext("2d"); g.drawImage(img, 0, 0, n, n);
+  const px = g.getImageData(0, 0, n, n).data, buckets = new Map();
+  for (let i = 0; i < px.length; i += 4) {
+    if (px[i + 3] < 128) continue;
+    const k = (px[i] >> 4) << 8 | (px[i + 1] >> 4) << 4 | px[i + 2] >> 4;
+    const b = buckets.get(k) || { n: 0, r: 0, g: 0, b: 0 };
+    b.n++; b.r += px[i]; b.g += px[i + 1]; b.b += px[i + 2]; buckets.set(k, b);
+  }
+  const all = [...buckets.values()].map((b) => [b.r / b.n, b.g / b.n, b.b / b.n, b.n]).sort((a, b) => b[3] - a[3]);
+  const out = [];
+  for (const col of all) {
+    if (out.length >= most) break;
+    if (out.every((o) => Math.hypot(o[0] - col[0], o[1] - col[1], o[2] - col[2]) > 60)) out.push(col);
+  }
+  const lum = (x) => 0.2126 * x[0] + 0.7152 * x[1] + 0.0722 * x[2];
+  return out.sort((a, b) => lum(a) - lum(b)).map((x) => "#" + x.slice(0, 3).map((v) => Math.round(v).toString(16).padStart(2, "0")).join(""));
+}
 connect();
 </script>
 </body>
