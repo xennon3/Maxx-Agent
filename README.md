@@ -295,6 +295,7 @@ the store.
 
 Turn on **🤖 Agent** in the app window (or run `maxx --agent "..."`, or `/agent ...` in a session) and give Maxx a goal instead of a step: "build a tip calculator web app that looks good on a phone". Maxx then:
 
+0. **Asks first.** If the goal leaves something open that would change the plan ("web page or Android app?"), Maxx asks up to three questions before planning, each with a few choices and its own guess. The answers go to the planner and to every task. Nobody may be watching, so after 5 minutes without an answer it goes with its guess (`--ask-wait`, `--briefing off`, or the ⚙ settings).
 1. **Plans.** The model splits the goal into a few tasks, each with a check ("the page shows a total"). They appear on a task board pinned above the chat.
 2. **Snapshots.** Before each task Maxx takes a snapshot of the folder (a shadow git commit; a folder that is not a git repository gets a private one in `.maxx/git`).
 3. **Works and checks.** The model does the task with its usual tools, the fix-it loop runs the build, and the task only counts as done when the model says DONE and the last check passed.
@@ -317,6 +318,10 @@ File edits need no approval while a goal runs (every task can be rewound); comma
 | Project map | 5% of the context (819 tokens at 16K, up to 8000) | | |
 
 Change them with the ⚙ next to 🤖 Agent (saved in `~/.maxx/agent.json`; only what differs from the defaults is saved, so the rest keeps following the context) or with `--max-tasks`, `--task-steps`, `--task-tries`, `--judge on|off` and `--map-tokens`. `MAXX_BROWSER` picks the browser the judge uses.
+
+## Follow-up questions
+
+When a request leaves a choice only you can make, the model calls `ask_user` instead of guessing or ending its turn with a question. The turn pauses and the app shows a card with the question, a few choices to click (Maxx's own guess is marked), a box for your own answer, and **Skip** to let Maxx go with its guess. In the terminal you type a number, your own answer, or Enter for the guess. Questions are never permission prompts, so they come up in every mode, even "Never ask". A small model may ask at most 3 per turn; after that it is told to decide. When input is piped (no one at the keyboard), the tool is not offered at all. Outside Agent mode a question waits as long as it takes; in Agent mode it waits `--ask-wait` minutes (default 5, 0 waits for ever).
 
 ## Helping small models recover
 

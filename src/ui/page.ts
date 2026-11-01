@@ -74,6 +74,19 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
 .ask .q { padding: 8px 12px; font-weight: 600; }
 .ask .btns { display: flex; gap: 8px; padding: 8px 12px; }
 .ask.answered { border-color: var(--line); opacity: .7; }
+.qcard { max-width: 860px; border: 2px solid #7048e8; border-radius: var(--radius); background: var(--panel); }
+.qcard .q { padding: 10px 12px 4px; font-weight: 600; }
+.qcard .q::before { content: "❓ "; }
+.qcard .choices { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 12px 0; }
+.qcard .choices button.guess { border-color: #7048e8; }
+.qcard .choices button.guess::after { content: " · Maxx's guess"; color: var(--mute); font-size: 11px; }
+.qcard .own { display: flex; gap: 8px; padding: 8px 12px 10px; }
+.qcard .own input { flex: 1; min-width: 0; }
+.qcard .wait { padding: 0 12px 8px; color: var(--mute); font-size: 12px; }
+.qcard .a { padding: 4px 12px 10px; }
+.qcard .a b { color: var(--mute); font-weight: 400; }
+.qcard.answered { border-color: var(--line); }
+.board .brief { color: var(--mute); font-size: 12px; white-space: pre-wrap; margin: 2px 0 4px; }
 .add { color: var(--ok); } .del { color: var(--bad); } .dim { color: var(--mute); }
 .composer { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px 16px; border-top: 1px solid var(--line); background: var(--panel); }
 .composer .row { display: flex; gap: 8px; }
@@ -273,6 +286,8 @@ ${STAGE_HTML}
     <label>Judge fix rounds <input id="aFixes" type="number" min="0" max="5" title="Times a FAIL from the screenshot judge goes back to the model"></label>
   </div>
   <label class="check"><input type="checkbox" id="aJudge"> Screenshot judge: after a task changes what you see, screenshot it and let the vision model check it</label>
+  <label class="check"><input type="checkbox" id="aBrief"> Ask first: before planning, Maxx asks about anything the goal leaves unclear</label>
+  <div class="row"><label>Wait for answers (minutes) <input id="aWait" type="number" min="0" max="120" title="How long a question waits before Maxx goes with its own guess, so a run keeps going while you are away. 0 waits for ever."></label></div>
   <p class="hint" id="aHint"></p>
   <div class="btns"><button class="left" id="aReset" value="reset" formnovalidate>Defaults</button><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="save">Save</button></div>
 </form></dialog>
@@ -328,6 +343,7 @@ function label(name, args) {
   let a = {}; try { a = JSON.parse(args || "{}"); } catch {}
   if (name === "plan") return ["Plan", a.done ? "step " + a.done + " done" : "write the steps"];
   if (name === "remember") return ["Remember", String(a.note ?? "")];
+  if (name === "ask_user") return ["Ask", String(a.question ?? "")];
   const main = a.template ?? a.path ?? a.query ?? a.url ?? a.libraryName ?? a.question ?? a.command ?? a.pattern ?? a.keys ?? a.key ?? a.target ?? a.direction ?? (a.text !== undefined ? JSON.stringify(a.text) : undefined) ??
     (a.element !== undefined ? "element " + a.element : a.x !== undefined ? a.x + "," + a.y : a.crashes ? "crashes" : a.project_dir ?? a.apk ?? "");
   return [VERBS[name] || name, String(main)];
@@ -358,6 +374,7 @@ function drawBoard(b) {
   const state = b.state === "planning" ? "planning…" : b.state === "running" ? "task " + Math.min(b.current + 1, n) + " of " + n : b.state === "done" ? "done" : b.state === "stuck" ? "stuck" : "stopped";
   const icon = { done: "✓", doing: "▸", checking: "👁", failed: "✗", todo: "○" };
   box.innerHTML = '<div class="head"><span>🤖</span><span class="goal"></span><span class="state">' + state + "</span></div>" +
+    (b.brief ? '<div class="brief">' + esc(b.brief) + "</div>" : "") +
     '<div class="bar"><i style="width:' + (n ? Math.round((done / n) * 100) : 0) + '%"></i></div>' +
     b.tasks.map((t) => '<div class="task ' + t.status + '"><span class="box">' + icon[t.status] + '</span><span class="n">' + esc(t.text) +
       (t.check && t.status !== "done" ? '<span class="sub">✔ when ' + esc(t.check) + "</span>" : "") + (t.note ? '<span class="sub">' + esc(t.note) + "</span>" : "") +
@@ -449,6 +466,8 @@ function on(m) {
       return;
     case "toolStart": {
       streaming = null;
+      // A question gets its own card (below), not a tool card.
+      if (m.name === "ask_user") { writing.forEach((d) => d && d.remove()); writing = []; live = null; return; }
       const [verb, arg] = label(m.name, m.args);
       activity({ title: verb + " " + arg.slice(0, 80) });
       // The card that showed the call being written becomes the card that runs it.
@@ -464,6 +483,7 @@ function on(m) {
       return;
     }
     case "toolEnd":
+      if (m.name === "ask_user") return;
       if (live) {
         live.classList.remove("run");
         if (m.name === "check") live.classList.add("check"), live.classList.toggle("bad", /^error: |^exit code: (?!0\\b)/m.test(m.result));
@@ -485,6 +505,8 @@ function on(m) {
       return;
     case "image": return stage.shot(m.images[m.images.length - 1], m.tool);
     case "ask": return askCard(m);
+    case "question": return questionCard(m);
+    case "questionDone": return questionDone(m);
     case "busy":
       busy = m.busy; $("stopBtn").disabled = !busy; $("sendBtn").disabled = busy;
       if (!busy) { helperLive = null; $("activity").classList.remove("helper"); }
@@ -611,6 +633,60 @@ function userMsg(text, names) {
   return d;
 }
 
+// A follow-up question: click a choice, or type an answer. Skip lets Maxx go with its guess.
+const questionCards = new Map();
+function questionCard(m) {
+  streaming = null;
+  activity({ title: "Waiting for your answer" });
+  const d = add(div("qcard"));
+  d.innerHTML = '<div class="q"></div><div class="choices"></div><div class="own"><input placeholder="Or type your own answer…"><button class="primary">Answer</button><button>Skip</button></div><div class="wait"></div>';
+  d.querySelector(".q").textContent = m.question;
+  const reply = (a) => send({ type: "reply", id: m.id, answer: a });
+  for (const c of m.choices || []) {
+    const b = document.createElement("button"); b.textContent = c;
+    if (m.guess && c.toLowerCase() === m.guess.toLowerCase()) b.className = "guess";
+    b.onclick = () => reply(c);
+    d.querySelector(".choices").appendChild(b);
+  }
+  if (!(m.choices || []).length) d.querySelector(".choices").remove();
+  const input = d.querySelector("input"), [ok, skip] = d.querySelectorAll(".own button");
+  if (m.guess && !(m.choices || []).some((c) => c.toLowerCase() === m.guess.toLowerCase())) input.placeholder = "Your answer (Maxx would guess: " + m.guess + ")";
+  ok.onclick = () => input.value.trim() && reply(input.value.trim());
+  input.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); ok.onclick(); } };
+  skip.onclick = () => reply("");
+  skip.title = m.guess ? "Let Maxx go with its guess: " + m.guess : "Let Maxx decide";
+  // Agent mode doesn't wait for ever: show how long is left before the guess is used.
+  const wait = d.querySelector(".wait");
+  const tick = () => {
+    if (!m.deadline) return wait.remove();
+    const left = Math.max(0, m.deadline - Date.now());
+    wait.textContent = "No answer in " + clock(left) + (m.guess ? " and Maxx goes with “" + m.guess + "”" : " and Maxx decides itself") + ", so the run keeps going while you're away.";
+  };
+  tick(); d.timer = m.deadline ? setInterval(tick, 1000) : 0;
+  questionCards.set(m.id, d);
+  setTimeout(() => input.focus(), 0);
+  if (document.hidden && "Notification" in window && Notification.permission === "granted") new Notification("Maxx has a question", { body: m.question });
+}
+function questionDone(m) {
+  const d = questionCards.get(m.id);
+  if (!d) return;
+  questionCards.delete(m.id); clearInterval(d.timer);
+  d.classList.add("answered");
+  d.querySelectorAll(".choices, .own, .wait").forEach((e) => e.remove());
+  const a = div("a"); d.appendChild(a);
+  a.innerHTML = m.answer ? "<b>You:</b> " : "<b>" + (m.timedOut ? "No answer in time; Maxx went with its guess." : "Skipped; Maxx decides.") + "</b>";
+  if (m.answer) a.appendChild(document.createTextNode(m.answer));
+  activity({ title: "Working" });
+}
+function answeredCard(question, result) {
+  const d = add(div("qcard answered"));
+  d.innerHTML = '<div class="q"></div><div class="a"></div>';
+  d.querySelector(".q").textContent = question;
+  const m = result.match(/^The user answered: ([\\s\\S]*)$/);
+  d.querySelector(".a").innerHTML = m ? "<b>You:</b> " : "<b>" + esc(result.split(".")[0]) + ".</b>";
+  if (m) d.querySelector(".a").appendChild(document.createTextNode(m[1]));
+}
+
 function askCard(m) {
   streaming = null;
   activity({ title: "Waiting for your OK" });
@@ -694,7 +770,12 @@ function render(s) {
       else if (h.role === "note") note(h.text.split("\\n")[0]);
       else if (h.role === "assistant") {
         if (h.text) visuals.paint(add(div("msg")), h.text, cur.chat);
-        for (const t of h.tools || []) toolCard(t.name, t.args, results[ri++] ?? "");
+        for (const t of h.tools || []) {
+          const r = results[ri++] ?? "";
+          if (t.name !== "ask_user") { toolCard(t.name, t.args, r); continue; }
+          let a = {}; try { a = JSON.parse(t.args || "{}"); } catch {}
+          answeredCard(String(a.question || ""), r);
+        }
       }
     }
     $("log").scrollTop = $("log").scrollHeight;
@@ -845,12 +926,13 @@ function drawAgent() {
   if (state && state.current && !state.current.chat) $("input").placeholder = on ? "Give Maxx a goal, e.g. \u201cbuild a tip calculator web app and check it works\u201d. It plans the tasks and works through them on its own." : PROJECT_HINT;
 }
 $("agentBtn").onclick = () => { agentMode = !agentMode; try { localStorage.setItem("maxx.agent", agentMode ? "1" : "0"); } catch {} drawAgent(); };
-const AGENT_FIELDS = { aTasks: "maxTasks", aSteps: "stepsPerTask", aTries: "tries", aMap: "mapTokens", aFixes: "judgeFixes" };
+const AGENT_FIELDS = { aTasks: "maxTasks", aSteps: "stepsPerTask", aTries: "tries", aMap: "mapTokens", aFixes: "judgeFixes", aWait: "askMinutes" };
 function agentForm(values) {
   const a = (state && state.agentMode) || {};
   const v = values || a.settings || {};
   for (const [id, k] of Object.entries(AGENT_FIELDS)) $(id).value = v[k];
   $("aJudge").checked = !!v.judge;
+  $("aBrief").checked = v.briefing !== false;
   const ctx = a.context ? Math.round(a.context / 1024) + "K" : "the";
   $("aHint").textContent = "Defaults follow the " + ctx + " context window (start Maxx with --context to change it), so a bigger model on a bigger machine gets more steps, tries and map." +
     (a.browser ? "" : " No Edge or Chrome found, so the judge can only check the phone.");
@@ -864,6 +946,7 @@ $("agentForm").onsubmit = (e) => {
   const d = (state && state.agentMode && state.agentMode.defaults) || {}, out = {};
   for (const [id, k] of Object.entries(AGENT_FIELDS)) { const n = Number($(id).value); if ($(id).value !== "" && n !== d[k]) out[k] = n; }
   if ($("aJudge").checked !== !!d.judge) out.judge = $("aJudge").checked;
+  if ($("aBrief").checked !== (d.briefing !== false)) out.briefing = $("aBrief").checked;
   send({ type: "agentSettings", settings: out });
 };
 $("briefBtn").onclick = () => {

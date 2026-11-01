@@ -21,6 +21,7 @@ import { chatPrompt } from "./chat.ts";
 import { brief, describeHelper, HELPER_DEFAULTS, helperLLM, type Helper } from "./escalate.ts";
 import { mapBudget, projectMap, projectMapTool } from "./projectmap.ts";
 import type { Board } from "./agentmode.ts";
+import { answerText, ASK_PROMPT, askTool, MAX_QUESTIONS, type AskFn, type Question } from "./ask.ts";
 
 // The local model got stuck and a helper took over (active), or handed back.
 export type Escalation = { active: boolean; model: string; reason: string; steps?: number; usage?: { input: number; output: number }; text?: string };
@@ -39,6 +40,8 @@ export type AgentIO = {
   plan?(steps: Step[]): void;
   // The helper model taking over a hard step, and handing back.
   escalation?(e: Escalation): void;
+  // A follow-up question from the model (ask_user). Without it the model is not offered the tool.
+  question?: AskFn;
 };
 
 export type AgentOptions = {
@@ -111,6 +114,11 @@ export class Agent {
   lastCheck: CheckResult | null = null;
   // Agent mode's task board, while a goal runs and after.
   board: Board | null = null;
+  // How long a follow-up question waits before the model's guess is used (Agent mode); unset waits for ever.
+  askWaitMs?: number;
+  // Questions asked in the current turn, and the turn's stop signal (a question must not outlive it).
+  private asked = 0;
+  private turnSignal?: AbortSignal;
 
   constructor(private opts: AgentOptions, private io: AgentIO) {
     this.tools = this.baseTools();
@@ -202,11 +210,37 @@ export class Agent {
     this.io.note(text);
   }
 
+  get canAsk(): boolean {
+    return !!this.io.question;
+  }
+
+  // Put a question to the user and wait. Null: nobody answered, with why.
+  async ask(q: Omit<Question, "id" | "deadline">, signal?: AbortSignal): Promise<{ answer: string | null; why: "none" | "timeout" | "stopped" }> {
+    if (!this.io.question) return { answer: null, why: "none" };
+    const wait = this.askWaitMs;
+    const timer = wait ? AbortSignal.timeout(wait) : undefined;
+    const all = [signal, timer].filter((s): s is AbortSignal => !!s);
+    const s = all.length ? AbortSignal.any(all) : new AbortController().signal;
+    const answer = await this.io.question({ ...q, id: crypto.randomUUID(), deadline: wait ? Date.now() + wait : undefined }, s).catch(() => null);
+    if (answer?.trim()) return { answer: answer.trim(), why: "none" };
+    if (signal?.aborted) throw Object.assign(new Error("stopped"), { name: "AbortError" });
+    return { answer: null, why: timer?.aborted ? "timeout" : "stopped" };
+  }
+
+  // ask_user inside a turn: counted, and answered in words the model reads.
+  private async askTurn(q: Omit<Question, "id" | "deadline">): Promise<string> {
+    if (++this.asked > MAX_QUESTIONS) return answerText(q, null, "limit");
+    const r = await this.ask(q, this.turnSignal);
+    if (r.answer === null) this.io.note(`(no answer${q.guess ? `; going with "${q.guess}"` : ""})`);
+    return answerText(q, r.answer, r.why);
+  }
+
   private baseTools(): Tool<any>[] {
     if (this.opts.chat) return this.online.tools;
     const extra: Tool<any>[] = [];
     if (this.opts.plan !== false) extra.push(planTool(() => this.plan, (s) => this.setPlan(s)));
     if (this.opts.memory !== false) extra.push(rememberTool);
+    if (this.io.question) extra.push(askTool((q) => this.askTurn(q)));
     if (this.mapTokens > 0) extra.push(projectMapTool(() => this.mapTokens));
     return [...(this.opts.tools ?? TOOLS), ...this.online.tools, ...extra];
   }
@@ -231,7 +265,7 @@ export class Agent {
   }
 
   async refreshSystemPrompt() {
-    const notes = [this.opts.plan !== false ? PLAN_PROMPT : "", this.opts.memory !== false ? MEMORY_PROMPT : "", NETWORK_PROMPT[this.network ? "on" : "off"], this.lookupNote()].filter(Boolean).join(" ");
+    const notes = [this.opts.plan !== false ? PLAN_PROMPT : "", this.opts.memory !== false ? MEMORY_PROMPT : "", this.io.question ? ASK_PROMPT : "", NETWORK_PROMPT[this.network ? "on" : "off"], this.lookupNote()].filter(Boolean).join(" ");
     const style = BREVITY_PROMPT[this.brevity];
     // Last, so it is what the model read most recently.
     // The map as it was when the session started; project_map gives a fresh one.
@@ -266,6 +300,8 @@ export class Agent {
   async send(userText: string | ContentPart[], signal?: AbortSignal, o: { maxSteps?: number } = {}): Promise<string> {
     this.history.push({ role: "user", content: userText });
     this.lastCheck = null;
+    this.asked = 0;
+    this.turnSignal = signal;
     if (Array.isArray(userText)) this.pruneImages();
     const specs = toolSpecs(this.tools);
     let badCalls = 0;

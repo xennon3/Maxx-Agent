@@ -7,6 +7,7 @@ import type { CheckResult } from "./fixit.ts";
 import { maxxHome } from "./sessions.ts";
 import { mapBudget, projectMap } from "./projectmap.ts";
 import { TEMPLATES } from "./templates/index.ts";
+import { briefingMessages, parseBriefing } from "./ask.ts";
 import { judgeLLM, judgeMessages, parseVerdict, pickSurface, type SurfaceOptions, type Verdict } from "./judge.ts";
 
 // Agent mode. The user gives a goal ("build a weather app and run it on my
@@ -20,7 +21,7 @@ import { judgeLLM, judgeMessages, parseVerdict, pickSurface, type SurfaceOptions
 
 export type TaskStatus = "todo" | "doing" | "checking" | "done" | "failed";
 export type Task = { text: string; check: string; status: TaskStatus; tries: number; note?: string; files?: number };
-export type Board = { goal: string; state: "planning" | "running" | "done" | "stuck" | "stopped"; tasks: Task[]; current: number; note?: string };
+export type Board = { goal: string; state: "planning" | "running" | "done" | "stuck" | "stopped"; tasks: Task[]; current: number; note?: string; brief?: string };
 
 export type AgentModeSettings = {
   // Most tasks the planner may write.
@@ -35,17 +36,21 @@ export type AgentModeSettings = {
   judgeFixes: number;
   // Tokens of project map in the planner's and the tasks' prompts.
   mapTokens: number;
+  // Before planning, ask the user what the goal leaves unclear (the briefing).
+  briefing: boolean;
+  // Minutes a follow-up question waits before the model's own guess is used (0: wait for ever).
+  askMinutes: number;
 };
 
 // Defaults by context window: what fits a 4B model at 16K, and what a 70B+ model at 128K can take.
 export function agentDefaults(contextWindow: number): AgentModeSettings {
   const map = mapBudget(contextWindow);
-  if (contextWindow < 32_000) return { maxTasks: 6, stepsPerTask: 20, tries: 2, judge: true, judgeFixes: 1, mapTokens: map };
-  if (contextWindow < 64_000) return { maxTasks: 8, stepsPerTask: 35, tries: 2, judge: true, judgeFixes: 2, mapTokens: map };
-  return { maxTasks: 12, stepsPerTask: 60, tries: 3, judge: true, judgeFixes: 2, mapTokens: map };
+  if (contextWindow < 32_000) return { maxTasks: 6, stepsPerTask: 20, tries: 2, judge: true, judgeFixes: 1, mapTokens: map, briefing: true, askMinutes: 5 };
+  if (contextWindow < 64_000) return { maxTasks: 8, stepsPerTask: 35, tries: 2, judge: true, judgeFixes: 2, mapTokens: map, briefing: true, askMinutes: 5 };
+  return { maxTasks: 12, stepsPerTask: 60, tries: 3, judge: true, judgeFixes: 2, mapTokens: map, briefing: true, askMinutes: 5 };
 }
 
-const LIMITS: Record<Exclude<keyof AgentModeSettings, "judge">, [number, number]> = { maxTasks: [1, 30], stepsPerTask: [3, 200], tries: [1, 5], judgeFixes: [0, 5], mapTokens: [0, 20_000] };
+const LIMITS: Record<Exclude<keyof AgentModeSettings, "judge" | "briefing">, [number, number]> = { maxTasks: [1, 30], stepsPerTask: [3, 200], tries: [1, 5], judgeFixes: [0, 5], mapTokens: [0, 20_000], askMinutes: [0, 120] };
 
 // Saved choices only; anything left out follows the defaults for the context window.
 export type SavedAgentSettings = Partial<AgentModeSettings>;
@@ -60,6 +65,7 @@ export function cleanSettings(raw: Record<string, unknown>): SavedAgentSettings 
     if (Number.isFinite(n)) out[k] = Math.min(hi, Math.max(lo, n));
   }
   if (typeof raw.judge === "boolean") out.judge = raw.judge;
+  if (typeof raw.briefing === "boolean") out.briefing = raw.briefing;
   return out;
 }
 
@@ -120,13 +126,14 @@ export function taskPrompt(b: Board, map: string, retry: string): string {
   return [
     `Maxx: Agent mode, task ${b.current + 1} of ${b.tasks.length}.`,
     `Goal: ${b.goal}`,
+    b.brief ?? "",
     formatBoard(b),
     "",
     `Do task ${b.current + 1} now: ${t.text}`,
     t.check ? `Done when: ${t.check}` : "",
     retry ? `Your last try at this task failed (${retry}), so Maxx put the files back the way they were before it. Do not repeat that approach; try a different one.` : "",
     map,
-    "Work on this task only. When it is done and checked, reply with one short line starting with DONE. If you cannot do it, reply STUCK: and why.",
+    "Work on this task only. If it needs a choice only the user can make, call ask_user. When it is done and checked, reply with one short line starting with DONE. If you cannot do it, reply STUCK: and why.",
   ].filter(Boolean).join("\n");
 }
 
@@ -164,15 +171,20 @@ export async function runGoal(agent: Agent, goal: string, events: GoalEvents, o:
   const perms = agent.permissions;
   const mode = perms.mode;
   if (mode === "ask") perms.mode = "auto-edit";
+  // Nobody may be watching, so an unanswered question gives way to the model's guess.
+  const wait = agent.askWaitMs;
+  agent.askWaitMs = s.askMinutes > 0 ? s.askMinutes * 60_000 : undefined;
   try {
     const map = s.mapTokens > 0 ? await projectMap(agent.cwd, s.mapTokens).catch(() => "") : "";
     const empty = /folder is empty|\(0 files|\(1 file;/.test(map) || !map;
-    const planned = parseTasks(await agent.think(planMessages(goal, map, s.maxTasks, empty), o.signal), s.maxTasks);
+    const brief = s.briefing ? await briefing(agent, goal, map, o.signal) : "";
+    if (brief) (board.brief = brief), emit();
+    const planned = parseTasks(await agent.think(planMessages(brief ? `${goal}\n${brief}` : goal, map, s.maxTasks, empty), o.signal), s.maxTasks);
     board.tasks = (planned.length ? planned : [{ text: goal, check: "" }]).map((t) => ({ ...t, status: "todo" as const, tries: 0 }));
     board.state = "running";
     emit();
     // The goal as the user's turn (it titles the session) and the tasks as the answer to it.
-    agent.history.push({ role: "user", content: `🤖 ${goal}` }, { role: "assistant", content: `Agent mode: I split this into ${board.tasks.length} task${board.tasks.length > 1 ? "s" : ""} and will work through them one by one.\n${formatBoard(board)}` });
+    agent.history.push({ role: "user", content: `🤖 ${goal}` }, { role: "assistant", content: `Agent mode: I split this into ${board.tasks.length} task${board.tasks.length > 1 ? "s" : ""} and will work through them one by one.\n${board.brief ? `${board.brief}\n` : ""}${formatBoard(board)}` });
 
     for (; board.current < board.tasks.length; board.current++) {
       const task = board.tasks[board.current]!;
@@ -244,7 +256,23 @@ export async function runGoal(agent: Agent, goal: string, events: GoalEvents, o:
     return board;
   } finally {
     if (perms.mode === "auto-edit" && mode === "ask") perms.mode = mode;
+    agent.askWaitMs = wait;
   }
+}
+
+// Agent mode's briefing: the model lists what the goal leaves open, the user
+// answers (or the guess stands), and the answers go into the goal the planner
+// and every task read. Returns those lines, or "" when there was nothing to ask.
+export async function briefing(agent: Agent, goal: string, map: string, signal?: AbortSignal): Promise<string> {
+  if (!agent.canAsk) return "";
+  const questions = parseBriefing(await agent.think(briefingMessages(goal, map), signal));
+  const lines: string[] = [];
+  for (const q of questions) {
+    const r = await agent.ask(q, signal);
+    const a = r.answer ?? q.guess;
+    if (a) lines.push(`- ${q.question} → ${a}${r.answer ? "" : " (no answer; Maxx's guess)"}`);
+  }
+  return lines.length ? `Asked before planning:\n${lines.join("\n")}` : "";
 }
 
 // Screenshot what the task changed and ask the vision model about it. Null: nothing to look at.
