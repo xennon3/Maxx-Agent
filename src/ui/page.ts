@@ -366,7 +366,7 @@ function note(text, cls = "note") { add(div("msg " + cls, text)); }
 // Claude Code style labels: "Write app/build.gradle.kts", "Tap Calculate".
 const VERBS = { read_file: "Read", write_file: "Write", edit_file: "Edit", list_files: "List", grep: "Search", bash: "Run",
   android_run: "Build & run on phone", android_screen: "Look at phone", android_tap: "Tap", android_type: "Type", android_swipe: "Swipe",
-  android_key: "Press", android_logcat: "Read phone log", android_devices: "List devices", android_connect: "Connect phone",
+  android_key: "Press", android_logcat: "Read phone log", android_explore: "Explore the app", android_devices: "List devices", android_connect: "Connect phone",
   desktop_screenshot: "Look at desktop", desktop_click: "Click", desktop_type: "Type", desktop_key: "Press", desktop_scroll: "Scroll", desktop_open: "Open",
   web_search: "Search the web", web_fetch: "Read page",
   preview: "Preview", start_server: "Start", use_template: "Start from template", plan: "Plan", remember: "Remember", check: "Check" };
