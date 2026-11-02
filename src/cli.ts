@@ -2,7 +2,7 @@
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { Agent, type AgentIO } from "./loop.ts";
-import { Permissions, type Mode, type Answer } from "./permissions.ts";
+import { Permissions, MODE_SAY, parseMode, resolveMode, saveMode, type Mode, type Answer } from "./permissions.ts";
 import { basename, join, relative, resolve } from "node:path";
 import { doctor, doctorDevices } from "./doctor.ts";
 import type { LLMConfig } from "./llm.ts";
@@ -69,7 +69,11 @@ usage:
 options:
   --base-url <url>   OpenAI-compatible server (default $MAXX_BASE_URL or http://localhost:1234/v1)
   --model <id>       model id (default $MAXX_MODEL or the first model the server lists)
-  --mode <mode>      ask | auto-edit | yolo (default ask)
+  --mode <mode>      ask | auto-edit | yolo: ask before edits and commands, only before commands,
+                     or never (auto-run; risky commands like git push, sudo or deleting a whole
+                     drive still ask). Default $MAXX_MODE or the saved setting, which starts at ask;
+                     saved with /auto, /mode or the app's ⚡ Auto-run switch
+  --auto-run         same as --mode yolo
   --context <n>      context window in tokens (default 32768)
   --with <sets>      extra tools: android, desktop (comma-separated; default $MAXX_WITH)
   --vision <v>       auto | native | off: can the model see screenshots? (default auto)
@@ -134,7 +138,7 @@ options:
   --resume <ref>     continue a session by number (from \`maxx sessions\`), id, or words from its title
 
 in a session:
-  /agent <goal>  /crew <goal>  /lab <question>  /help  /mode <m>  /with <sets|none>  /plan  /helper [off|on]  /network [on|off]  /brevity [brief|normal|detailed]  /thinking [auto|off|low|high|max]  /palette [name|#hex...|random|auto|list]  /rules [on|off|add <rule>|rm <n>]  /undo  /checkpoints  /rewind <n>  /clear  /exit
+  /agent <goal>  /crew <goal>  /lab <question>  /help  /auto [on|off]  /mode <m>  /with <sets|none>  /plan  /helper [off|on]  /network [on|off]  /brevity [brief|normal|detailed]  /thinking [auto|off|low|high|max]  /palette [name|#hex...|random|auto|list]  /rules [on|off|add <rule>|rm <n>]  /undo  /checkpoints  /rewind <n>  /clear  /exit
   /sessions  /resume <ref>  /new  /title <text>   (sessions are saved per project after every turn)
   /delete <ref>  /undelete     delete a session (this one if no ref), bring it back
   /attach <file...>            send files with your next message: images to the vision model, text inline
@@ -146,7 +150,8 @@ const { values, positionals } = parseArgs({
   options: {
     "base-url": { type: "string" },
     model: { type: "string" },
-    mode: { type: "string", default: "ask" },
+    mode: { type: "string" },
+    "auto-run": { type: "boolean" },
     context: { type: "string", default: "32768" },
     with: { type: "string" },
     vision: { type: "string", default: "auto" },
@@ -282,9 +287,9 @@ if (positionals[0] === "ui" || (fromExplorer && !positionals.length && !values.p
   const port = values.port ? Number(values.port) : 4317;
   let ui;
   try {
-    ui = await startUI({ baseURL, model: values.model ?? process.env.MAXX_MODEL, port, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, brevity: values.brevity, thinking: values.thinking, learn: values.learn, palette: values.palette, ...voice });
+    ui = await startUI({ baseURL, model: values.model ?? process.env.MAXX_MODEL, port, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, brevity: values.brevity, thinking: values.thinking, learn: values.learn, palette: values.palette, mode: values["auto-run"] ? "yolo" : values.mode, ...voice });
   } catch {
-    ui = await startUI({ baseURL, model: values.model ?? process.env.MAXX_MODEL, port: 0, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, brevity: values.brevity, thinking: values.thinking, learn: values.learn, palette: values.palette, ...voice });
+    ui = await startUI({ baseURL, model: values.model ?? process.env.MAXX_MODEL, port: 0, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, brevity: values.brevity, thinking: values.thinking, learn: values.learn, palette: values.palette, mode: values["auto-run"] ? "yolo" : values.mode, ...voice });
   }
   // Dev servers started from the Run panel go down with Maxx.
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(sig, () => (ui.stop(), process.exit(0)));
@@ -302,8 +307,7 @@ if (positionals[0] === "replay") {
   process.exit((await replay(positionals[1])) ? 0 : 1);
 }
 
-const mode = values.mode as Mode;
-if (!["ask", "auto-edit", "yolo"].includes(mode)) die(`unknown mode ${mode}`);
+const mode: Mode = await resolveMode(values["auto-run"] ? "yolo" : values.mode).catch((e) => die((e as Error).message));
 const cwd = process.cwd();
 const permissions = await new Permissions(cwd, mode).load();
 const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -383,9 +387,15 @@ const io: AgentIO = {
     status.stop();
     if (preview) console.log(preview);
     for (;;) {
-      const raw = (await rl.question(`${C.bold}${question}${C.reset} [y]es / [n]o / [a]lways  (or "n <why>", and Maxx learns from it): `)).trim();
+      const raw = (await rl.question(`${C.bold}${question}${C.reset} [y]es / [n]o / [a]lways / [r]un all from now on  (or "n <why>", and Maxx learns from it): `)).trim();
       const a = raw.toLowerCase();
       if (a === "y" || a === "yes" || a === "") return "yes";
+      if (a === "r" || a === "run all" || a === "auto") {
+        permissions.mode = "yolo";
+        await saveMode("yolo");
+        console.log(`${C.dim}auto-run on: ${MODE_SAY.yolo}. /auto off to ask again.${C.reset}`);
+        return "yes";
+      }
       if (a === "n" || a === "no") return "no";
       const why = raw.match(/^no?[\s,:.-]+(.+)$/i)?.[1]?.trim();
       if (why) return `no: ${why}`;
@@ -665,8 +675,15 @@ async function command(line: string) {
       await save();
       return console.log(`title: ${title}`);
     case "/mode":
-      if (arg && ["ask", "auto-edit", "yolo"].includes(arg)) permissions.mode = arg as Mode;
-      return console.log(`mode: ${permissions.mode}`);
+    case "/auto": {
+      const want = arg ? parseMode(cmd === "/auto" && ["on", "off"].includes(arg) ? (arg === "on" ? "yolo" : "ask") : arg) : undefined;
+      if (arg && !want) return console.log(cmd === "/auto" ? "usage: /auto on | off" : "usage: /mode ask | auto-edit | yolo");
+      if (want) {
+        permissions.mode = want;
+        await saveMode(want);
+      }
+      return console.log(`mode: ${permissions.mode} (${MODE_SAY[permissions.mode]})`);
+    }
     case "/with": {
       if (arg) {
         try {

@@ -98,6 +98,10 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
 .composer .row { display: flex; gap: 8px; }
 .composer textarea { flex: 1; resize: none; height: 64px; }
 #clipBtn { padding: 7px 10px; font-size: 16px; line-height: 1; }
+#autoBtn { align-self: flex-start; padding: 7px 10px; font-size: 13px; line-height: 1; white-space: nowrap; }
+#autoBtn.on { background: #f59f00; border-color: #f59f00; color: #1a1a1a; font-weight: 600; }
+#autoBtn.half { border-color: #f59f00; }
+.ask .btns .auto { margin-left: auto; border-color: #f59f00; }
 .files { display: flex; flex-wrap: wrap; gap: 6px; }
 .files:empty { display: none; }
 .file { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 8px; padding: 3px 4px 3px 6px; font-size: 12.5px; background: var(--bg); max-width: 100%; }
@@ -332,7 +336,7 @@ ${SOUND_CSS}
     <select id="mode" title="Permissions" class="projonly">
       <option value="ask">Ask before acting</option>
       <option value="auto-edit">Auto-approve edits</option>
-      <option value="yolo">Never ask</option>
+      <option value="yolo">⚡ Auto-run everything</option>
     </select>
     <span id="sets" class="projonly"></span>
     <span class="chip" id="netBtn" title="Let Maxx look things up on the web (and in the MCP servers in ~/.maxx/mcp.json), install packages (pip, npm...) and download files">🌐 Network: off</span>
@@ -355,6 +359,7 @@ ${SOUND_CSS}
     <div class="files" id="files"></div>
     <div class="row">
       <button id="clipBtn" title="Attach files: images, code, anything. You can also drop or paste them.">📎</button>
+      <button id="autoBtn" class="projonly" title="">⚡ Auto</button>
       <input type="file" id="fileInput" multiple hidden>${VOICE_HTML}
       <textarea id="input" placeholder="Ask Maxx to build, fix or test something…  (Enter to send, Shift+Enter for a new line; drop or paste files to attach)"></textarea>
       <div style="display:flex;flex-direction:column;gap:6px">
@@ -734,6 +739,7 @@ function on(m) {
       return;
     case "image": return stage.shot(m.images[m.images.length - 1], m.tool);
     case "ask": return askCard(m);
+    case "askDone": return askDone(m);
     case "question": return questionCard(m);
     case "questionDone": return questionDone(m);
     case "busy":
@@ -917,20 +923,33 @@ function answeredCard(question, result) {
   if (m) d.querySelector(".a").appendChild(document.createTextNode(m[1]));
 }
 
+function askAnswered(d, text) {
+  d.classList.add("answered");
+  d.querySelector(".btns").textContent = text;
+  const w = d.querySelector(".why"); if (w) w.remove();
+}
+
+// The server let a waiting card through (auto-run was switched on), or another window answered it.
+function askDone(m) {
+  for (const d of document.querySelectorAll(".ask")) if (d.dataset.id === m.id && !d.classList.contains("answered")) askAnswered(d, "Allowed by ⚡ auto-run");
+}
+
 function askCard(m) {
   streaming = null;
   activity({ title: "Waiting for your OK" });
   const d = add(div("ask"));
+  d.dataset.id = m.id;
   d.innerHTML = '<div class="q">' + esc(m.question) + "</div>" + (m.preview ? "<pre>" + ansi(m.preview) + "</pre>" : "") +
-    '<div class="btns"><button class="primary" data-a="yes">Allow</button><button data-a="always">Always allow</button><button class="danger" data-a="no">Deny</button></div>' +
+    '<div class="btns"><button class="primary" data-a="yes">Allow</button><button data-a="always">Always allow</button><button class="danger" data-a="no">Deny</button>' +
+    (state && state.current && state.current.mode === "yolo" ? "" : '<button class="auto" data-a="auto" title="Allow this, and stop asking: edits and commands run on their own from now on. Risky ones (git push, sudo, deleting a whole drive) still ask. Switch it off with ⚡ Auto next to the message box.">⚡ Allow &amp; auto-run</button>') + '</div>' +
     '<div class="why"><input placeholder="Why not? (optional: Maxx reads it and learns a rule; Enter denies)" autocomplete="off"></div>';
   const why = d.querySelector(".why input");
   const answer = (a) => {
+    if (d.classList.contains("answered")) return;
     const reason = a === "no" ? why.value.trim() : "";
-    send({ type: "answer", id: m.id, answer: a, why: reason });
-    d.classList.add("answered");
-    d.querySelector(".btns").textContent = a === "no" ? "Denied" + (reason ? ": " + reason : "") : a === "always" ? "Always allowed" : "Allowed";
-    d.querySelector(".why").remove();
+    send({ type: "answer", id: m.id, answer: a === "auto" ? "yes" : a, why: reason });
+    if (a === "auto") send({ type: "settings", mode: "yolo" });
+    askAnswered(d, a === "no" ? "Denied" + (reason ? ": " + reason : "") : a === "always" ? "Always allowed" : a === "auto" ? "Allowed, and ⚡ auto-run is on" : "Allowed");
   };
   d.querySelectorAll("button").forEach((b) => b.onclick = () => answer(b.dataset.a));
   why.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); answer("no"); } };
@@ -972,6 +991,7 @@ function render(s) {
   $("where").title = cur ? (cur.chat ? "No project: just ask. Charts and diagrams are drawn right here, and with 🌐 Network on Maxx can look things up on the web." : cur.cwd) : "";
   $("input").placeholder = cur && cur.chat ? "Ask anything. Try \u201cchart my monthly budget\u201d or \u201cdraw how a bill becomes a law\u201d  (Enter to send, Shift+Enter for a new line)" : PROJECT_HINT;
   if (cur) $("mode").value = cur.mode;
+  drawAuto(cur && cur.mode);
   const sets = $("sets"); sets.innerHTML = "";
   for (const t of s.toolsets) {
     const c = div("chip" + (cur && cur.toolsets.includes(t.name) ? " on" : ""), t.name === "android" ? "📱 Android" : t.name === "desktop" ? "🖥 Desktop" : t.name);
@@ -1132,6 +1152,24 @@ $("newBtn").onclick = () => send({ type: "new" });
 $("chatBtn").onclick = () => send({ type: "chat" });
 $("model").onchange = (e) => state && state.current && send({ type: "settings", model: e.target.value });
 $("mode").onchange = (e) => send({ type: "settings", mode: e.target.value });
+// ⚡ Auto next to the message box: the quick switch between asking and auto-run.
+// It works mid-turn, and a step already waiting for an OK goes through.
+const AUTO_TIP = {
+  ask: "Auto-run is off: Maxx asks before every edit and command. Click to let it run them on its own (risky ones like git push, sudo or deleting a whole drive still ask; ↶ Undo puts files back).",
+  "auto-edit": "Edits run on their own, commands still ask. Click to auto-run commands too (risky ones still ask).",
+  yolo: "⚡ Auto-run is on: edits and commands run without asking. Risky ones (git push, sudo, deleting a whole drive) still ask, and ↶ Undo puts files back. Click to go back to asking.",
+};
+function drawAuto(mode) {
+  const b = $("autoBtn"), md = mode || "ask";
+  b.classList.toggle("on", md === "yolo");
+  b.classList.toggle("half", md === "auto-edit");
+  b.textContent = md === "yolo" ? "⚡ Auto: on" : "⚡ Auto";
+  b.title = AUTO_TIP[md] || AUTO_TIP.ask;
+}
+$("autoBtn").onclick = () => {
+  const md = (state && state.current && state.current.mode) || "ask";
+  send({ type: "settings", mode: md === "yolo" ? "ask" : "yolo" });
+};
 $("zoom").onclick = () => $("zoom").style.display = "none";
 $("clipBtn").onclick = () => $("fileInput").click();
 $("fileInput").onchange = (e) => { attach([...e.target.files]); e.target.value = ""; };

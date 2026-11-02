@@ -416,7 +416,7 @@ export async function runCrew(agent: Agent, goal: string, events: CrewEvents, o:
         w.doing = undefined;
         emitSoon();
       },
-      ask: (q, preview) => parent.ask(`[${w.name}, task #${w.task}] ${q}`, preview),
+      ask: (q, preview, stillNeeded) => parent.ask(`[${w.name}, task #${w.task}] ${q}`, preview, stillNeeded),
       note: () => {},
       image: (tool, images) => events.image?.(`${w.name}: ${tool}`, images),
       progress: (p) => {
