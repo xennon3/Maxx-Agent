@@ -2,6 +2,7 @@ import { STAGE_CSS, STAGE_HTML, STAGE_JS } from "./stage-page.ts";
 import { VIS_CSS, VIS_JS } from "./visuals-page.ts";
 import { SOUND_CSS, SOUND_JS } from "./sound-page.ts";
 import { BREVITY_LABEL } from "../brevity.ts";
+import { THINKING_LABEL, THINKING_SAY } from "../thinking.ts";
 import { VOICE_CSS, VOICE_HINT, VOICE_HTML, VOICE_JS } from "./voice-page.ts";
 import { LAB_CSS, LAB_HTML, LAB_JS, LAB_NAV, LAB_VIEW } from "./lab-page.ts";
 
@@ -333,6 +334,7 @@ ${SOUND_CSS}
     <span id="sets" class="projonly"></span>
     <span class="chip" id="netBtn" title="Let Maxx look things up on the web (and in the MCP servers in ~/.maxx/mcp.json), install packages (pip, npm...) and download files">🌐 Network: off</span>
     <span class="chip" id="briefBtn" title="How much Maxx says. Click to switch: Brief (short answers, no padding), Normal, Detailed (explanations and examples)">✂ Brief</span>
+    <span class="chip" id="thinkBtn" title="How much a reasoning model thinks before it acts. Click to switch: auto, off, low, high, max">💭 Think: auto</span>
     <span class="chip" id="palBtn" title="The colors Maxx designs with: charts, diagrams, pages, apps and games. You can also say it in a message: “make it in synthwave colors”">🎨 Colors: auto</span>
     <span class="chip rules projonly" id="rulesBtn" title="Rules Maxx learned when you corrected it (saying “no, use…”, denying a step with a reason, fixing its code by hand, or undoing a turn). They live in this project's MAXX.md.">📏 Rules</span>
     <span class="chip agent projonly" id="agentBtn" title="Agent mode: give Maxx a goal. It splits it into tasks and works through them on its own, checking each one and rewinding any that fail.">🤖 Agent</span><span class="chip gear projonly" id="agentCfg" title="Agent mode settings">⚙</span>
@@ -439,6 +441,8 @@ ${LAB_HTML}
 <div id="toast"><span id="toastText"></span><button id="toastBtn">Undo</button></div>
 <script>
 const BREVITY_LABEL = ${JSON.stringify(BREVITY_LABEL)};
+const THINKING_LABEL = ${JSON.stringify(THINKING_LABEL)};
+const THINKING_SAY = ${JSON.stringify(THINKING_SAY)};
 const $ = (id) => document.getElementById(id);
 const token = new URLSearchParams(location.search).get("t");
 let ws, state = null, busy = false, live = null, streaming = null;
@@ -965,6 +969,10 @@ function render(s) {
   const bb = $("briefBtn");
   bb.textContent = BREVITY_LABEL[s.brevity] || BREVITY_LABEL.brief;
   bb.classList.toggle("on", s.brevity === "brief");
+  const tb = $("thinkBtn"), tl = s.thinking || "auto";
+  tb.textContent = THINKING_LABEL[tl] || THINKING_LABEL.auto;
+  tb.classList.toggle("on", tl !== "max");
+  tb.title = "How much a reasoning model thinks before it acts: " + (THINKING_SAY[tl] || "") + ". Click to switch: auto, off, low, high, max";
   const pb = $("palBtn"), pal = s.palette;
   pb.classList.toggle("on", !!pal);
   pb.innerHTML = "🎨 " + (pal ? esc(pal.name) + swatchHtml(pal.colors.slice(0, 8), "sw") : "Colors: auto");
@@ -1207,6 +1215,10 @@ ${LAB_JS}
 $("briefBtn").onclick = () => {
   const order = Object.keys(BREVITY_LABEL);
   send({ type: "brevity", level: order[(order.indexOf((state && state.brevity) || "brief") + 1) % order.length] });
+};
+$("thinkBtn").onclick = () => {
+  const order = Object.keys(THINKING_LABEL);
+  send({ type: "thinking", level: order[(order.indexOf((state && state.thinking) || "auto") + 1) % order.length] });
 };
 $("netBtn").onclick = () => {
   const on = !(state && state.network);

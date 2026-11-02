@@ -40,6 +40,6 @@ test("the brevity line goes into the agent and chat prompts, and switches in pla
   expect(agent.history.filter((m) => m.role === "system")).toHaveLength(1);
 
   const chat = await new Agent({ llm, cwd, permissions: await new Permissions(cwd, "ask").load(), online, chat: true, brevity: "brief" }, io).init();
-  expect(String(chat.history[0]!.content)).toEndWith(BREVITY_PROMPT.brief);
+  expect(String(chat.history[0]!.content)).toContain(BREVITY_PROMPT.brief);
   expect(chatPrompt()).not.toContain("Be brief");
 });

@@ -20,6 +20,7 @@ import { TOOLS, TOOLSETS } from "../tools/index.ts";
 import { TEMPLATES, findTemplate, freeFolder, isEmptyFolder, scaffold } from "../templates/index.ts";
 import { resolveNetwork, saveNetwork } from "../network.ts";
 import { parseBrevity, resolveBrevity, saveBrevity } from "../brevity.ts";
+import { parseThinking, resolveThinking, saveThinking, THINKING } from "../thinking.ts";
 import { forgetRule, loadRules, resolveLearn, saveLearn, saveRules, tidyRules } from "../learn.ts";
 import { checkPalette, parsePalette, presetList, resolvePalette, savePalette, withBackdrop } from "../palette.ts";
 import { CLAUDE_MODELS, HELPER_DEFAULTS, loadHelper, resolveHelper, saveHelper, type Helper } from "../escalate.ts";
@@ -44,13 +45,15 @@ import { FIX_ROUNDS, describeWhisper, failed, findWhisper, fixPrompt, planRebuil
 type Client = ServerWebSocket<unknown>;
 type Out = Record<string, unknown> & { type: string };
 
-export type UIOptions = { baseURL: string; port?: number; previewPort?: number; open?: boolean; model?: string; visionModel?: string; context?: number; whisper?: string; whisperModel?: string; network?: string; brevity?: string; learn?: string; palette?: string };
+export type UIOptions = { baseURL: string; port?: number; previewPort?: number; open?: boolean; model?: string; visionModel?: string; context?: number; whisper?: string; whisperModel?: string; network?: string; brevity?: string; thinking?: string; learn?: string; palette?: string };
 
 export async function startUI(opts: UIOptions) {
   // Installs and downloads: the header's 🌐 switch, saved for next time.
   let network = await resolveNetwork(opts.network);
   // How much Maxx says: the header's ✂ switch, saved too.
   let brevity = await resolveBrevity(opts.brevity);
+  // How much the model thinks: the header's 💭 switch, saved too.
+  let thinking = await resolveThinking(opts.thinking);
   // Learn rules from the user's corrections: the 📏 Rules dialog, saved too.
   let learn = await resolveLearn(opts.learn);
   // The colors Maxx designs with: the header's 🎨 picker, saved too.
@@ -243,6 +246,7 @@ export async function startUI(opts: UIOptions) {
       helper: await helperInfo(),
       network,
       brevity,
+      thinking,
       palette,
       palettes: presetList(),
       research: await researchInfo(),
@@ -288,8 +292,8 @@ export async function startUI(opts: UIOptions) {
     const helper = chat ? null : await resolveHelper({}).catch(() => null);
     const agent = await new Agent(
       chat
-        ? { llm, cwd: dir, permissions, vision, network, brevity, palette, contextWindow: opts.context, chat: true, plan: false, memory: false, fixTries: 0 }
-        : { llm, cwd: dir, permissions, toolsets, vision, helper, network, brevity, palette, learn, contextWindow: opts.context, tools: [...TOOLS, ...stage!.tools()], mapTokens: agentSettings(contextWindow, goalSaved).mapTokens },
+        ? { llm, cwd: dir, permissions, vision, network, brevity, thinking, palette, contextWindow: opts.context, chat: true, plan: false, memory: false, fixTries: 0 }
+        : { llm, cwd: dir, permissions, toolsets, vision, helper, network, brevity, thinking, palette, learn, contextWindow: opts.context, tools: [...TOOLS, ...stage!.tools()], mapTokens: agentSettings(contextWindow, goalSaved).mapTokens },
       io,
     ).init();
     if (saved) await agent.restore(saved.id, saved.history);
@@ -410,6 +414,14 @@ export async function startUI(opts: UIOptions) {
         brevity = level;
         await saveBrevity(brevity);
         await state?.agent.setBrevity(brevity);
+        return send(await snapshot());
+      }
+      case "thinking": {
+        const level = parseThinking(String(m.level ?? ""));
+        if (!level) throw new Error(`thinking is ${THINKING.join(", ")}`);
+        thinking = level;
+        await saveThinking(thinking);
+        await state?.agent.setThinking(thinking);
         return send(await snapshot());
       }
       case "palette": {
