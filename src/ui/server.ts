@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { ServerWebSocket } from "bun";
 import { Agent, type AgentIO } from "../loop.ts";
-import { Permissions, type Answer, type Mode } from "../permissions.ts";
+import { Permissions, MODE_SAY, parseMode, resolveMode, saveMode, type Answer, type Mode } from "../permissions.ts";
 import type { LLMConfig } from "../llm.ts";
 import { pickVision } from "../vision.ts";
 import { recordTo } from "../devices/run.ts";
@@ -46,7 +46,7 @@ import { FIX_ROUNDS, describeWhisper, failed, findWhisper, fixPrompt, planRebuil
 type Client = ServerWebSocket<unknown>;
 type Out = Record<string, unknown> & { type: string };
 
-export type UIOptions = { baseURL: string; port?: number; previewPort?: number; open?: boolean; model?: string; visionModel?: string; context?: number; whisper?: string; whisperModel?: string; network?: string; brevity?: string; thinking?: string; learn?: string; palette?: string };
+export type UIOptions = { baseURL: string; port?: number; previewPort?: number; open?: boolean; model?: string; visionModel?: string; context?: number; whisper?: string; whisperModel?: string; network?: string; brevity?: string; thinking?: string; learn?: string; palette?: string; mode?: string };
 
 export async function startUI(opts: UIOptions) {
   // Installs and downloads: the header's 🌐 switch, saved for next time.
@@ -55,6 +55,8 @@ export async function startUI(opts: UIOptions) {
   let brevity = await resolveBrevity(opts.brevity);
   // How much the model thinks: the header's 💭 switch, saved too.
   let thinking = await resolveThinking(opts.thinking);
+  // Ask / Auto-approve edits / Auto-run: one choice for every project, kept between launches.
+  let mode: Mode = await resolveMode(opts.mode);
   // Learn rules from the user's corrections: the 📏 Rules dialog, saved too.
   let learn = await resolveLearn(opts.learn);
   // The colors Maxx designs with: the header's 🎨 picker, saved too.
@@ -76,7 +78,7 @@ export async function startUI(opts: UIOptions) {
     title: string;
     controller: AbortController | null;
   } | null = null;
-  const pending = new Map<string, (a: Answer, stopped?: boolean) => void>();
+  const pending = new Map<string, { res: (a: Answer, stopped?: boolean, why?: string) => void; stillNeeded?: () => boolean }>();
   // Follow-up questions waiting for the user (ask_user, Agent mode's briefing).
   const questions = new Map<string, (a: string | null) => void>();
   let stage: Stage | null = null;
@@ -143,13 +145,16 @@ export async function startUI(opts: UIOptions) {
     escalation: (e) => send({ type: "escalation", ...e }),
     learned: (l) => send({ type: "learned", ...l }),
     image: (tool, images) => send({ type: "image", tool, images: images.map((i) => `data:${i.mime};base64,${i.base64}`) }),
-    ask: (question, preview) =>
+    ask: (question, preview, stillNeeded) =>
       new Promise<Answer>((res) => {
         const id = crypto.randomUUID();
         // Closes the card on every open window, however it was answered.
-        pending.set(id, (a: Answer, stopped = false) => {
-          send({ type: "askDone", id, answer: String(a).startsWith("no") ? "no" : a, stopped });
-          res(a);
+        pending.set(id, {
+          res: (a: Answer, stopped = false, why?: string) => {
+            send({ type: "askDone", id, answer: String(a).startsWith("no") ? "no" : a, stopped, why });
+            res(a);
+          },
+          stillNeeded,
         });
         send({ type: "ask", id, question, preview });
       }),
@@ -291,7 +296,7 @@ export async function startUI(opts: UIOptions) {
     const model = o.model || saved?.model || opts.model || (await models())[0];
     if (!model) throw new Error(`no model at ${opts.baseURL}. Start LM Studio's server and load a model.`);
     const llm: LLMConfig = { baseURL: opts.baseURL, model };
-    const permissions = await new Permissions(dir, o.mode ?? state?.permissions.mode ?? "ask").load();
+    const permissions = await new Permissions(dir, o.mode ?? mode).load();
     const { vision, note } = await pickVision(llm, { visionModel: opts.visionModel });
     // The context this model was really loaded with, when the server says (never more than --context).
     const fit = await fitContext(opts.baseURL, model, contextWindow);
@@ -386,7 +391,22 @@ export async function startUI(opts: UIOptions) {
       }
       case "settings": {
         if (!state) return;
-        if (m.mode) state.permissions.mode = m.mode;
+        if (m.mode) {
+          const want = parseMode(String(m.mode));
+          if (!want) throw new Error("mode is ask, auto-edit or yolo");
+          mode = state.permissions.mode = want;
+          await saveMode(want);
+          // A card already waiting goes through if the new mode would not have asked.
+          let let_through = 0;
+          for (const [id, p] of [...pending]) {
+            if (p.stillNeeded && !p.stillNeeded()) {
+              pending.delete(id);
+              p.res("yes", false, "auto");
+              let_through++;
+            }
+          }
+          send({ type: "note", text: `${want === "yolo" ? "⚡ Auto-run on" : want === "auto-edit" ? "Auto-approve edits" : "Auto-run off"}: ${MODE_SAY[want]}${let_through ? `. Allowed the step that was waiting` : ""}.` });
+        }
         if (m.toolsets) {
           state.agent.useToolsets(m.toolsets);
           await state.agent.refreshSystemPrompt();
@@ -561,7 +581,7 @@ export async function startUI(opts: UIOptions) {
         return;
       case "answer":
         // Deny can carry the user's reason, which the model reads and Maxx learns a rule from.
-        pending.get(m.id)?.(m.answer === "no" && typeof m.why === "string" && m.why.trim() ? `no: ${m.why.trim().slice(0, 600)}` : m.answer);
+        pending.get(m.id)?.res(m.answer === "no" && typeof m.why === "string" && m.why.trim() ? `no: ${m.why.trim().slice(0, 600)}` : m.answer);
         pending.delete(m.id);
         return;
       case "reply":
@@ -570,7 +590,7 @@ export async function startUI(opts: UIOptions) {
         return;
       case "stop":
         state?.controller?.abort();
-        for (const [id, res] of pending) (res("no", true), pending.delete(id));
+        for (const [id, p] of pending) (p.res("no", true), pending.delete(id));
         for (const done of [...questions.values()]) done(null);
         for (const c of [...captures.values()]) c.rej(Object.assign(new Error("stopped"), { name: "AbortError" }));
         return;

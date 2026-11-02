@@ -40,7 +40,9 @@ export type AgentIO = {
   token(t: string): void;
   toolStart(name: string, args: string): void;
   toolEnd(name: string, result: string): void;
-  ask(question: string, preview: string): Promise<Answer>;
+  // stillNeeded: false once the user switched to a mode that lets this run
+  // (auto-run turned on while the card waits), so the UI can allow it itself.
+  ask(question: string, preview: string, stillNeeded?: () => boolean): Promise<Answer>;
   note(text: string): void;
   // Screenshots as they arrive, for UIs that can show them.
   image?(tool: string, images: Image[]): void;
@@ -285,7 +287,7 @@ export class Agent {
     const perms = this.opts.permissions;
     const asks = privacy ? !perms.allows(tool, {}) : perms.needsPrompt(tool, {});
     if (!asks) return perms.allows(tool, {}) ? "saved rule" : "not needed";
-    const a = await this.io.ask(question, preview);
+    const a = await this.io.ask(question, preview, () => (privacy ? !perms.allows(tool, {}) : perms.needsPrompt(tool, {})));
     if (a === "no") return "denied";
     if (a === "always") await perms.remember(tool, {});
     return "you";
@@ -657,7 +659,7 @@ export class Agent {
     const args = { command, timeout: 600 };
     this.io.toolStart("check", JSON.stringify(args));
     if (this.opts.permissions.needsPrompt(bash, args)) {
-      const answer = await this.io.ask("Let Maxx check the build?", `$ ${command}`);
+      const answer = await this.io.ask("Let Maxx check the build?", `$ ${command}`, () => this.opts.permissions.needsPrompt(bash, args));
       if (isNo(answer)) {
         this.io.toolEnd("check", "skipped");
         return quick;
@@ -762,7 +764,9 @@ export class Agent {
       } catch (e) {
         preview = `(no preview: ${(e as Error).message})`;
       }
-      const answer = await this.io.ask(`Allow ${tool.name}?`, preview);
+      const perms = this.opts.permissions;
+      const risky = perms.mode === "yolo" ? perms.risky(tool, args) : null;
+      const answer = await this.io.ask(risky ? `Auto-run is on, but this ${risky}. Allow ${tool.name}?` : `Allow ${tool.name}?`, preview, () => perms.needsPrompt(tool, args));
       if (isNo(answer)) {
         // The reason goes to the model now, and becomes a rule when the turn ends.
         const why = whyNo(answer);
