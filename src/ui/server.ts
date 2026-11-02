@@ -8,6 +8,7 @@ import type { LLMConfig } from "../llm.ts";
 import { pickVision } from "../vision.ts";
 import { recordTo } from "../devices/run.ts";
 import { textOf, typedText } from "../context.ts";
+import { fitContext } from "../modelctx.ts";
 import { deleteSession, listProjects, loadSession, newSessionId, restoreSession, saveSession, stripAttachments } from "../sessions.ts";
 import { buildTurn, imageLimits, type Upload } from "../attach.ts";
 import { PAGE } from "./page.ts";
@@ -138,6 +139,7 @@ export async function startUI(opts: UIOptions) {
       send({ type: "toolEnd", name, result });
     },
     note: (text) => send({ type: "note", text }),
+    retract: (why) => send({ type: "retract", why }),
     escalation: (e) => send({ type: "escalation", ...e }),
     learned: (l) => send({ type: "learned", ...l }),
     image: (tool, images) => send({ type: "image", tool, images: images.map((i) => `data:${i.mime};base64,${i.base64}`) }),
@@ -191,7 +193,7 @@ export async function startUI(opts: UIOptions) {
   // Each history entry the page draws, with the escalation banners in place.
   function transcript(agent: Agent) {
     const out: Record<string, unknown>[] = [];
-    const marks = (i: number) => agent.marks.filter((m) => m.at === i).forEach((m) => out.push({ role: "mark", text: m.text, active: m.active, learned: m.learned }));
+    const marks = (i: number) => agent.marks.filter((m) => m.at === i).forEach((m) => out.push({ role: "mark", text: m.text, active: m.active, learned: m.learned, retracted: m.retracted }));
     agent.history.forEach((m, i) => {
       marks(i);
       // Parts-array user messages are screenshots and Maxx's own reports (fix-it, plan); only the reports are shown, as notes.
@@ -201,7 +203,7 @@ export async function startUI(opts: UIOptions) {
       if (m.role === "user") return void (Array.isArray(m.content) && isReport(m.content) && out.push({ role: "note", text: textOf(m.content) }));
       out.push({ role: m.role, text: textOf(m.content as any), tools: "tool_calls" in m ? m.tool_calls?.map((t) => ({ name: t.function.name, args: t.function.arguments })) : undefined });
     });
-    agent.marks.filter((m) => m.at >= agent.history.length).forEach((m) => out.push({ role: "mark", text: m.text, active: m.active, learned: m.learned }));
+    agent.marks.filter((m) => m.at >= agent.history.length).forEach((m) => out.push({ role: "mark", text: m.text, active: m.active, learned: m.learned, retracted: m.retracted }));
     return out;
   }
 
@@ -287,17 +289,21 @@ export async function startUI(opts: UIOptions) {
     const llm: LLMConfig = { baseURL: opts.baseURL, model };
     const permissions = await new Permissions(dir, o.mode ?? state?.permissions.mode ?? "ask").load();
     const { vision, note } = await pickVision(llm, { visionModel: opts.visionModel });
+    // The context this model was really loaded with, when the server says (never more than --context).
+    const fit = await fitContext(opts.baseURL, model, contextWindow);
     const chat = isChatDir(dir);
     const toolsets = chat || isResearchDir(dir) ? [] : (o.toolsets ?? saved?.toolsets ?? []);
     const helper = chat ? null : await resolveHelper({}).catch(() => null);
     const agent = await new Agent(
       chat
-        ? { llm, cwd: dir, permissions, vision, network, brevity, thinking, palette, contextWindow: opts.context, chat: true, plan: false, memory: false, fixTries: 0 }
-        : { llm, cwd: dir, permissions, toolsets, vision, helper, network, brevity, thinking, palette, learn, contextWindow: opts.context, tools: [...TOOLS, ...stage!.tools()], mapTokens: agentSettings(contextWindow, goalSaved).mapTokens },
+        ? { llm, cwd: dir, permissions, vision, network, brevity, thinking, palette, contextWindow: fit.context, chat: true, plan: false, memory: false, fixTries: 0 }
+        : { llm, cwd: dir, permissions, toolsets, vision, helper, network, brevity, thinking, palette, learn, contextWindow: fit.context, tools: [...TOOLS, ...stage!.tools()], mapTokens: agentSettings(contextWindow, goalSaved).mapTokens },
       io,
     ).init();
     if (saved) await agent.restore(saved.id, saved.history);
     state = { cwd: dir, agent, permissions, llm, created: saved?.created ?? new Date().toISOString(), title: saved?.title ?? "", controller: null };
+    // A banner at the top, so it outlasts the redraw after each turn.
+    if (fit.note) agent.marks.push({ at: agent.history.length, text: fit.note.replace(/^\(|\)$/g, ""), active: false });
     if (chat) return; // nothing to replay, and the stage keeps showing the last project
     recordTo(resolve(dir, ".maxx", "replays", `${agent.session}.jsonl`));
     if (stage!.runner?.cwd !== dir) await stage!.use(dir);

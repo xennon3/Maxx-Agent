@@ -17,6 +17,8 @@ import { NETWORK_PROMPT } from "./network.ts";
 import { BREVITY_PROMPT, DEFAULT_BREVITY, type Brevity } from "./brevity.ts";
 import { BUDGET, DEFAULT_THINKING, planFor, sizeAsk, THINKING_PROMPT, type Thinking, type ThinkPlan } from "./thinking.ts";
 import { lookupPrompt, WEB_TOOLS } from "./web.ts";
+import { contextFromError } from "./modelctx.ts";
+import { finishNote, finishWarning, FINISH_TRIES, unfinished, type Unfinished } from "./unfinished.ts";
 import { mcpHub } from "./mcp.ts";
 import { chatPrompt } from "./chat.ts";
 import { mentionedPalette, paletteNote, palettePrompt, type Palette } from "./palette.ts";
@@ -52,6 +54,8 @@ export type AgentIO = {
   question?: AskFn;
   // A rule learned from the user's correction (new, or said again), for UIs that offer to take it back.
   learned?(l: Learned): void;
+  // The text just streamed was not an answer (the model's thinking, or cut off); Maxx asks again.
+  retract?(why: Unfinished): void;
 };
 
 export type Learned = { rule: Rule; isNew: boolean; replaced?: string; kind: Correction["kind"]; text: string };
@@ -107,6 +111,12 @@ const MAX_BAD_CALLS = 3;
 // the result carries a nudge, and the fifth ends the turn.
 const WARN_REPEATS = 3;
 const STOP_REPEATS = 5;
+// The same web search or fetch again only brings back what is already above,
+// so lookups count by the call alone: the second gets the nudge, and from the
+// third the model answers with what it found, with no tools for that step.
+const LOOKUPS = new Set(WEB_TOOLS.map((t) => t.name));
+const WARN_LOOKUPS = 2;
+const STOP_LOOKUPS = 3;
 // Once a tool turns out to be missing (no Java, no Android SDK), the model gets
 // this many more steps to tell the user before Maxx tells them instead.
 const BLOCKED_STEPS = 2;
@@ -128,7 +138,8 @@ export class Agent {
   toolsets: string[] = [];
   plan: Step[] = [];
   // Escalation banners, by the history length when they happened, so a redrawn transcript keeps them.
-  marks: { at: number; text: string; active: boolean; learned?: boolean }[] = [];
+  // `retracted`: a reply that was not an answer (the model's thinking), shown folded where it happened.
+  marks: { at: number; text: string; active: boolean; learned?: boolean; retracted?: { why: Unfinished; text: string } }[] = [];
   // The last check the fix-it loop ran in the latest turn (null: none ran).
   lastCheck: CheckResult | null = null;
   // Agent mode's task board, while a goal runs and after.
@@ -379,11 +390,13 @@ export class Agent {
     try {
       return (answer = await this.turn(userText, signal, o));
     } finally {
+      dropThinking(this.history);
       await this.endTurn(answer, learning, signal).catch(() => {});
     }
   }
 
   private async turn(userText: string | ContentPart[], signal: AbortSignal | undefined, o: { maxSteps?: number }): Promise<string> {
+    dropThinking(this.history);
     this.history.push({ role: "user", content: withPalette(userText, this.palette) });
     this.lastCheck = null;
     this.asked = 0;
@@ -412,6 +425,12 @@ export class Agent {
     };
     let blocked: Missing | undefined;
     let blockedSteps = 0;
+    // Replies that weren't answers (thinking, cut off): asked again this many times.
+    let finishTries = 0;
+    // Said to the model with the next request only (never kept in the history).
+    let pending = "";
+    // Lookups went in circles: one step with no tools, to answer from what it found.
+    let answerNow = false;
     // Thinking: sized by the ask, then by how the last step went.
     const size = sizeAsk(typeof userText === "string" ? userText : userText.map((p) => (p.type === "text" ? p.text : "")).join("\n"));
     let lastFailed = false;
@@ -424,12 +443,24 @@ export class Agent {
       const thinking = planFor(this.thinking, size, { step, failed: lastFailed, failures: failedInARow });
       const llm = helper ? helperLLM(helper, this.opts.llm.baseURL) : { ...this.opts.llm, thinking };
       // The brief rides along with each helper request; it is not kept in history.
-      const messages: Message[] = helper ? [...this.history, { role: "user", content: [{ type: "text", text: brief(helping!.reason, this.opts.llm.model) }] }] : this.history;
+      const once: Message[] = pending ? [{ role: "user", content: [{ type: "text", text: pending }] }] : [];
+      const messages: Message[] = helper ? [...this.history, ...once, { role: "user", content: [{ type: "text", text: brief(helping!.reason, this.opts.llm.model) }] }] : once.length ? [...this.history, ...once] : this.history;
+      pending = "";
+      const offer = answerNow ? [] : specs;
+      answerNow = false;
       const promptTokens = estimateTokens(messages);
       let res;
       try {
-        res = await complete(llm, messages, specs, (t) => this.io.token(t), signal, (p) => this.io.progress?.({ ...p, promptTokens }));
+        res = await complete(llm, messages, offer, (t) => this.io.token(t), signal, (p) => this.io.progress?.({ ...p, promptTokens }));
       } catch (e) {
+        // Too long for the model: the server says how much it really has. Plan for that and compact.
+        const real = helping ? null : contextFromError((e as Error).message);
+        if (real && real < this.contextWindow) {
+          this.io.note(`(${this.opts.llm.model} has only ${real} tokens of context, not ${this.contextWindow}; Maxx now plans for ${real})`);
+          this.opts.contextWindow = real;
+          await this.maybeCompact();
+          continue;
+        }
         // A helper that can't be reached (no key, no credit, offline) must not end the turn.
         if (!helping || (e as Error).name === "AbortError") throw e;
         this.io.note(`(the helper model failed: ${(e as Error).message})`);
@@ -445,6 +476,24 @@ export class Agent {
       }
 
       if (!res.toolCalls.length) {
+        // Not an answer: the model's thinking, a sentence that stops, no room left. Ask it to go on.
+        const why = helping ? null : unfinished(res.content, res.finish);
+        if (why && finishTries < FINISH_TRIES) {
+          finishTries++;
+          this.io.retract?.(why);
+          this.marks.push({ at: this.history.length, text: UNFINISHED_SAY[why], active: false, retracted: { why, text: (res.content || res.reasoning || "").slice(0, 6000) } });
+          this.io.note(`(${UNFINISHED_SAY[why]}; asking ${this.opts.llm.model} to finish, try ${finishTries} of ${FINISH_TRIES})`);
+          pending = finishNote(why, res.content, res.reasoning);
+          continue;
+        }
+        if (why) {
+          this.io.note(finishWarning(why, this.opts.llm.model, this.contextWindow));
+          if (!res.content.trim()) {
+            const msg = `Stopped: ${this.opts.llm.model} ended without writing an answer. Send "continue" to let it try again, or switch to another model.`;
+            this.history.push({ role: "assistant", content: msg });
+            return msg;
+          }
+        }
         this.history.push({ role: "assistant", content: res.content });
         if (helping) handBack("it answered");
         // A missing tool fails every check, so the fix-it loop would only go in circles.
@@ -459,7 +508,9 @@ export class Agent {
       }
 
       // A rescued call's text would confuse the model on the next turn, so store it as a real tool call.
-      this.history.push({ role: "assistant", content: res.rescued ? null : res.content || null, tool_calls: toWire(res.toolCalls) });
+      // Its thinking rides along until the turn ends, so the next step knows why it made the call.
+      const thought = keptThinking(res.reasoning, this.contextWindow);
+      this.history.push({ role: "assistant", content: res.rescued ? null : res.content || null, tool_calls: toWire(res.toolCalls), ...(thought ? { reasoning_content: thought } : {}) });
       const seen: ContentPart[] = [];
       let stepFailed = false;
       let trigger = "";
@@ -474,10 +525,17 @@ export class Agent {
         // Sending the same edit or write again is never progress, whatever it returned
         // (applied, then "not found", then applied...), so those count by the call alone.
         const writes = findTool(call.name, this.tools)?.risk === "write";
-        const key = `${call.name}|${canonicalArgs(call.arguments)}${writes ? "" : `|${result}`}`;
+        const lookup = LOOKUPS.has(call.name);
+        const key = `${call.name}|${canonicalArgs(call.arguments)}${writes || lookup ? "" : `|${result}`}`;
         const n = (repeats.get(key) ?? 0) + 1;
         repeats.set(key, n);
-        if (n >= WARN_REPEATS) {
+        if (lookup && n >= WARN_LOOKUPS) {
+          result += `\n\nNote from Maxx: you already made this exact ${call.name} call${n > 2 ? ` ${n} times` : ""} in this turn, so these results are the same as before. ${n >= STOP_LOOKUPS ? "Searching again is off for the next step: answer the user now with what you found, and say what you could not find." : "Use what you found above, or try different words."}`;
+          if (n >= STOP_LOOKUPS) {
+            answerNow = true;
+            this.io.note(`(${call.name} ran ${n} times with the same input; Maxx asked for an answer from what was found)`);
+          }
+        } else if (n >= WARN_REPEATS) {
           stuck = Math.max(stuck, n);
           stepFailed = true;
           trigger ||= `it ran the same ${call.name} call ${n} times${writes ? "" : " with the same result"}`;
@@ -882,4 +940,25 @@ export function withPalette<T extends string | ContentPart[]>(text: T, active: P
   const i = text.findIndex((x) => x.type === "text");
   if (i < 0) return [...text, { type: "text", text: paletteNote(p).trim() }] as T;
   return text.map((x, k) => (k === i && x.type === "text" ? { ...x, text: x.text + paletteNote(p) } : x)) as T;
+}
+
+const UNFINISHED_SAY: Record<Unfinished, string> = {
+  length: "the reply ran out of room",
+  empty: "the model thought but wrote no answer",
+  thinking: "that was the model's thinking, not an answer",
+  cut: "the reply stopped mid-way",
+};
+
+// The end of the thinking before a tool call, sized to the context: about 2%
+// of it, at most ~400 tokens, so an 8K model keeps its room.
+export function keptThinking(reasoning: string | undefined, context: number): string {
+  const t = reasoning?.trim() ?? "";
+  if (!t) return "";
+  const max = Math.max(300, Math.min(1600, Math.floor(context * 0.02) * 4));
+  return t.length <= max ? t : "…" + t.slice(-max).replace(/^\S*\s/, "");
+}
+
+// Earlier turns' thinking is noise (the chat templates drop it too).
+export function dropThinking(history: Message[]) {
+  for (const m of history) if (m.role === "assistant" && m.reasoning_content !== undefined) delete m.reasoning_content;
 }

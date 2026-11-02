@@ -68,6 +68,9 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
 .msg.user { align-self: flex-end; background: var(--user); padding: 8px 12px; border-radius: var(--radius); }
 .msg.note { color: var(--mute); font-size: 13px; }
 .msg.err { color: var(--bad); }
+.msg.retracted { color: var(--mute); font-size: 13px; border-left: 2px solid var(--line); padding-left: 8px; }
+.msg.retracted summary { cursor: pointer; }
+.msg.retracted .body { white-space: pre-wrap; margin-top: 4px; max-height: 240px; overflow: auto; }
 .tool { max-width: 860px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
 .tool summary { padding: 6px 10px; cursor: pointer; font-family: var(--mono); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool summary b { color: var(--accent); font-weight: 600; }
@@ -479,6 +482,18 @@ function clearEmpty() { const e = document.querySelector("#log .empty"); if (e) 
 function add(el) { clearEmpty(); const log = $("log"); const stick = log.scrollHeight - log.scrollTop - log.clientHeight < 80; log.appendChild(el); if (stick) log.scrollTop = log.scrollHeight; return el; }
 function div(cls, text) { const d = document.createElement("div"); d.className = cls; if (text !== undefined) d.textContent = text; return d; }
 function note(text, cls = "note") { add(div("msg " + cls, text)); }
+// A reply that was not an answer, folded: the model's thinking, or one cut short. Maxx asked again.
+function retracted(why, text) {
+  const d = document.createElement("details");
+  d.className = "msg retracted";
+  const sum = document.createElement("summary");
+  sum.textContent = (why === "thinking" || why === "empty" ? "💭 This was the model's thinking, not an answer" : why === "length" ? "✂ This reply ran out of room" : "✂ This reply stopped mid-way") + ", so Maxx asked it to finish";
+  const body = document.createElement("div");
+  body.className = "body";
+  body.textContent = text || "(nothing)";
+  d.append(sum, body);
+  return d;
+}
 // Claude Code style labels: "Write app/build.gradle.kts", "Tap Calculate".
 const VERBS = { read_file: "Read", write_file: "Write", edit_file: "Edit", list_files: "List", grep: "Search", bash: "Run",
   android_run: "Build & run on phone", android_screen: "Look at phone", android_tap: "Tap", android_type: "Type", android_swipe: "Swipe",
@@ -692,6 +707,13 @@ function on(m) {
       activity({ title: "Working" });
       return;
     case "note": return note(m.text);
+    case "retract": {
+      // What just streamed was the model's thinking or a reply cut short: fold it away, Maxx asks again.
+      if (!streaming) return;
+      streaming.replaceWith(retracted(m.why, streaming.raw || ""));
+      streaming = null;
+      return;
+    }
     case "learned": {
       note(m.text, "learned");
       return toast("📏 " + m.rule.text, "Undo", () => send({ type: "forgetRule", text: m.rule.text }));
@@ -996,7 +1018,8 @@ function render(s) {
     const results = cur.history.filter((h) => h.role === "tool").map((h) => h.text);
     let ri = 0;
     for (const h of cur.history) {
-      if (h.role === "mark") add(h.learned ? div("msg learned", h.text) : div("mark" + (h.active ? " up" : ""), (h.active ? "🧠 " : "↩ ") + h.text));
+      if (h.role === "mark" && h.retracted) add(retracted(h.retracted.why, h.retracted.text));
+      else if (h.role === "mark") add(h.learned ? div("msg learned", h.text) : div("mark" + (h.active ? " up" : ""), (h.active ? "🧠 " : "↩ ") + h.text));
       else if (h.role === "user") userMsg(h.text, h.files);
       else if (h.role === "note") note(h.text.split("\\n")[0]);
       else if (h.role === "assistant") {

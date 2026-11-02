@@ -9,6 +9,7 @@ import type { LLMConfig } from "./llm.ts";
 import { TOOLSETS } from "./tools/index.ts";
 import { pickVision } from "./vision.ts";
 import { textOf } from "./context.ts";
+import { fitContext } from "./modelctx.ts";
 import { recordTo } from "./devices/run.ts";
 import { replay } from "./replay.ts";
 import { startUI } from "./ui/server.ts";
@@ -439,14 +440,17 @@ const judgeFlag = values.judge === undefined ? undefined : parseSwitch(values.ju
 if (values.judge !== undefined && judgeFlag === undefined) die("--judge is on or off");
 const briefingFlag = values.briefing === undefined ? undefined : parseSwitch(values.briefing);
 if (values.briefing !== undefined && briefingFlag === undefined) die("--briefing is on or off");
-const goalSettings = agentSettings(Number(values.context), {
+// The context the model was really loaded with, when the server says (never more than --context).
+const fit = await fitContext(baseURL, llm.model, Number(values.context));
+if (fit.note) console.log(`${C.dim}${fit.note}${C.reset}`);
+const goalSettings = agentSettings(fit.context, {
   ...(await loadAgentSettings()),
   ...cleanSettings({ maxTasks: values["max-tasks"], stepsPerTask: values["task-steps"], tries: values["task-tries"], mapTokens: values["map-tokens"], judge: judgeFlag, briefing: briefingFlag, askMinutes: values["ask-wait"] }),
 });
 const crew = crewSettings({ ...(await loadCrewSettings()), ...cleanCrew({ workers: values.workers, slots: values.slots, models: values["crew-models"] }) });
 if (values["max-tasks"]) crew.maxTasks = goalSettings.maxTasks;
 const probed = new Map<string, number>();
-const agent = await new Agent({ llm, cwd, permissions, contextWindow: Number(values.context), toolsets, vision, check, fixTries, plan: !values["no-plan"], helper, network, brevity, thinking, palette, learn, mapTokens: goalSettings.mapTokens }, io).init();
+const agent = await new Agent({ llm, cwd, permissions, contextWindow: fit.context, toolsets, vision, check, fixTries, plan: !values["no-plan"], helper, network, brevity, thinking, palette, learn, mapTokens: goalSettings.mapTokens }, io).init();
 let created = new Date().toISOString();
 let title = "";
 if (resumed) await resumeInto(resumed);
@@ -520,7 +524,7 @@ async function turn(text: string) {
   try {
     const files = staged;
     staged = [];
-    const t = await buildTurn(text, files, { cwd, contextWindow: Number(values.context), vision, signal: controller.signal });
+    const t = await buildTurn(text, files, { cwd, contextWindow: agent.contextWindow, vision, signal: controller.signal });
     for (const n of t.notes) io.note(n);
     await agent.send(t.content, controller.signal);
     process.stdout.write("\n");

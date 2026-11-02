@@ -15,7 +15,9 @@ export type ContentPart =
 export type Message =
   | { role: "system"; content: string }
   | { role: "user"; content: string | ContentPart[] }
-  | { role: "assistant"; content: string | null; tool_calls?: WireToolCall[] }
+  // reasoning_content: the model's thinking before a tool call, kept only while
+  // its turn runs (Qwen's and DeepSeek's templates read it back within a turn).
+  | { role: "assistant"; content: string | null; tool_calls?: WireToolCall[]; reasoning_content?: string }
   | { role: "tool"; tool_call_id: string; content: string };
 
 type WireToolCall = {
@@ -52,6 +54,10 @@ export type Completion = {
   usage?: { input: number; output: number };
   // Thinking tokens this call streamed, and why Maxx cut them off (if it did).
   thought?: { tokens: number; cut?: "budget" | "loop" };
+  // What the model thought (reasoning_content, or <think> text moved out of the content).
+  reasoning?: string;
+  // The server's finish_reason: "stop", "length" (out of room), "tool_calls"...
+  finish?: string;
 };
 
 export function toWire(calls: ToolCall[]): WireToolCall[] {
@@ -90,8 +96,8 @@ async function completeNow(
   if (cfg.provider === "anthropic") return completeAnthropic(cfg, messages, tools, onToken, signal, onProgress);
   const plan = cfg.thinking;
   if (!plan) {
-    const { thinking: _t, ...res } = await streamOnce(cfg, messages, tools, onToken, signal, onProgress, {}, Infinity);
-    return res;
+    const { thinking, ...res } = await streamOnce(cfg, messages, tools, onToken, signal, onProgress, {}, Infinity);
+    return { ...res, reasoning: thinking || undefined };
   }
   // Over budget or going in circles: cut, then ask again with thinking off and
   // the gist of the thoughts. A server that ignores "off" gets one more cut,
@@ -106,8 +112,8 @@ async function completeNow(
     spent += res.thought?.tokens ?? 0;
     cut ??= res.thought?.cut;
     if (!res.thought?.cut) {
-      const { thinking: _t, ...done } = res;
-      return { ...done, thought: { tokens: spent, cut } };
+      const { thinking, ...done } = res;
+      return { ...done, reasoning: thinking || undefined, thought: { tokens: spent, cut } };
     }
     msgs = [...messages, { role: "user", content: cutNote(res.thinking, res.thought.cut) }];
   }
@@ -198,6 +204,7 @@ async function streamBody(
   let inlineThink = false;
 
   let content = "";
+  let finish: string | undefined;
   let usage: Completion["usage"];
   const partial = new Map<number, ToolCall>();
   const decoder = new TextDecoder();
@@ -221,6 +228,7 @@ async function streamBody(
       }
       if (json.usage) usage = { input: json.usage.prompt_tokens ?? 0, output: json.usage.completion_tokens ?? 0 };
       const delta = json.choices?.[0]?.delta ?? {};
+      if (json.choices?.[0]?.finish_reason) finish = String(json.choices[0].finish_reason);
       const before = tokens;
       // LM Studio calls it reasoning_content, some servers reasoning.
       const reasoning = delta.reasoning_content ?? delta.reasoning;
@@ -283,13 +291,21 @@ async function streamBody(
   phase = "done";
   report();
 
+  // Thinking left in the content: "<think>...</think>answer", or only the
+  // closing tag when the template opened it in the prompt (DeepSeek, Qwen).
+  const split = splitThinking(content);
+  content = split.content;
+  if (split.thinking && !thinking.trim()) thinking = split.thinking;
+
   const toolCalls = [...partial.values()].filter((c) => c.name);
   const thought = { tokens: thinkTokens };
-  if (toolCalls.length) return { content, toolCalls, rescued: false, usage, thought, thinking };
+  if (toolCalls.length) return { content, toolCalls, rescued: false, usage, thought, thinking, finish };
 
   const known = new Set(tools.map((t) => t.function.name));
-  const rescued = rescueToolCalls(content, known);
-  return { content, toolCalls: rescued, rescued: rescued.length > 0, usage, thought, thinking };
+  // A call the server failed to parse can be left in the thinking too (DeepSeek's DSML markup).
+  let rescued = rescueToolCalls(content, known);
+  if (!rescued.length && !content.trim() && thinking) rescued = rescueToolCalls(thinking, known);
+  return { content, toolCalls: rescued, rescued: rescued.length > 0, usage, thought, thinking, finish };
 }
 
 // Hides `<tool_call>{...}</tool_call>` text from the live output while it
@@ -381,11 +397,45 @@ export function rescueToolCalls(text: string, known: Set<string>): ToolCall[] {
   }
   if (out.length) return out;
 
+  // DeepSeek V3.2+: <｜DSML｜invoke name="x"><｜DSML｜parameter name="k" string="true">v</｜DSML｜parameter></｜DSML｜invoke>
+  // (servers print the bars as ｜ or |, and some drop the "DSML" word).
+  const bar = "[｜|]";
+  const dsml = `<${bar}(?:DSML${bar})?`;
+  const close = `</${bar}(?:DSML${bar})?`;
+  for (const m of text.matchAll(new RegExp(`${dsml}invoke\\s+name="([\\w.-]+)"\\s*>([\\s\\S]*?)${close}invoke>`, "g"))) {
+    const args: Record<string, unknown> = {};
+    for (const p of m[2]!.matchAll(new RegExp(`${dsml}parameter\\s+name="([\\w.-]+)"(?:\\s+string="(true|false)")?\\s*>([\\s\\S]*?)${close}parameter>`, "g"))) {
+      const raw = p[3]!;
+      args[p[1]!] = p[2] === "false" ? (parseLoose(raw) ?? raw) : raw;
+    }
+    push(m[1]!, args);
+  }
+  if (out.length) return out;
+
+  // Older DeepSeek: <｜tool▁call▁begin｜>function<｜tool▁sep｜>name\n```json\n{...}\n```<｜tool▁call▁end｜>
+  for (const m of text.matchAll(/<[｜|]tool[▁_ ]call[▁_ ]begin[｜|]>(?:function)?<[｜|]tool[▁_ ]sep[｜|]>([\w.-]+)\s*(?:```(?:json)?\s*)?(\{[\s\S]*?\})\s*(?:```)?\s*<[｜|]tool[▁_ ]call[▁_ ]end[｜|]>/g)) {
+    const obj = parseLoose(m[2]!);
+    if (obj) push(m[1]!, obj);
+  }
+  if (out.length) return out;
+
   for (const m of text.matchAll(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/g)) {
     const obj = parseLoose(m[1]!);
     if (obj?.name && (obj.arguments || obj.parameters)) push(obj.name, obj.arguments ?? obj.parameters);
   }
   return out;
+}
+
+// Pull thinking out of the content. Without any tag nothing changes.
+export function splitThinking(text: string): { content: string; thinking: string } {
+  const end = text.indexOf("</think>");
+  if (end >= 0) {
+    const before = text.slice(0, end).replace(/<think>/g, "").trim();
+    return { content: text.slice(end + "</think>".length).replace(/^\s+/, ""), thinking: before };
+  }
+  const open = text.search(/^\s*<think>/);
+  if (open >= 0) return { content: "", thinking: text.replace(/^\s*<think>/, "").trim() };
+  return { content: text, thinking: "" };
 }
 
 function parseLoose(s: string): any {
