@@ -63,7 +63,7 @@ header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding:
 header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; }
 .chip { border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; cursor: pointer; user-select: none; font-size: 13px; }
 .chip.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-#log { flex: 1; overflow: auto; padding: 18px 16px 8px; display: flex; flex-direction: column; gap: 10px; }
+#log { flex: 1; min-height: 120px; overflow: auto; padding: 18px 16px 8px; display: flex; flex-direction: column; gap: 10px; }
 .msg { max-width: 860px; white-space: pre-wrap; word-wrap: break-word; }
 .msg.user { align-self: flex-end; background: var(--user); padding: 8px 12px; border-radius: var(--radius); }
 .msg.note { color: var(--mute); font-size: 13px; }
@@ -80,6 +80,22 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
 .ask .q { padding: 8px 12px; font-weight: 600; }
 .ask .btns { display: flex; gap: 8px; padding: 8px 12px; }
 .ask.answered { border-color: var(--line); opacity: .7; }
+/* A step waiting for the user's OK is pinned above the message box, outside the scrolling transcript, so its buttons can't end up out of reach. */
+#okdock { display: none; flex-direction: column; gap: 8px; padding: 8px 16px; border-top: 2px solid var(--accent); background: var(--bg); max-height: 45vh; overflow: auto; flex: none; }
+#okdock.on { display: flex; }
+#okdock .ask { box-shadow: 0 -2px 14px rgba(217,72,15,.18); animation: okpulse 1.6s ease-in-out 3; }
+#okdock .ask pre { max-height: 22vh; }
+#okdock .more { color: var(--mute); font-size: 12px; }
+@keyframes okpulse { 50% { box-shadow: 0 0 0 4px rgba(217,72,15,.25); } }
+.ask .btns kbd { font: 11px var(--mono); opacity: .7; margin-left: 6px; }
+.ask .btns .hint { margin-left: auto; align-self: center; color: var(--mute); font-size: 12px; }
+.askslot { display: none; }
+#okdock .ask:focus { outline: none; }
+/* On a short window the dock wins: the transcript, board and Plan give up their room before the buttons do. */
+main:has(#okdock.on) #log { min-height: min(120px, 12vh); }
+main:has(#okdock.on) .board.on, main:has(#okdock.on) .plan.on { min-height: 0; }
+main:has(#okdock.on) .composer textarea { height: 40px; }
+.activity.asking { cursor: pointer; }
 .qcard { max-width: 860px; border: 2px solid #7048e8; border-radius: var(--radius); background: var(--panel); }
 .qcard .q { padding: 10px 12px 4px; font-weight: 600; }
 .qcard .q::before { content: "❓ "; }
@@ -148,7 +164,7 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
 .board.min > :not(.head):not(.bar), .plan.min > :not(.head) { display: none; }
 .board.on.min, .board.crew.on.min { max-height: none; overflow: visible; }
 .board.min .bar { margin-bottom: 0; }
-.plan.on:not(.min) { max-height: 30vh; overflow: auto; }
+.plan.on:not(.min) { max-height: 30vh; overflow: auto; flex: 0 1 auto; min-height: 2.6em; }
 .plan .head { gap: 8px; align-items: baseline; }
 .plan .head > b { flex: none; }
 .tool.live:not([open]) summary .meta::after { content: " · click to watch the code"; }
@@ -167,7 +183,7 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
 .plan .step.next { font-weight: 600; }
 .plan .step.next .box { color: var(--accent); }
 .board { display: none; margin: 10px 16px 0; padding: 8px 12px; border: 1px solid var(--line); border-left: 3px solid #1971c2; border-radius: var(--radius); background: var(--panel); font-size: 13px; max-width: 860px; }
-.board.on { display: block; max-height: 34vh; overflow: auto; }
+.board.on { display: block; max-height: 34vh; overflow: auto; flex: 0 1 auto; min-height: 2.6em; }
 .board .head { display: flex; gap: 8px; align-items: baseline; font-weight: 600; }
 .board .head .goal { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .board .head .state { color: var(--mute); font-weight: 400; flex: none; }
@@ -349,6 +365,7 @@ ${SOUND_CSS}
     <div class="plan" id="plan"></div>
   ${LAB_VIEW}
   <div id="log"></div>
+  <div id="okdock"></div>
   <div class="activity" id="activity"><span class="spin" id="actSpin">⠋</span><span class="what" id="actWhat"></span><span class="meta" id="actMeta"></span><span class="tail" id="actTail"></span></div>
   ${VOICE_HINT}
   <div class="composer">
@@ -734,13 +751,14 @@ function on(m) {
       return;
     case "image": return stage.shot(m.images[m.images.length - 1], m.tool);
     case "ask": return askCard(m);
+    case "askDone": return askClosed(m.id, m.answer === "yes" ? "Allowed" : m.answer === "always" ? "Always allowed" : m.stopped ? "Stopped" : "Denied");
     case "question": return questionCard(m);
     case "questionDone": return questionDone(m);
     case "busy":
       busy = m.busy; $("stopBtn").disabled = !busy; $("sendBtn").disabled = busy; if (busy) $("undoBtn").disabled = true;
       $("rgo").disabled = busy; $("rstop").disabled = !busy;
       if (!busy) { helperLive = null; $("activity").classList.remove("helper"); }
-      if (!busy) { streaming = null; thinkCard = null; abandonWriting(); }
+      if (!busy) { streaming = null; thinkCard = null; abandonWriting(); for (const id of [...askCards.keys()]) askClosed(id, "Stopped"); }
       activity(busy ? { title: "Starting" } : null);
       return;
     case "done": streaming = null; return;
@@ -917,25 +935,68 @@ function answeredCard(question, result) {
   if (m) d.querySelector(".a").appendChild(document.createTextNode(m[1]));
 }
 
+// Steps waiting for the user's OK, by id. Each card sits in the dock above the message box while it waits,
+// then goes back into the transcript where it was asked.
+const askCards = new Map();
+const baseTitle = document.title;
 function askCard(m) {
   streaming = null;
   activity({ title: "Waiting for your OK" });
-  const d = add(div("ask"));
+  const slot = add(div("askslot"));
+  const d = div("ask");
   d.innerHTML = '<div class="q">' + esc(m.question) + "</div>" + (m.preview ? "<pre>" + ansi(m.preview) + "</pre>" : "") +
-    '<div class="btns"><button class="primary" data-a="yes">Allow</button><button data-a="always">Always allow</button><button class="danger" data-a="no">Deny</button></div>' +
+    '<div class="btns"><button class="primary" data-a="yes">Allow<kbd>Y</kbd></button><button data-a="always">Always allow<kbd>A</kbd></button><button class="danger" data-a="no">Deny<kbd>N</kbd></button><span class="hint">Maxx is paused until you answer</span></div>' +
     '<div class="why"><input placeholder="Why not? (optional: Maxx reads it and learns a rule; Enter denies)" autocomplete="off"></div>';
   const why = d.querySelector(".why input");
   const answer = (a) => {
+    if (!askCards.has(m.id)) return;
     const reason = a === "no" ? why.value.trim() : "";
     send({ type: "answer", id: m.id, answer: a, why: reason });
-    d.classList.add("answered");
-    d.querySelector(".btns").textContent = a === "no" ? "Denied" + (reason ? ": " + reason : "") : a === "always" ? "Always allowed" : "Allowed";
-    d.querySelector(".why").remove();
+    askClosed(m.id, a === "no" ? "Denied" + (reason ? ": " + reason : "") : a === "always" ? "Always allowed" : "Allowed");
   };
+  d.answer = answer;
+  d.askSlot = slot;
   d.querySelectorAll("button").forEach((b) => b.onclick = () => answer(b.dataset.a));
   why.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); answer("no"); } };
+  askCards.set(m.id, d);
+  $("okdock").appendChild(d);
+  drawDock();
+  // Put the keyboard on the card (not on a button, so a stray Enter can't allow anything): Y / A / N answer
+  // right away, and Tab goes straight to Allow. Leave it alone while the user is typing something.
+  const ae = document.activeElement, typing = ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && ae.value;
+  if (!typing && askCards.size === 1) { d.tabIndex = -1; d.focus({ preventScroll: true }); }
   if (document.hidden && "Notification" in window && Notification.permission === "granted") new Notification("Maxx needs your OK", { body: m.question });
 }
+// The step stopped waiting: answered here, in another window, or cancelled by Stop.
+function askClosed(id, label) {
+  const d = askCards.get(id);
+  if (!d) return;
+  askCards.delete(id);
+  d.classList.add("answered");
+  d.querySelector(".btns").textContent = label;
+  const w = d.querySelector(".why"); if (w) w.remove();
+  d.askSlot.replaceWith(d);
+  drawDock();
+  if (!askCards.size && busy) activity({ title: "Working" });
+}
+function drawDock() {
+  const dock = $("okdock"), n = askCards.size;
+  dock.querySelectorAll(".more").forEach((e) => e.remove());
+  if (n > 1) dock.appendChild(div("more", n + " steps are waiting for your OK; Y / A / N answers the top one."));
+  dock.classList.toggle("on", n > 0);
+  $("activity").classList.toggle("asking", n > 0);
+  document.title = n ? "⏳ OK? · " + baseTitle : baseTitle;
+}
+$("activity").addEventListener("click", () => { const d = askCards.values().next().value; if (d) d.querySelector("button").focus(); });
+document.addEventListener("keydown", (e) => {
+  if (!askCards.size || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+  const t = e.target, typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+  if (typing || document.querySelector("dialog[open]")) return;
+  const a = { y: "yes", a: "always", n: "no" }[e.key.toLowerCase()];
+  if (!a) return;
+  e.preventDefault();
+  askCards.values().next().value.answer(a);
+});
 
 ${STAGE_JS}
 ${VOICE_JS}

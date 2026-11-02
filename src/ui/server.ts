@@ -76,7 +76,7 @@ export async function startUI(opts: UIOptions) {
     title: string;
     controller: AbortController | null;
   } | null = null;
-  const pending = new Map<string, (a: Answer) => void>();
+  const pending = new Map<string, (a: Answer, stopped?: boolean) => void>();
   // Follow-up questions waiting for the user (ask_user, Agent mode's briefing).
   const questions = new Map<string, (a: string | null) => void>();
   let stage: Stage | null = null;
@@ -146,7 +146,11 @@ export async function startUI(opts: UIOptions) {
     ask: (question, preview) =>
       new Promise<Answer>((res) => {
         const id = crypto.randomUUID();
-        pending.set(id, res);
+        // Closes the card on every open window, however it was answered.
+        pending.set(id, (a: Answer, stopped = false) => {
+          send({ type: "askDone", id, answer: String(a).startsWith("no") ? "no" : a, stopped });
+          res(a);
+        });
         send({ type: "ask", id, question, preview });
       }),
     question: (q, signal) =>
@@ -566,7 +570,7 @@ export async function startUI(opts: UIOptions) {
         return;
       case "stop":
         state?.controller?.abort();
-        for (const [id, res] of pending) (res("no"), pending.delete(id));
+        for (const [id, res] of pending) (res("no", true), pending.delete(id));
         for (const done of [...questions.values()]) done(null);
         for (const c of [...captures.values()]) c.rej(Object.assign(new Error("stopped"), { name: "AbortError" }));
         return;
