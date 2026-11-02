@@ -3,6 +3,7 @@
 // local models sometimes write into plain text instead of `tool_calls`.
 
 import { completeAnthropic } from "./anthropic.ts";
+import { cutNote, markPlain, ruminating, sendsFields, thinkingFields, type ThinkPlan } from "./thinking.ts";
 import { parsePartialJSON, TEXT_CALL_CLOSE, TEXT_CALL_OPEN, type Phase, type StreamProgress } from "./progress.ts";
 
 export type ToolCall = { id: string; name: string; arguments: string };
@@ -36,6 +37,8 @@ export type LLMConfig = {
   // "anthropic" talks to Claude's Messages API instead (the escalation helper).
   provider?: "openai" | "anthropic";
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  // How much the model may think on this request (see thinking.ts); unset: no limit.
+  thinking?: ThinkPlan;
   // Crew mode: wait for a free slot on the model before asking (see gate.ts).
   gate?: { acquire(signal?: AbortSignal): Promise<() => void> };
 };
@@ -47,6 +50,8 @@ export type Completion = {
   // Only from hosted APIs: the model declined, and what the call used.
   refused?: boolean;
   usage?: { input: number; output: number };
+  // Thinking tokens this call streamed, and why Maxx cut them off (if it did).
+  thought?: { tokens: number; cut?: "budget" | "loop" };
 };
 
 export function toWire(calls: ToolCall[]): WireToolCall[] {
@@ -83,6 +88,68 @@ async function completeNow(
   onProgress: (p: StreamProgress) => void,
 ): Promise<Completion> {
   if (cfg.provider === "anthropic") return completeAnthropic(cfg, messages, tools, onToken, signal, onProgress);
+  const plan = cfg.thinking;
+  if (!plan) {
+    const { thinking: _t, ...res } = await streamOnce(cfg, messages, tools, onToken, signal, onProgress, {}, Infinity);
+    return res;
+  }
+  // Over budget or going in circles: cut, then ask again with thinking off and
+  // the gist of the thoughts. A server that ignores "off" gets one more cut,
+  // then the plain request, so a turn never ends on a cut.
+  let msgs = messages;
+  let spent = 0;
+  let cut: "budget" | "loop" | undefined;
+  for (let attempt = 0; ; attempt++) {
+    const p: ThinkPlan = attempt === 0 ? plan : { tier: 0, budget: Math.max(256, plan.budget), why: plan.why };
+    const budget = attempt >= 2 ? Infinity : p.budget;
+    const res = await streamOnce(cfg, msgs, tools, onToken, signal, onProgress, sendsFields(cfg.baseURL) ? thinkingFields(attempt >= 2 ? { ...p, tier: 4 } : p) : {}, budget);
+    spent += res.thought?.tokens ?? 0;
+    cut ??= res.thought?.cut;
+    if (!res.thought?.cut) {
+      const { thinking: _t, ...done } = res;
+      return { ...done, thought: { tokens: spent, cut } };
+    }
+    msgs = [...messages, { role: "user", content: cutNote(res.thinking, res.thought.cut) }];
+  }
+}
+
+// The fields a server rejected: a 400 or 422 that names one of them (or says nothing more useful).
+const rejectsFields = (status: number, body: string) => (status === 400 || status === 422) && /chat_template_kwargs|reasoning|enable_thinking|unrecognized|unknown|extra|not permitted|additional/i.test(body);
+
+async function streamOnce(
+  cfg: LLMConfig,
+  messages: Message[],
+  tools: ToolSpec[],
+  onToken: (t: string) => void,
+  outer: AbortSignal | undefined,
+  onProgress: (p: StreamProgress) => void,
+  extra: Record<string, unknown>,
+  budget: number,
+): Promise<Completion & { thinking: string }> {
+  // Our own abort, for cutting the thinking short; the caller's still stops everything.
+  const ctl = new AbortController();
+  const stop = () => ctl.abort();
+  if (outer?.aborted) ctl.abort();
+  outer?.addEventListener("abort", stop, { once: true });
+  const signal = ctl.signal;
+  try {
+    return await streamBody(cfg, messages, tools, onToken, signal, onProgress, extra, budget, ctl);
+  } finally {
+    outer?.removeEventListener("abort", stop);
+  }
+}
+
+async function streamBody(
+  cfg: LLMConfig,
+  messages: Message[],
+  tools: ToolSpec[],
+  onToken: (t: string) => void,
+  signal: AbortSignal,
+  onProgress: (p: StreamProgress) => void,
+  extra: Record<string, unknown>,
+  budget: number,
+  ctl: AbortController,
+): Promise<Completion & { thinking: string }> {
   const started = Date.now();
   let tokens = 0;
   let phase: Phase = "waiting";
@@ -95,26 +162,40 @@ async function completeNow(
     onProgress({ phase, tokens, elapsedMs: now - started, generatingMs: firstAt ? now - firstAt : 0, thinking: thinking || undefined, tool });
   };
   report();
-  const res = await fetch(`${cfg.baseURL.replace(/\/$/, "")}/chat/completions`, {
-    method: "POST",
-    signal,
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${cfg.apiKey ?? "lm-studio"}`,
-    },
-    body: JSON.stringify({
-      model: cfg.model,
-      messages,
-      ...(tools.length ? { tools, tool_choice: "auto" } : {}),
-      temperature: cfg.temperature ?? 0.3,
-      stream: true,
-      // Hosted APIs report what a call used; local servers don't need asking.
-      ...(cfg.apiKey ? { stream_options: { include_usage: true } } : {}),
-    }),
-  });
+  const post = (fields: Record<string, unknown>) =>
+    fetch(`${cfg.baseURL.replace(/\/$/, "")}/chat/completions`, {
+      method: "POST",
+      signal,
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${cfg.apiKey ?? "lm-studio"}`,
+      },
+      body: JSON.stringify({
+        model: cfg.model,
+        messages,
+        ...(tools.length ? { tools, tool_choice: "auto" } : {}),
+        temperature: cfg.temperature ?? 0.3,
+        stream: true,
+        // Hosted APIs report what a call used; local servers don't need asking.
+        ...(cfg.apiKey ? { stream_options: { include_usage: true } } : {}),
+        ...fields,
+      }),
+    });
+  let res = await post(extra);
+  if (!res.ok && Object.keys(extra).length) {
+    const body = await res.text();
+    if (!rejectsFields(res.status, body)) throw new Error(`model server returned ${res.status}: ${body}`);
+    // A strict server: never send it the thinking switches again; the budget still applies.
+    markPlain(cfg.baseURL);
+    res = await post({});
+  }
   if (!res.ok || !res.body) {
     throw new Error(`model server returned ${res.status}: ${await res.text()}`);
   }
+  let thinkTokens = 0;
+  let cut: "budget" | "loop" | undefined;
+  // Some servers leave the thinking in the content, between <think> tags.
+  let inlineThink = false;
 
   let content = "";
   let usage: Completion["usage"];
@@ -123,7 +204,9 @@ async function completeNow(
   let buf = "";
   const textCalls = new TextCallWatcher();
 
-  for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+  const reader = res.body as unknown as AsyncIterable<Uint8Array>;
+  try {
+  for await (const chunk of reader) {
     buf += decoder.decode(chunk, { stream: true });
     const lines = buf.split("\n");
     buf = lines.pop() ?? "";
@@ -145,9 +228,15 @@ async function completeNow(
         thinking += reasoning;
         phase = "thinking";
         tokens++;
+        thinkTokens++;
       }
       if (typeof delta.content === "string" && delta.content) {
         content += delta.content;
+        if (!inlineThink && !thinkTokens && /^\s*<think>/.test(content) && !content.includes("</think>")) inlineThink = true;
+        if (inlineThink) {
+          if (content.includes("</think>")) inlineThink = false;
+          else (thinkTokens++, (thinking += delta.content));
+        }
         tokens++;
         const shown = textCalls.push(delta.content);
         if (shown) onToken(shown);
@@ -168,7 +257,26 @@ async function completeNow(
       }
       if (delta.tool_calls?.length) tokens++;
       if (tokens !== before) report();
+      // Only thinking so far (no answer, no tool call): is it time to cut?
+      const thinkingOnly = !partial.size && (inlineThink || !content.trim());
+      if (thinkingOnly && thinkTokens && !cut) {
+        if (thinkTokens > budget) cut = "budget";
+        else if (thinkTokens % 32 === 0 && ruminating(thinking)) cut = "loop";
+        if (cut) {
+          ctl.abort();
+          break;
+        }
+      }
     }
+    if (cut) break;
+  }
+  } catch (e) {
+    if (!cut) throw e;
+  }
+  if (cut) {
+    phase = "done";
+    report();
+    return { content: "", toolCalls: [], rescued: false, usage, thought: { tokens: thinkTokens, cut }, thinking };
   }
   const tail = textCalls.flush();
   if (tail) onToken(tail);
@@ -176,11 +284,12 @@ async function completeNow(
   report();
 
   const toolCalls = [...partial.values()].filter((c) => c.name);
-  if (toolCalls.length) return { content, toolCalls, rescued: false, usage };
+  const thought = { tokens: thinkTokens };
+  if (toolCalls.length) return { content, toolCalls, rescued: false, usage, thought, thinking };
 
   const known = new Set(tools.map((t) => t.function.name));
   const rescued = rescueToolCalls(content, known);
-  return { content, toolCalls: rescued, rescued: rescued.length > 0, usage };
+  return { content, toolCalls: rescued, rescued: rescued.length > 0, usage, thought, thinking };
 }
 
 // Hides `<tool_call>{...}</tool_call>` text from the live output while it

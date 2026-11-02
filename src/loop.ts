@@ -15,6 +15,7 @@ import { detectCheck, excerpt, quickCheck, type CheckResult } from "./fixit.ts";
 import { bash } from "./tools/bash.ts";
 import { NETWORK_PROMPT } from "./network.ts";
 import { BREVITY_PROMPT, DEFAULT_BREVITY, type Brevity } from "./brevity.ts";
+import { BUDGET, DEFAULT_THINKING, planFor, sizeAsk, THINKING_PROMPT, type Thinking, type ThinkPlan } from "./thinking.ts";
 import { lookupPrompt, WEB_TOOLS } from "./web.ts";
 import { mcpHub } from "./mcp.ts";
 import { chatPrompt } from "./chat.ts";
@@ -79,6 +80,8 @@ export type AgentOptions = {
   network?: boolean;
   // How much the model says (default brief); only the prompt changes.
   brevity?: Brevity;
+  // How much the model may think before acting (default auto: sized per step).
+  thinking?: Thinking;
   // The colors the model designs with (null or unset: it picks its own).
   palette?: Palette | null;
   // Chat mode: no tools, no project, and a prompt about drawing visuals instead.
@@ -187,6 +190,15 @@ export class Agent {
     await this.refreshSystemPrompt();
   }
 
+  get thinking(): Thinking {
+    return this.opts.thinking ?? DEFAULT_THINKING;
+  }
+
+  async setThinking(level: Thinking) {
+    this.opts.thinking = level;
+    await this.refreshSystemPrompt();
+  }
+
   get palette(): Palette | null {
     return this.opts.palette ?? null;
   }
@@ -243,7 +255,9 @@ export class Agent {
   // screenshot judge), with the same progress display as a turn.
   async think(messages: Message[], signal?: AbortSignal, llm: LLMConfig = this.opts.llm): Promise<string> {
     const promptTokens = estimateTokens(messages);
-    const res = await complete(llm, messages, [], () => {}, signal, (p) => this.io.progress?.({ ...p, promptTokens }));
+    // Planning and judging deserve a moderate think, not the model's full habit.
+    const thinking: ThinkPlan = this.thinking === "auto" ? { tier: 2, budget: BUDGET[2], why: "a one-off request" } : planFor(this.thinking, "normal", { step: 0, failed: false, failures: 0 });
+    const res = await complete(llm.provider === "anthropic" ? llm : { ...llm, thinking }, messages, [], () => {}, signal, (p) => this.io.progress?.({ ...p, promptTokens }));
     return res.content.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
   }
 
@@ -322,7 +336,7 @@ export class Agent {
 
   async refreshSystemPrompt() {
     const notes = [this.opts.plan !== false ? PLAN_PROMPT : "", this.opts.memory !== false ? MEMORY_PROMPT : "", this.io.question ? ASK_PROMPT : "", NETWORK_PROMPT[this.network ? "on" : "off"], this.lookupNote()].filter(Boolean).join(" ");
-    const style = [palettePrompt(this.palette), BREVITY_PROMPT[this.brevity]].filter(Boolean).join("\n");
+    const style = [palettePrompt(this.palette), BREVITY_PROMPT[this.brevity], THINKING_PROMPT[this.thinking]].filter(Boolean).join("\n");
     // Last, so it is what the model read most recently.
     // The map as it was when the session started; project_map gives a fresh one.
     const map = !this.opts.chat && this.mapTokens > 0 ? await projectMap(this.opts.cwd, this.mapTokens).catch(() => "") : "";
@@ -398,12 +412,17 @@ export class Agent {
     };
     let blocked: Missing | undefined;
     let blockedSteps = 0;
+    // Thinking: sized by the ask, then by how the last step went.
+    const size = sizeAsk(typeof userText === "string" ? userText : userText.map((p) => (p.type === "text" ? p.text : "")).join("\n"));
+    let lastFailed = false;
+    let failedInARow = 0;
 
     for (let step = 0; step < (o.maxSteps ?? this.opts.maxSteps ?? 50); step++) {
       await this.maybeCompact();
       if (helping && !this.helper) handBack("the helper was turned off");
       const helper = helping && this.helper;
-      const llm = helper ? helperLLM(helper, this.opts.llm.baseURL) : this.opts.llm;
+      const thinking = planFor(this.thinking, size, { step, failed: lastFailed, failures: failedInARow });
+      const llm = helper ? helperLLM(helper, this.opts.llm.baseURL) : { ...this.opts.llm, thinking };
       // The brief rides along with each helper request; it is not kept in history.
       const messages: Message[] = helper ? [...this.history, { role: "user", content: [{ type: "text", text: brief(helping!.reason, this.opts.llm.model) }] }] : this.history;
       const promptTokens = estimateTokens(messages);
@@ -418,6 +437,7 @@ export class Agent {
         continue;
       }
       if (res.rescued) this.io.note(`(recovered ${res.toolCalls.length} tool call(s) written as text)`);
+      if (res.thought?.cut) this.io.note(`(thinking cut after ${res.thought.tokens} tokens: ${res.thought.cut === "loop" ? "it was going in circles" : `budget ${thinking.budget} for ${thinking.why}`})`);
       if (helping && res.usage) (helping.usage.input += res.usage.input), (helping.usage.output += res.usage.output);
       if (helping && res.refused) {
         handBack("the helper declined this step");
@@ -430,6 +450,9 @@ export class Agent {
         // A missing tool fails every check, so the fix-it loop would only go in circles.
         const more = blocked ? null : await this.beforeFinish(changed, fixes, nudged, signal);
         if (more === "fix") fixes++;
+        // A failed check is worth thinking about; a plan nudge is not.
+        lastFailed = more === "fix";
+        failedInARow = lastFailed ? failedInARow + 1 : 0;
         if (more === "plan") nudged = true;
         if (more) continue;
         return res.content;
@@ -470,6 +493,8 @@ export class Agent {
         this.pruneImages();
       }
 
+      lastFailed = stepFailed;
+      failedInARow = stepFailed ? failedInARow + 1 : 0;
       // A missing program (Java, the Android SDK, adb) can't be fixed from here, not even by the helper.
       if (blocked && ++blockedSteps > BLOCKED_STEPS) {
         if (helping) handBack("a program it needs is not installed");

@@ -23,6 +23,7 @@ import { describeHelper, resolveHelper, type Helper } from "./escalate.ts";
 import { useAndroidToolchain } from "./toolchain.ts";
 import { parseSwitch, resolveNetwork, saveNetwork } from "./network.ts";
 import { BREVITY, parseBrevity, resolveBrevity, saveBrevity } from "./brevity.ts";
+import { parseThinking, resolveThinking, saveThinking, THINKING, THINKING_SAY } from "./thinking.ts";
 import { loadRules, resolveLearn, saveLearn, saveRules, tidyRules } from "./learn.ts";
 import { describePalette, parsePalette, presetList, resolvePalette, savePalette, swatches } from "./palette.ts";
 import { agentSettings, cleanSettings, loadAgentSettings, runGoal, type Board } from "./agentmode.ts";
@@ -89,6 +90,9 @@ options:
                      setting, which starts off); installs still ask first in ask mode
   --brevity <level>  how much Maxx says: brief (default), normal or detailed; saved with
                      /brevity or the app's ✂ switch (default $MAXX_BREVITY or the saved setting)
+  --thinking <level> how much a reasoning model thinks before acting: auto (default: little for
+                     simple asks, more for bugs and after failures), off, low, high or max (no
+                     limit); saved with /thinking or the app's 💭 switch ($MAXX_THINKING)
   --learn <on|off>   learn a rule for MAXX.md when you correct Maxx ("no, use pnpm", a denial
                      with a reason, a hand fix, /undo); /rules to review them (default on,
                      $MAXX_LEARN or the saved setting)
@@ -129,7 +133,7 @@ options:
   --resume <ref>     continue a session by number (from \`maxx sessions\`), id, or words from its title
 
 in a session:
-  /agent <goal>  /crew <goal>  /lab <question>  /help  /mode <m>  /with <sets|none>  /plan  /helper [off|on]  /network [on|off]  /brevity [brief|normal|detailed]  /palette [name|#hex...|random|auto|list]  /rules [on|off|add <rule>|rm <n>]  /undo  /checkpoints  /rewind <n>  /clear  /exit
+  /agent <goal>  /crew <goal>  /lab <question>  /help  /mode <m>  /with <sets|none>  /plan  /helper [off|on]  /network [on|off]  /brevity [brief|normal|detailed]  /thinking [auto|off|low|high|max]  /palette [name|#hex...|random|auto|list]  /rules [on|off|add <rule>|rm <n>]  /undo  /checkpoints  /rewind <n>  /clear  /exit
   /sessions  /resume <ref>  /new  /title <text>   (sessions are saved per project after every turn)
   /delete <ref>  /undelete     delete a session (this one if no ref), bring it back
   /attach <file...>            send files with your next message: images to the vision model, text inline
@@ -155,6 +159,7 @@ const { values, positionals } = parseArgs({
     "helper-after": { type: "string" },
     network: { type: "string" },
     brevity: { type: "string" },
+    thinking: { type: "string" },
     learn: { type: "string" },
     palette: { type: "string" },
     prompt: { type: "string", short: "p" },
@@ -276,9 +281,9 @@ if (positionals[0] === "ui" || (fromExplorer && !positionals.length && !values.p
   const port = values.port ? Number(values.port) : 4317;
   let ui;
   try {
-    ui = await startUI({ baseURL, model: values.model ?? process.env.MAXX_MODEL, port, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, brevity: values.brevity, learn: values.learn, palette: values.palette, ...voice });
+    ui = await startUI({ baseURL, model: values.model ?? process.env.MAXX_MODEL, port, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, brevity: values.brevity, thinking: values.thinking, learn: values.learn, palette: values.palette, ...voice });
   } catch {
-    ui = await startUI({ baseURL, model: values.model ?? process.env.MAXX_MODEL, port: 0, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, brevity: values.brevity, learn: values.learn, palette: values.palette, ...voice });
+    ui = await startUI({ baseURL, model: values.model ?? process.env.MAXX_MODEL, port: 0, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, brevity: values.brevity, thinking: values.thinking, learn: values.learn, palette: values.palette, ...voice });
   }
   // Dev servers started from the Run panel go down with Maxx.
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(sig, () => (ui.stop(), process.exit(0)));
@@ -426,6 +431,7 @@ try {
 }
 const network = await resolveNetwork(values.network).catch((e) => die((e as Error).message));
 const brevity = await resolveBrevity(values.brevity).catch((e) => die((e as Error).message));
+const thinking = await resolveThinking(values.thinking).catch((e) => die((e as Error).message));
 const learn = await resolveLearn(values.learn).catch((e) => die((e as Error).message));
 const palette = await resolvePalette(values.palette).catch((e) => die((e as Error).message));
 // Agent mode budgets: the context window's defaults, then saved choices, then flags.
@@ -440,7 +446,7 @@ const goalSettings = agentSettings(Number(values.context), {
 const crew = crewSettings({ ...(await loadCrewSettings()), ...cleanCrew({ workers: values.workers, slots: values.slots, models: values["crew-models"] }) });
 if (values["max-tasks"]) crew.maxTasks = goalSettings.maxTasks;
 const probed = new Map<string, number>();
-const agent = await new Agent({ llm, cwd, permissions, contextWindow: Number(values.context), toolsets, vision, check, fixTries, plan: !values["no-plan"], helper, network, brevity, palette, learn, mapTokens: goalSettings.mapTokens }, io).init();
+const agent = await new Agent({ llm, cwd, permissions, contextWindow: Number(values.context), toolsets, vision, check, fixTries, plan: !values["no-plan"], helper, network, brevity, thinking, palette, learn, mapTokens: goalSettings.mapTokens }, io).init();
 let created = new Date().toISOString();
 let title = "";
 if (resumed) await resumeInto(resumed);
@@ -487,7 +493,7 @@ if (values.prompt || values.agent || values.crew || values.lab) {
   process.exit(0);
 }
 
-const extras = (toolsets.length ? ` · with ${toolsets.join(",")} · vision ${vision.mode === "proxy" ? vision.llm.model : vision.mode}` : "") + (helper ? ` · helper ${describeHelper(helper)}` : "") + (network ? " · network on" : "") + (brevity !== "brief" ? ` · ${brevity}` : "") + (palette ? ` · palette ${palette.name}` : "");
+const extras = (toolsets.length ? ` · with ${toolsets.join(",")} · vision ${vision.mode === "proxy" ? vision.llm.model : vision.mode}` : "") + (helper ? ` · helper ${describeHelper(helper)}` : "") + (network ? " · network on" : "") + (brevity !== "brief" ? ` · ${brevity}` : "") + (thinking !== "auto" ? ` · thinking ${thinking}` : "") + (palette ? ` · palette ${palette.name}` : "");
 console.log(`${C.bold}maxx${C.reset} ${C.dim}${llm.model} via ${baseURL} · mode ${permissions.mode}${extras} · /help${C.reset}`);
 if (!resumed) {
   const prev = (await listSessions(cwd))[0];
@@ -712,6 +718,15 @@ async function command(line: string) {
         await saveBrevity(level);
       }
       return console.log(`brevity: ${agent.brevity} (${{ brief: "short answers, no padding", normal: "the model's own style", detailed: "explanations, background and examples" }[agent.brevity]})`);
+    }
+    case "/thinking": {
+      const level = arg === undefined ? undefined : parseThinking(arg);
+      if (arg !== undefined && !level) return console.log(`usage: /thinking ${THINKING.join(" | ")}`);
+      if (level) {
+        await agent.setThinking(level);
+        await saveThinking(level);
+      }
+      return console.log(`thinking: ${agent.thinking} (${THINKING_SAY[agent.thinking]})`);
     }
     case "/palette": {
       // The whole rest of the line: "/palette #264653 #2a9d8f #e9c46a".

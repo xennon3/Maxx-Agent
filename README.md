@@ -487,6 +487,29 @@ header (Brief, Normal, Detailed), `/brevity brief|normal|detailed` in the termin
 and project mode. Only the prompt changes: there is no token cap, so a file write or tool call is
 never cut off halfway.
 
+## Less thinking: the 💭 switch
+
+Reasoning models (DeepSeek, Qwen with thinking on) can spend a thousand tokens deliberating over
+"make the button blue", which at 20 tok/s is most of a minute. Maxx keeps that down three ways:
+
+- **It asks the server.** Each request carries the usual switches: `chat_template_kwargs`
+  (`enable_thinking` for Qwen templates, `thinking` for DeepSeek's) and `reasoning_effort`.
+  Servers ignore fields they don't know; one that rejects them gets the plain request again, and
+  Maxx stops sending them to it.
+- **It counts.** Whatever the server does, Maxx counts the thinking as it streams (also
+  `<think>` tags left in the text). Past the step's budget, or when the model goes round in
+  circles (the same sentence a third time, "Wait..." after "Wait..."), Maxx cuts the request and
+  asks again with thinking off, handing back the end of what the model thought so nothing is lost.
+  A `(thinking cut after N tokens: ...)` note says when this happens.
+- **Auto sizes it per step** (the default). A short, plain ask ("rename score to points") gets
+  almost none; "why does level 2 crash" gets plenty on its first step; a step after a tool call
+  that worked gets less, and each failure in a row raises it again.
+
+Switch with the 💭 chip in the app header, `/thinking auto|off|low|high|max` in the terminal, or
+`--thinking` / `$MAXX_THINKING`; saved in `~/.maxx/thinking.json`. `max` sends nothing and never
+cuts, which is the old behavior. Budgets: off ≈ 96 tokens (in case the server ignores the
+switch), low 400, auto's medium 1500, high 4000.
+
 ## Colors: any palette
 
 Maxx can design with any color palette: charts and Mermaid diagrams in chat, and the pages, apps
