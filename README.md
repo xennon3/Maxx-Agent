@@ -405,7 +405,13 @@ A custom instrument is any command that prints readings (`key=value`, CSV or bar
 
 ## Follow-up questions
 
-When a request leaves a choice only you can make, the model calls `ask_user` instead of guessing or ending its turn with a question. The turn pauses and the app shows a card with the question, a few choices to click (Maxx's own guess is marked), a box for your own answer, and **Skip** to let Maxx go with its guess. In the terminal you type a number, your own answer, or Enter for the guess. Questions are never permission prompts, so they come up in every mode, even "Never ask". A small model may ask at most 3 per turn; after that it is told to decide. When input is piped (no one at the keyboard), the tool is not offered at all. Outside Agent mode a question waits as long as it takes; in Agent mode it waits `--ask-wait` minutes (default 5, 0 waits for ever).
+### ⚡ Auto-run
+
+Maxx asks before every edit and command by default. To stop the prompts, click **⚡ Auto** next to the message box, or **⚡ Allow & auto-run** on any approval card (in the terminal: `r` at a prompt, `/auto on`, or `--auto-run`). Edits and commands then run on their own, and ↶ Undo still puts files back. The choice is saved in `~/.maxx/permissions.json` for every project, and it works mid-turn: a step already waiting for your OK goes through when you switch it on. Click ⚡ again (or `/auto off`) to go back to asking.
+
+A short safety net still asks, even with auto-run on, for what Undo can't take back: deleting a whole drive, home folder or everything in the project (`rm -rf /`, `rm -rf *`, `rd /s C:\`), formatting a disk, `git push`, publishing a package, `sudo`, piping a download into a shell, shutting down, and registry edits. "Always allow" on one of those saves a rule, and auto-run respects it after that.
+
+When a request leaves a choice only you can make, the model calls `ask_user` instead of guessing or ending its turn with a question. The turn pauses and the app shows a card with the question, a few choices to click (Maxx's own guess is marked), a box for your own answer, and **Skip** to let Maxx go with its guess. In the terminal you type a number, your own answer, or Enter for the guess. Questions are never permission prompts, so they come up in every mode, even "⚡ Auto-run everything". A small model may ask at most 3 per turn; after that it is told to decide. When input is piped (no one at the keyboard), the tool is not offered at all. Outside Agent mode a question waits as long as it takes; in Agent mode it waits `--ask-wait` minutes (default 5, 0 waits for ever).
 
 ## Helping small models recover
 
@@ -601,7 +607,8 @@ It tests the plumbing and timing, not the model's intelligence.
 | --- | --- | --- |
 | `--base-url` | `$MAXX_BASE_URL` or `http://localhost:1234/v1` | Any OpenAI-compatible server |
 | `--model` | `$MAXX_MODEL` or the first loaded model | |
-| `--mode` | `ask` | `ask`, `auto-edit` (file writes allowed), `yolo` (nothing asks) |
+| `--mode` | `ask` (or the saved choice) | `ask`, `auto-edit` (file writes allowed), `yolo` (auto-run: nothing asks except risky commands) |
+| `--auto-run` | off | same as `--mode yolo` |
 | `--context` | `32768` | Context window in tokens; compaction starts at 70% |
 | `--with` | `$MAXX_WITH` | Extra toolsets: `android`, `desktop` |
 | `--vision` | `auto` | `auto` asks LM Studio whether the model sees images; `native`, `off`; `always` (with `--vision-model`) describes every screenshot |
