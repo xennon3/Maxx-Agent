@@ -15,6 +15,9 @@ import { runTests } from "./tests.ts";
 import { gitTool, gitCommit } from "./git.ts";
 import { snapPage, STUDIO_TOOLS, STUDIO_PROMPT } from "./studio.ts";
 import { recipeTool } from "../recipes.ts";
+import { browserOpen, browserAct, browserLook, browserEval } from "./browse.ts";
+import { profilePage } from "./profile.ts";
+import { ENGINEER_TOOLS, ENGINEER_PROMPT } from "./engineer.ts";
 
 export const TOOLS: Tool<any>[] = [readFile, listFiles, grep, editFile, writeFile, bash, runTests, gitTool, gitCommit, snapPage, recipeTool, useTemplate, makeSounds];
 
@@ -24,6 +27,12 @@ export type Toolset = { tools: Tool<any>[]; prompt: string; about: string };
 export const TOOLSETS: Record<string, Toolset> = {
   android: { tools: ANDROID_TOOLS, prompt: ANDROID_PROMPT, about: "build, install, screenshot and drive apps on an Android phone over adb" },
   desktop: { tools: DESKTOP_TOOLS, prompt: DESKTOP_PROMPT, about: "see and control the Windows desktop (screenshot, mouse, keyboard)" },
+  browser: {
+    tools: [browserOpen, browserAct, browserLook, browserEval, profilePage],
+    prompt: "Browser tools: browser_open shows a page with numbered boxes on what can be clicked; browser_act clicks, types and presses keys by those numbers and shows the result. Test web apps and games like a user would: click through them and read the console output. profile_page measures speed and frame rate and names the top problems.",
+    about: "Maxx's own browser: open your web app or game, click, type, play it, read the console, measure speed",
+  },
+  engineer: { tools: ENGINEER_TOOLS, prompt: ENGINEER_PROMPT, about: "IDE-grade code navigation and renames, probe debugging, git bisect, mutation testing, one-step releases" },
   // snap_page is in TOOLS for every project; the rest of the studio joins it here.
   studio: { tools: STUDIO_TOOLS.filter((t) => t !== snapPage), prompt: STUDIO_PROMPT, about: "make things to look at: app and site icons from one logo (more design tools to come)" },
 };

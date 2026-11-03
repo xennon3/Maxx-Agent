@@ -1047,7 +1047,7 @@ function render(s) {
   drawAuto(cur && cur.mode);
   const sets = $("sets"); sets.innerHTML = "";
   for (const t of s.toolsets) {
-    const c = div("chip" + (cur && cur.toolsets.includes(t.name) ? " on" : ""), t.name === "android" ? "📱 Android" : t.name === "desktop" ? "🖥 Desktop" : t.name === "studio" ? "🎨 Studio" : t.name);
+    const c = div("chip" + (cur && cur.toolsets.includes(t.name) ? " on" : ""), t.name === "android" ? "📱 Android" : t.name === "desktop" ? "🖥 Desktop" : t.name === "studio" ? "🎨 Studio" : t.name === "browser" ? "🧭 Browser" : t.name === "engineer" ? "🛠 Engineer" : t.name);
     c.title = t.about;
     c.onclick = () => { if (!cur) return; const on = cur.toolsets.includes(t.name) ? cur.toolsets.filter((x) => x !== t.name) : [...cur.toolsets, t.name]; send({ type: "settings", toolsets: on }); };
     sets.appendChild(c);

@@ -11,21 +11,26 @@ export type Page = {
   call(method: string, params?: object): Promise<any>;
   // Errors the page printed or threw, in order.
   errors: string[];
+  // Everything it printed to the console (errors too), in order.
+  logs: string[];
   // Resolves on the next load event (or after `ms`).
   loaded(ms?: number): Promise<void>;
   close(): Promise<void>;
 };
 
-export async function openPage(browser: string, o: { width?: number; height?: number; timeoutMs?: number; signal?: AbortSignal } = {}): Promise<Page> {
+export async function openPage(browser: string, o: { width?: number; height?: number; timeoutMs?: number; signal?: AbortSignal; headed?: boolean } = {}): Promise<Page> {
   const width = o.width ?? 412, height = o.height ?? 860;
   const profile = await mkdtemp(join(tmpdir(), "maxx-shot-"));
   const args = [
-    browser, "--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profile}`, `--window-size=${width},${height}`,
+    browser, ...(o.headed ? [] : ["--headless=new"]), "--remote-debugging-port=0", `--user-data-dir=${profile}`, `--window-size=${width},${height}`,
     "--no-first-run", "--no-default-browser-check", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--hide-scrollbars", "--mute-audio",
     ...(process.platform === "linux" && process.getuid?.() === 0 ? ["--no-sandbox"] : []),
     "about:blank",
   ];
   const proc = Bun.spawn(args, { stdout: "ignore", stderr: "ignore", stdin: "ignore" });
+  // A browser kept open between tool calls must not outlive Maxx.
+  const onExit = () => proc.kill();
+  process.on("exit", onExit);
   const deadline = Date.now() + (o.timeoutMs ?? 25_000);
   let ws: WebSocket | null = null;
   const close = async () => {
@@ -33,6 +38,7 @@ export async function openPage(browser: string, o: { width?: number; height?: nu
       ws?.close();
     } catch {}
     proc.kill();
+    process.off("exit", onExit);
     await proc.exited.catch(() => {});
     await rm(profile, { recursive: true, force: true }).catch(() => {});
   };
@@ -52,21 +58,28 @@ export async function openPage(browser: string, o: { width?: number; height?: nu
     const waiting = new Map<number, (r: any) => void>();
     const loads: (() => void)[] = [];
     const errors: string[] = [];
+    const logs: string[] = [];
     ws.onmessage = (e) => {
       const m = JSON.parse(String(e.data));
       if (m.id && waiting.has(m.id)) waiting.get(m.id)!(m), waiting.delete(m.id);
       if (m.method === "Page.loadEventFired") loads.splice(0).forEach((f) => f());
       if (m.method === "Runtime.exceptionThrown") {
         const d = m.params.exceptionDetails;
-        errors.push(`${d.exception?.description?.split("\n")[0] ?? d.text}${d.url ? ` (${d.url.split("/").pop()}:${d.lineNumber + 1})` : ""}`);
+        const line = `${d.exception?.description?.split("\n")[0] ?? d.text}${d.url ? ` (${d.url.split("/").pop()}:${d.lineNumber + 1})` : ""}`;
+        errors.push(line);
+        logs.push(`uncaught: ${line}`);
       }
-      if (m.method === "Runtime.consoleAPICalled" && m.params.type === "error") errors.push(`console.error: ${m.params.args.map((a: any) => a.value ?? a.description ?? "").join(" ").slice(0, 300)}`);
+      if (m.method === "Runtime.consoleAPICalled") {
+        const text = m.params.args.map((a: any) => (typeof a.value === "object" ? JSON.stringify(a.value) : a.value ?? a.description ?? "")).join(" ").slice(0, 300);
+        logs.push(`${m.params.type}: ${text}`);
+        if (m.params.type === "error") errors.push(`console.error: ${text}`);
+      }
       if (m.method === "Log.entryAdded" && m.params.entry.level === "error") errors.push(`${m.params.entry.text.slice(0, 300)}${m.params.entry.url ? ` (${m.params.entry.url.split("/").pop()})` : ""}`);
     };
     const call = (method: string, params: object = {}) =>
       new Promise<any>((res, rej) => {
         const id = ++n;
-        const t = setTimeout(() => rej(new Error(`the browser did not answer ${method}`)), Math.max(1000, deadline - Date.now()));
+        const t = setTimeout(() => rej(new Error(`the browser did not answer ${method}`)), o.timeoutMs ?? 25_000);
         waiting.set(id, (m) => (clearTimeout(t), m.error ? rej(new Error(m.error.message)) : res(m.result)));
         ws!.send(JSON.stringify({ id, method, params }));
       });
@@ -74,8 +87,8 @@ export async function openPage(browser: string, o: { width?: number; height?: nu
     await call("Runtime.enable");
     await call("Log.enable").catch(() => {});
     await call("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 600 });
-    const loaded = (ms = 10_000) => Promise.race([new Promise<void>((r) => loads.push(r)), Bun.sleep(Math.max(0, Math.min(ms, deadline - Date.now())))]);
-    return { call, errors, loaded, close };
+    const loaded = (ms = 10_000) => Promise.race([new Promise<void>((r) => loads.push(r)), Bun.sleep(ms)]);
+    return { call, errors, logs, loaded, close };
   } catch (e) {
     await close();
     throw e;

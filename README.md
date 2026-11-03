@@ -586,6 +586,41 @@ Turn on the Studio chip (`--with studio`) for the design tools. `make_icons` tak
 
 It draws all of them with the browser's canvas, so it needs no image library.
 
+### 🧭 Browser
+
+`--with browser` gives Maxx its own browser to test web apps and games the way a person would.
+
+- `browser_open` loads a project page or a `localhost` URL. It returns a screenshot with numbered
+  boxes on everything clickable, the same list as text (so a model without vision still knows what
+  is there), and the console output.
+- `browser_act` clicks, types and scrolls by those numbers. It can also hold a key for a set time,
+  which is what game testing needs.
+- `browser_eval` reads app state, such as `game.score`.
+- `profile_page` measures load and paint times, layout shifts, long JavaScript tasks, frame rate and
+  the heaviest files, then names the top three problems with a fix for each. At phone size it slows
+  the CPU 4x so a fast PC doesn't hide anything.
+
+Set `MAXX_BROWSER_HEADED=1` to see the browser window while Maxx works in it.
+
+### 🛠 Engineer
+
+`--with engineer` adds the tools a senior developer reaches for:
+
+- `code_nav`: definition, references, hover, an outline of a file, and its type errors. It asks the
+  installed language server: TypeScript 7's built-in one (`tsc --lsp`) or typescript-language-server,
+  pyright or pylsp, rust-analyzer, gopls, kotlin-language-server. With none installed, it falls back
+  to a careful text search and says what to install.
+- `rename_symbol`: renames a symbol everywhere through the language server, leaving look-alike
+  names untouched.
+- `probe`: print debugging without the mess. It shows the values at a line while the tests run,
+  then puts the file back.
+- `bisect`: `git bisect` with the tests, naming the commit that broke them.
+- `mutate`: plants small bugs one at a time (`<` becomes `<=`, `&&` becomes `||`) and reports which
+  ones the tests miss.
+- `release`: bumps the version, writes `CHANGELOG.md` from the git log, then builds. On Android it
+  builds the release APK or AAB; on the web it packs a zip with `index.html` at the root, ready
+  for itch.io.
+
 ### Recipes
 
 Recipes are step-by-step playbooks, such as `fix-failing-test`, `responsive-page`, `pwa-install`,

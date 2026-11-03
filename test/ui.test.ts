@@ -24,7 +24,7 @@ test("the UI only answers requests that carry its token, from its own origin", a
       ws.onerror = rej;
     });
     expect(first.type).toBe("state");
-    expect(first.toolsets.map((t: any) => t.name)).toEqual(["android", "desktop", "studio"]);
+    expect(first.toolsets.map((t: any) => t.name)).toEqual(["android", "desktop", "browser", "engineer", "studio"]);
     ws.close();
   } finally {
     ui.stop();
