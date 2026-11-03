@@ -560,6 +560,51 @@ template ships with a starter set.
 - **Terminal:** `maxx sound deep crunchy explosion` and `maxx sound music boss 4` write .wav files.
 - The bank at the top of `sound.js` is plain JSON, one sound per line, so tweaks are easy to diff.
 
+## Engineer's tools: tests, git, eyes on the page
+
+Every project gets these as well as the file and shell tools. `/tools` (or the 🧰 chip) lists exactly
+what the model can use right now, so you never have to take its word for it.
+
+- `run_tests` finds the runner (bun, npm, pnpm, yarn, pytest, cargo, go, Gradle, Maven, make), runs
+  it, and returns `PASSED` or only the failures, with their file and line. A 3,000-line Gradle log
+  comes back as about 20 lines.
+- `git` looks without changing anything: status, diff, log, show, blame, branches. `git_commit`
+  saves the work with a message, on a new branch if you want one. If the folder isn't a repository
+  yet, it creates one and adds a `.gitignore`.
+- `snap_page` opens a page in headless Edge at phone and desktop width and returns the screenshots.
+  It also reports console errors, and says when the content is wider than the screen.
+
+### 🎨 Studio
+
+Turn on the Studio chip (`--with studio`) for the design tools. `make_icons` takes one square logo
+(SVG or PNG) and writes:
+
+- every Android launcher size, plus the adaptive icon, wired into the manifest
+- the PWA 192, 512, maskable and Apple touch icons
+- `favicon.ico`
+- a Windows `.ico` at 16 to 256px
+
+It draws all of them with the browser's canvas, so it needs no image library.
+
+### Recipes
+
+Recipes are step-by-step playbooks, such as `fix-failing-test`, `responsive-page`, `pwa-install`,
+`game-juice`, `android-release` and `app-icons`. Only their names and a line each go in the
+system prompt. The model calls `recipe` to load the full steps when a task matches, which helps
+a small model far more than improvising.
+
+To add your own, write Markdown files with `name:` and `when:` front matter:
+
+- in `.maxx/recipes/` for the project (commit them, so the team gets them too)
+- in `~/.maxx/recipes/` for every project
+
+A recipe with the same name as a built-in one replaces it.
+
+**📜 Recipe recorder**: after a task goes well, press 📜 Recipe in the app (or type
+`/recipe save <what it is for>`). Maxx writes down the steps that worked, leaves out the dead ends,
+and adds a step that avoids the mistake that caused them. `/recipe` lists the recipes, and
+`/recipe <name>` shows one.
+
 ## Looking things up: web search and free MCP servers
 
 A small local model's knowledge stops at its training date, so it will happily describe last

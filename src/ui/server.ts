@@ -1,5 +1,5 @@
 import { existsSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { ServerWebSocket } from "bun";
 import { Agent, type AgentIO } from "../loop.ts";
@@ -244,6 +244,7 @@ export async function startUI(opts: UIOptions) {
         model: s.llm.model,
         mode: s.permissions.mode,
         toolsets: s.agent.toolsets,
+        tools: s.agent.toolNames,
         busy: !!s.controller,
         plan: s.agent.plan,
         board: s.agent.board,
@@ -488,6 +489,13 @@ export async function startUI(opts: UIOptions) {
         if (state.controller) throw new Error("stop the current turn first");
         io.note(await state.agent.undoTurn());
         await save();
+        return send(await snapshot());
+      }
+      case "recordRecipe": {
+        if (!state) throw new Error("open a project folder first");
+        if (state.controller) throw new Error("stop the current turn first");
+        const { recipe, path } = await state.agent.recordRecipe(String(m.hint ?? "").slice(0, 200));
+        send({ type: "recipe", name: recipe.name, when: recipe.when, path: relative(state.cwd, path).replaceAll("\\", "/") });
         return send(await snapshot());
       }
       case "agentSettings":

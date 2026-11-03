@@ -3,6 +3,7 @@ import { TOOLS, toolSpecs, findTool, withToolsets } from "./tools/index.ts";
 import type { Tool } from "./tools/types.ts";
 import { Permissions, isNo, whyNo, type Answer } from "./permissions.ts";
 import { Checkpoints } from "./checkpoint.ts";
+import { loadRecipes, parseRecorded, projectRecipesDir, recipesPrompt, recorderMessages, saveRecipe, type Recipe } from "./recipes.ts";
 import { compact, estimateTokens, systemPrompt, truncate, typedText } from "./context.ts";
 import { describeImages, imagePart, type Vision } from "./vision.ts";
 import type { Image } from "./image.ts";
@@ -268,6 +269,20 @@ export class Agent {
     this.setPlan([]);
   }
 
+  // The recipe recorder: turn this session's work into a playbook in the
+  // project's .maxx/recipes, so the next session (or a smaller model) can repeat it.
+  async recordRecipe(hint = "", signal?: AbortSignal): Promise<{ recipe: Recipe; path: string }> {
+    if (this.opts.chat) throw new Error("recipes are recorded from project work; open a project folder first");
+    const worked = this.history.filter((m) => m.role === "tool").length;
+    if (worked < 2) throw new Error("nothing to record yet: do a task first, then save it as a recipe");
+    const text = await this.think(recorderMessages(this.history, hint), signal);
+    const recipe = parseRecorded(text, hint || "recorded");
+    if (!recipe) throw new Error("the model did not write a recipe; try again, or give it a name: /recipe save <what it is for>");
+    const path = await saveRecipe(projectRecipesDir(this.opts.cwd), recipe);
+    await this.refreshSystemPrompt();
+    return { recipe, path };
+  }
+
   // A one-off request outside the conversation (Agent mode's planner, the
   // screenshot judge), with the same progress display as a turn.
   async think(messages: Message[], signal?: AbortSignal, llm: LLMConfig = this.opts.llm): Promise<string> {
@@ -356,8 +371,9 @@ export class Agent {
     const style = [palettePrompt(this.palette), BREVITY_PROMPT[this.brevity], THINKING_PROMPT[this.thinking]].filter(Boolean).join("\n");
     // Last, so it is what the model read most recently.
     // The map as it was when the session started; project_map gives a fresh one.
+    const recipes = !this.opts.chat && this.tools.some((t) => t.name === "recipe") ? recipesPrompt(await loadRecipes(this.opts.cwd).catch(() => [])) : "";
     const map = !this.opts.chat && this.mapTokens > 0 ? await projectMap(this.opts.cwd, this.mapTokens).catch(() => "") : "";
-    const content = this.opts.chat ? chatPrompt(new Date(), this.lookupNote(), style) : await systemPrompt(this.opts.cwd, [...(notes ? [notes] : []), ...this.prompts, ...(map ? [`${map}\n(This map is from the start of the session; call project_map for a fresh one.)`] : []), ...(style ? [style] : [])]);
+    const content = this.opts.chat ? chatPrompt(new Date(), this.lookupNote(), style) : await systemPrompt(this.opts.cwd, [...(notes ? [notes] : []), ...this.prompts, ...(recipes ? [recipes] : []), ...(map ? [`${map}\n(This map is from the start of the session; call project_map for a fresh one.)`] : []), ...(style ? [style] : [])]);
     if (this.history[0]?.role === "system") this.history[0] = { role: "system", content };
     else this.history.unshift({ role: "system", content });
   }

@@ -1,6 +1,4 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { LLMConfig, Message } from "./llm.ts";
@@ -8,6 +6,7 @@ import { decodePng, toShot, type Image } from "./image.ts";
 import { imagePart, type Vision } from "./vision.ts";
 import { htmlFiles } from "./ui/preview.ts";
 import * as A from "./devices/adb.ts";
+import { screenshot } from "./browser.ts";
 
 // The screenshot judge. After a task changes what the user sees, Maxx takes a
 // screenshot (the web page in a headless browser, or the phone over adb) and
@@ -76,64 +75,9 @@ export function findBrowser(env = process.env, exists: (p: string) => boolean = 
   return null;
 }
 
-// Load a page in a headless browser at phone size and return a PNG. Talks the
-// DevTools protocol, which works the same in Edge, Chrome and Chromium.
+// Load a page in a headless browser at phone size and return a PNG.
 export async function browserShot(browser: string, url: string, o: { width?: number; height?: number; settleMs?: number; timeoutMs?: number; signal?: AbortSignal } = {}): Promise<Uint8Array> {
-  const width = o.width ?? 412, height = o.height ?? 860;
-  const profile = await mkdtemp(join(tmpdir(), "maxx-shot-"));
-  const args = [
-    browser, "--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profile}`, `--window-size=${width},${height}`,
-    "--no-first-run", "--no-default-browser-check", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--hide-scrollbars", "--mute-audio",
-    ...(process.platform === "linux" && process.getuid?.() === 0 ? ["--no-sandbox"] : []),
-    "about:blank",
-  ];
-  const proc = Bun.spawn(args, { stdout: "ignore", stderr: "ignore", stdin: "ignore" });
-  const deadline = Date.now() + (o.timeoutMs ?? 25_000);
-  let ws: WebSocket | null = null;
-  try {
-    let port = "";
-    while (!port) {
-      if (Date.now() > deadline || o.signal?.aborted) throw new Error("the browser did not start in time");
-      port = (await readFile(join(profile, "DevToolsActivePort"), "utf8").catch(() => "")).split("\n")[0]!.trim();
-      if (!port) await Bun.sleep(100);
-    }
-    const targets = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()) as { type: string; webSocketDebuggerUrl: string }[];
-    const page = targets.find((t) => t.type === "page");
-    if (!page) throw new Error("the browser opened no page");
-    ws = new WebSocket(page.webSocketDebuggerUrl);
-    await new Promise((res, rej) => ((ws!.onopen = res), (ws!.onerror = () => rej(new Error("could not reach the browser")))));
-    let n = 0;
-    const waiting = new Map<number, (r: any) => void>();
-    let loaded: () => void = () => {};
-    const load = new Promise<void>((res) => (loaded = res));
-    ws.onmessage = (e) => {
-      const m = JSON.parse(String(e.data));
-      if (m.id && waiting.has(m.id)) waiting.get(m.id)!(m), waiting.delete(m.id);
-      if (m.method === "Page.loadEventFired") loaded();
-    };
-    const call = (method: string, params: object = {}) =>
-      new Promise<any>((res, rej) => {
-        const id = ++n;
-        const t = setTimeout(() => rej(new Error(`the browser did not answer ${method}`)), Math.max(1000, deadline - Date.now()));
-        waiting.set(id, (m) => (clearTimeout(t), m.error ? rej(new Error(m.error.message)) : res(m.result)));
-        ws!.send(JSON.stringify({ id, method, params }));
-      });
-    await call("Page.enable");
-    await call("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: true });
-    await call("Page.navigate", { url });
-    await Promise.race([load, Bun.sleep(Math.max(0, Math.min(10_000, deadline - Date.now())))]);
-    // Scripts often draw just after load (a game's first frame, a chart).
-    await Bun.sleep(o.settleMs ?? 800);
-    const shot = await call("Page.captureScreenshot", { format: "png" });
-    return Uint8Array.from(Buffer.from(shot.data, "base64"));
-  } finally {
-    try {
-      ws?.close();
-    } catch {}
-    proc.kill();
-    await proc.exited.catch(() => {});
-    await rm(profile, { recursive: true, force: true }).catch(() => {});
-  }
+  return (await screenshot(browser, url, o)).png;
 }
 
 export type SurfaceOptions = {

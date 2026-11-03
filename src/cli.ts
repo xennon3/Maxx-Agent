@@ -7,6 +7,7 @@ import { basename, join, relative, resolve } from "node:path";
 import { doctor, doctorDevices } from "./doctor.ts";
 import type { LLMConfig } from "./llm.ts";
 import { TOOLSETS } from "./tools/index.ts";
+import { closest, loadRecipes } from "./recipes.ts";
 import { pickVision } from "./vision.ts";
 import { textOf } from "./context.ts";
 import { fitContext } from "./modelctx.ts";
@@ -138,7 +139,7 @@ options:
   --resume <ref>     continue a session by number (from \`maxx sessions\`), id, or words from its title
 
 in a session:
-  /agent <goal>  /crew <goal>  /lab <question>  /help  /auto [on|off]  /mode <m>  /with <sets|none>  /plan  /tools  /helper [off|on]  /network [on|off]  /brevity [brief|normal|detailed]  /thinking [auto|off|low|high|max]  /palette [name|#hex...|random|auto|list]  /rules [on|off|add <rule>|rm <n>]  /undo  /checkpoints  /rewind <n>  /clear  /exit
+  /agent <goal>  /crew <goal>  /lab <question>  /help  /auto [on|off]  /mode <m>  /with <sets|none>  /plan  /tools  /recipe [name|save]  /helper [off|on]  /network [on|off]  /brevity [brief|normal|detailed]  /thinking [auto|off|low|high|max]  /palette [name|#hex...|random|auto|list]  /rules [on|off|add <rule>|rm <n>]  /undo  /checkpoints  /rewind <n>  /clear  /exit
   /sessions  /resume <ref>  /new  /title <text>   (sessions are saved per project after every turn)
   /delete <ref>  /undelete     delete a session (this one if no ref), bring it back
   /attach <file...>            send files with your next message: images to the vision model, text inline
@@ -720,6 +721,23 @@ async function command(line: string) {
       }
       const h = agent.helper;
       return console.log(h ? `helper: ${describeHelper(h)}, after ${h.afterFailures ?? 3} failed calls in a row or a repeat loop (/helper off to stay local)` : `helper: off, everything stays on this machine${helper ? " (/helper on)" : ""}`);
+    }
+    case "/recipe":
+    case "/recipes": {
+      // List them, show one, or record the last task as a new one.
+      const [sub, ...rest] = line.slice(cmd!.length).trim().split(/\s+/).filter(Boolean);
+      if (sub === "save") {
+        console.log("(writing a recipe from this session...)");
+        const { recipe, path } = await agent.recordRecipe(rest.join(" "));
+        return console.log(`saved recipe ${recipe.name} (${recipe.when})\n  ${path}\n  edit the file to tune it; Maxx offers it for similar tasks`);
+      }
+      const all = await loadRecipes(cwd);
+      if (sub) {
+        const r = closest(all, sub);
+        return console.log(r ? `${r.name} (${r.from}): ${r.when}\n\n${r.body}` : `no recipe called ${sub}`);
+      }
+      for (const r of all) console.log(`  ${r.name.padEnd(22)} ${r.when}  (${r.from})`);
+      return console.log("  /recipe <name> shows one; /recipe save [what it is for] records the last task as a recipe");
     }
     case "/tools": {
       const names = agent.toolNames;

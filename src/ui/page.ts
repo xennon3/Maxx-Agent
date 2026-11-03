@@ -382,6 +382,7 @@ ${SOUND_CSS}
       <div style="display:flex;flex-direction:column;gap:6px">
         <button class="primary" id="sendBtn">Send</button>
         <button class="danger" id="stopBtn" disabled>Stop</button>
+        <button id="recipeBtn" class="projonly" title="📜 Save what Maxx just did as a recipe in .maxx/recipes, so next time it follows the same steps">📜 Recipe</button>
         <button id="undoBtn" class="projonly" disabled title="Put every file back as it was before Maxx's last turn. Then say what you wanted instead, and Maxx learns a rule from it.">↶ Undo</button>
       </div>
     </div>
@@ -768,6 +769,7 @@ function on(m) {
       return;
     case "done": streaming = null; return;
     case "templated": return templated(m);
+    case "recipe": return note("📜 Saved recipe \u201c" + m.name + "\u201d (" + m.when + ") to " + m.path + ". Maxx will offer it for similar tasks; edit the file to tune it.", "learned");
     case "error": return note(m.text, "msg err");
     case "deleted":
       return toast("Deleted “" + (m.title || "session") + "”", "Undo", () => send({ type: "undelete", cwd: m.cwd, session: m.session, reopen: m.wasOpen }));
@@ -1045,9 +1047,17 @@ function render(s) {
   drawAuto(cur && cur.mode);
   const sets = $("sets"); sets.innerHTML = "";
   for (const t of s.toolsets) {
-    const c = div("chip" + (cur && cur.toolsets.includes(t.name) ? " on" : ""), t.name === "android" ? "📱 Android" : t.name === "desktop" ? "🖥 Desktop" : t.name);
+    const c = div("chip" + (cur && cur.toolsets.includes(t.name) ? " on" : ""), t.name === "android" ? "📱 Android" : t.name === "desktop" ? "🖥 Desktop" : t.name === "studio" ? "🎨 Studio" : t.name);
     c.title = t.about;
     c.onclick = () => { if (!cur) return; const on = cur.toolsets.includes(t.name) ? cur.toolsets.filter((x) => x !== t.name) : [...cur.toolsets, t.name]; send({ type: "settings", toolsets: on }); };
+    sets.appendChild(c);
+  }
+  // What the model can really use right now, so nobody has to ask it (it may not know).
+  if (cur) {
+    const tl = cur.tools || [];
+    const c = div("chip", "🧰 " + tl.length);
+    c.title = tl.length ? "Tools Maxx can use right now:\\n" + tl.join(", ") + "\\n\\nClick to list them here." : "No tools in this mode";
+    c.onclick = () => note("🧰 " + (cur.chat ? "Chat mode" : "This project") + " has " + tl.length + " tools: " + (tl.join(", ") || "none") + (cur.chat ? ". Open a project folder for files, commands, tests, git and the phone and desktop tools." : ". Switch on the chips beside this one for more."));
     sets.appendChild(c);
   }
   drawPlan(cur && cur.plan);
@@ -1391,6 +1401,12 @@ $("rulesForm").onsubmit = (e) => {
   send({ type: "rules", learn: $("learnOn").checked, rules: ruleDraft.filter((r) => r.text.trim()) });
 };
 $("undoBtn").onclick = () => send({ type: "undoTurn" });
+$("recipeBtn").onclick = () => {
+  const hint = prompt("Save the last task as a recipe. What is it for? (optional, e.g. \u201cadd a settings screen\u201d)", "");
+  if (hint === null) return;
+  note("📜 Writing a recipe from this session…");
+  send({ type: "recordRecipe", hint });
+};
 function swatchHtml(colors, cls) { return '<span class="' + cls + '">' + colors.map((c) => '<i style="background:' + esc(c) + '"></i>').join("") + "</span>"; }
 function palPreview() {
   const hexes = ($("palSpec").value.match(/#[0-9a-f]{6}\\b|#[0-9a-f]{3}\\b|\\b[0-9a-f]{6}\\b/gi) || []).map((h) => "#" + h.replace("#", ""));

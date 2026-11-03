@@ -11,8 +11,12 @@ import { useTemplate } from "./template.ts";
 import { makeSounds } from "./sound.ts";
 import { ANDROID_TOOLS, ANDROID_PROMPT } from "./android.ts";
 import { DESKTOP_TOOLS, DESKTOP_PROMPT } from "./desktop.ts";
+import { runTests } from "./tests.ts";
+import { gitTool, gitCommit } from "./git.ts";
+import { snapPage, STUDIO_TOOLS, STUDIO_PROMPT } from "./studio.ts";
+import { recipeTool } from "../recipes.ts";
 
-export const TOOLS: Tool<any>[] = [readFile, listFiles, grep, editFile, writeFile, bash, useTemplate, makeSounds];
+export const TOOLS: Tool<any>[] = [readFile, listFiles, grep, editFile, writeFile, bash, runTests, gitTool, gitCommit, snapPage, recipeTool, useTemplate, makeSounds];
 
 // Opt-in groups (--with android,desktop or /with), so small models are not
 // handed twenty tools when they are only editing code.
@@ -20,6 +24,8 @@ export type Toolset = { tools: Tool<any>[]; prompt: string; about: string };
 export const TOOLSETS: Record<string, Toolset> = {
   android: { tools: ANDROID_TOOLS, prompt: ANDROID_PROMPT, about: "build, install, screenshot and drive apps on an Android phone over adb" },
   desktop: { tools: DESKTOP_TOOLS, prompt: DESKTOP_PROMPT, about: "see and control the Windows desktop (screenshot, mouse, keyboard)" },
+  // snap_page is in TOOLS for every project; the rest of the studio joins it here.
+  studio: { tools: STUDIO_TOOLS.filter((t) => t !== snapPage), prompt: STUDIO_PROMPT, about: "make things to look at: app and site icons from one logo (more design tools to come)" },
 };
 
 export function withToolsets(names: string[]): { tools: Tool<any>[]; prompts: string[] } {
