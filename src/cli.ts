@@ -16,6 +16,7 @@ import { replay } from "./replay.ts";
 import { startUI } from "./ui/server.ts";
 import { doctorVoice } from "./ui/voice.ts";
 import { doctorWeb, mcpCommand } from "./lookup-cli.ts";
+import { doctorMedia } from "./tools/media-doctor.ts";
 import { describe, SPINNER, statusLine, type StreamProgress } from "./progress.ts";
 import { launchedFromExplorer } from "./ui/launch.ts";
 import { ago, deleteSession, findSession, newSessionId, formatList, listProjects, listSessions, loadSession, restoreSession, saveSession, type Session, type SessionInfo } from "./sessions.ts";
@@ -59,6 +60,7 @@ usage:
   maxx doctor web             check that web search, page reading and the MCP servers work from here
   maxx mcp [add|rm] [name]    list, add or remove MCP servers (context7 library docs is on by default)
   maxx doctor voice           check the local Whisper used by the mic button in maxx ui
+  maxx doctor media           check the browser, image model, voices and ffmpeg the design and media tools use
   maxx replay <file.jsonl>    re-run the phone/desktop actions of an earlier session
   maxx sessions [--all]       list saved sessions for this project (or every project)
   maxx sessions rm <ref...>   delete sessions (asks first; -y skips that); they stay in the trash for 7 days
@@ -280,6 +282,7 @@ const fromExplorer = launchedFromExplorer();
 const voice = { whisper: values.whisper ?? process.env.MAXX_WHISPER, whisperModel: values["whisper-model"] ?? process.env.MAXX_WHISPER_MODEL };
 
 if (positionals[0] === "doctor" && positionals[1] === "web") process.exit((await doctorWeb()) ? 0 : 1);
+if (positionals[0] === "doctor" && positionals[1] === "media") process.exit((await doctorMedia()) ? 0 : 1);
 if (positionals[0] === "mcp") process.exit(await mcpCommand(positionals.slice(1)).catch((e) => (console.error(String((e as Error).message)), 1)));
 if (positionals[0] === "lab") process.exit(await labCommand(positionals.slice(1), await resolveNetwork(values.network).catch(() => false)));
 if (positionals[0] === "doctor" && positionals[1] === "voice") process.exit((await doctorVoice({ whisper: voice.whisper, model: voice.whisperModel })) ? 0 : 1);

@@ -576,15 +576,48 @@ what the model can use right now, so you never have to take its word for it.
 
 ### 🎨 Studio
 
-Turn on the Studio chip (`--with studio`) for the design tools. `make_icons` takes one square logo
-(SVG or PNG) and writes:
+Turn on the Studio chip (`--with studio`) for the design tools. They all draw with the browser's
+canvas, so they need no image library, and each one sends the model a picture of its result so it
+can check its own work.
 
-- every Android launcher size, plus the adaptive icon, wired into the manifest
-- the PWA 192, 512, maskable and Apple touch icons
-- `favicon.ico`
-- a Windows `.ico` at 16 to 256px
+- `draw_svg` writes a logo, icon or illustration as SVG, shows it rendered, points out problems
+  (no `viewBox`, a script, a linked web image) and saves PNG copies at the sizes you ask for.
+- `image_edit` applies a list of steps to an image: resize, crop, trim, pad, remove the
+  background, pixelate, limit to a palette, tint, hue, adjust, flip, rotate, outline, shadow,
+  round corners, and more.
+- `sprite_sheet` packs animation frames (`art/walk-*.png`) into one sheet plus a JSON atlas, and
+  tells the model the exact `drawImage` call for frame n.
+- `make_icons` takes one square logo and writes every Android launcher size (adaptive icon
+  included, wired into the manifest), the PWA and Apple touch icons, `favicon.ico`, and a Windows
+  `.ico`.
+- `design_tokens` sets up a design system in `design/tokens.json` (colours, fonts, type scale,
+  spacing, corners, shadows) from a palette, then exports it to whatever the project uses: CSS
+  variables, Tailwind, Android `colors.xml` and `dimens.xml`, and a Jetpack Compose `Tokens.kt`.
+  Edit the JSON and call it again with `export` to update them all.
+- `pick_fonts` picks a heading and body pair for a mood ("retro arcade", "elegant wedding") from
+  20 tested pairings. With network access on, it downloads them into `fonts/` so the app works
+  offline.
+- `mood_board` takes up to six web pages or images, pulls out their main colours, fonts and corner
+  style, and writes `design/moodboard.html` with a short style brief to design from.
 
-It draws all of them with the browser's canvas, so it needs no image library.
+### 🎬 Media
+
+`--with media` adds pictures, voices and video, all made on your own PC:
+
+- `image_generate` asks a local image model for game sprites, backgrounds, textures and website art.
+  It finds ComfyUI (port 8188), Stable Diffusion WebUI Forge or Automatic1111 started with `--api`
+  (port 7860), or any OpenAI-style images server you name in `~/.maxx/images.json`
+  (`{"url": "http://127.0.0.1:1234"}`). Fast models such as SDXL-Turbo and FLUX.1-schnell get
+  their few steps automatically. Styles (`pixel-art`, `game-sprite`, `flat-icon`, `texture`...)
+  fill in the right wording, and `transparent: true` removes the background for sprites.
+- `speak` turns text into a WAV file for character lines or a narrated app tour. It uses Piper's
+  natural voices when installed (put a voice `.onnx` in `~/.maxx/voices`), otherwise the voices
+  Windows already has.
+- `video` runs ffmpeg recipes: trim, a looping GIF for a README or store page, frames to video,
+  compress, extract audio, `.ogg` for game music, a thumbnail, and joining clips.
+
+`maxx doctor media` checks what is ready: the browser, an image server and its models, voices,
+ffmpeg, and the language servers the 🛠 Engineer tools use.
 
 ### 🧭 Browser
 

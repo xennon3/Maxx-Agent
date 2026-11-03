@@ -19,7 +19,7 @@ beforeAll(async () => {
 
 test("the always-on tools stay few enough for small models", () => {
   expect(TOOLS.map((t) => t.name)).toEqual(["read_file", "list_files", "grep", "edit_file", "write_file", "bash", "run_tests", "git", "git_commit", "snap_page", "recipe", "use_template", "make_sounds"]);
-  expect(TOOLSETS.studio!.tools.map((t) => t.name)).toEqual(["make_icons"]);
+  expect(TOOLSETS.studio!.tools.map((t) => t.name)).toContain("make_icons");
 });
 
 // ---- recipes ----

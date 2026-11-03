@@ -246,7 +246,3 @@ export function sizedSvg(svg: string): string {
   const k = 1024 / Math.max(w, h);
   return svg.replace(open[0], open[0].replace(/<svg\b/i, `<svg width="${Math.round(w * k)}" height="${Math.round(h * k)}"`));
 }
-
-export const STUDIO_TOOLS = [snapPage, makeIcons];
-export const STUDIO_PROMPT =
-  "Studio tools: after changing how a web page looks, call snap_page and look at the screenshots and console errors before saying it is done. For app icons, write one square logo.svg and call make_icons instead of drawing icon files by hand.";

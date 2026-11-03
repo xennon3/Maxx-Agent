@@ -13,7 +13,11 @@ import { ANDROID_TOOLS, ANDROID_PROMPT } from "./android.ts";
 import { DESKTOP_TOOLS, DESKTOP_PROMPT } from "./desktop.ts";
 import { runTests } from "./tests.ts";
 import { gitTool, gitCommit } from "./git.ts";
-import { snapPage, STUDIO_TOOLS, STUDIO_PROMPT } from "./studio.ts";
+import { snapPage, makeIcons } from "./studio.ts";
+import { imageEdit, spriteSheet } from "./canvas.ts";
+import { drawSvg, designTokens, pickFonts, moodBoard } from "./design.ts";
+import { imageGenerate } from "./imagegen.ts";
+import { speak, video } from "./media.ts";
 import { recipeTool } from "../recipes.ts";
 import { browserOpen, browserAct, browserLook, browserEval } from "./browse.ts";
 import { profilePage } from "./profile.ts";
@@ -34,7 +38,17 @@ export const TOOLSETS: Record<string, Toolset> = {
   },
   engineer: { tools: ENGINEER_TOOLS, prompt: ENGINEER_PROMPT, about: "IDE-grade code navigation and renames, probe debugging, git bisect, mutation testing, one-step releases" },
   // snap_page is in TOOLS for every project; the rest of the studio joins it here.
-  studio: { tools: STUDIO_TOOLS.filter((t) => t !== snapPage), prompt: STUDIO_PROMPT, about: "make things to look at: app and site icons from one logo (more design tools to come)" },
+  studio: {
+    tools: [drawSvg, imageEdit, spriteSheet, makeIcons, designTokens, pickFonts, moodBoard],
+    prompt:
+      "Studio tools: for logos, icons and illustrations write SVG with draw_svg, look at the render and improve it. Set colors, fonts and spacing once with design_tokens (and pick_fonts) and use the token names in code instead of raw values. image_edit crops, resizes, removes backgrounds, recolors and pixelates; sprite_sheet packs frames. make_icons turns one logo into every app icon. Before designing something new, mood_board can sum up reference sites or images. After changing how a page looks, call snap_page and look.",
+    about: "design: SVG art you can see, image editing, sprite sheets, app icons, design tokens, fonts, mood boards",
+  },
+  media: {
+    tools: [imageGenerate, speak, video],
+    prompt: "Media tools: image_generate draws pictures with the local image model (use transparent for sprites; look at the result and retry with a new prompt or seed if it is off). speak makes voice lines as WAV files. video trims clips, makes GIFs and turns frames into videos with ffmpeg.",
+    about: "make assets: pictures from the local image model, spoken voice lines, video and GIFs",
+  },
 };
 
 export function withToolsets(names: string[]): { tools: Tool<any>[]; prompts: string[] } {
