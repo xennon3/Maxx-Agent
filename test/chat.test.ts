@@ -11,6 +11,9 @@ test("the chat prompt teaches the three visual blocks and stays small", () => {
   const p = chatPrompt();
   for (const lang of ["```chart", "```mermaid", "```html"]) expect(p).toContain(lang);
   expect(p).toContain("no tools");
+  // Asked "what tools do you have?", it points at project mode instead of telling the user to install MCP servers.
+  expect(p).toContain("open a project folder");
+  expect(chatPrompt(new Date(), "Look things up.")).toContain("open a project folder");
   // ~4 characters a token: well under 500 tokens of a 16K context.
   expect(p.length).toBeLessThan(2000);
 });

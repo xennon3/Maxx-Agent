@@ -36,6 +36,15 @@ export const PRESETS: Record<string, ServerConfig & { about: string }> = {
   context7: { url: "https://mcp.context7.com/mcp", trust: true, about: "current docs and code examples for libraries and frameworks (React, Next.js, Bun, pandas, Android...)" },
   deepwiki: { url: "https://mcp.deepwiki.com/mcp", trust: true, tools: ["ask_question"], about: "questions about any public GitHub repository" },
   "microsoft-learn": { url: "https://learn.microsoft.com/api/mcp", trust: true, about: "Microsoft docs: Windows, PowerShell, .NET, C#, Azure" },
+  // A real browser the model drives by the page's accessibility tree (no vision
+  // needed). Not trusted: clicks and typing ask first in ask mode. Trimmed to
+  // the tools a small model actually needs.
+  playwright: {
+    command: "npx",
+    args: ["-y", "@playwright/mcp@latest", "--browser", "msedge"],
+    tools: ["browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_press_key", "browser_take_screenshot", "browser_console_messages", "browser_wait_for", "browser_close"],
+    about: "drive a real Edge browser: open pages, click, type, read console errors, take screenshots (needs Node.js)",
+  },
 };
 export const DEFAULT_SERVERS = ["context7"];
 

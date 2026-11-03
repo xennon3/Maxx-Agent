@@ -134,6 +134,10 @@ export class Agent {
   readonly checkpoints: Checkpoints;
   session: string;
   private tools: Tool<any>[];
+  // What the model is offered right now, for /tools (the model's own answer can be wrong).
+  get toolNames(): string[] {
+    return this.tools.map((t) => t.name);
+  }
   private setTools: Tool<any>[] = [];
   private online: Online = { tools: [], notes: [], servers: [] };
   private prompts: string[] = [];

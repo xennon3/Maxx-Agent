@@ -138,7 +138,7 @@ options:
   --resume <ref>     continue a session by number (from \`maxx sessions\`), id, or words from its title
 
 in a session:
-  /agent <goal>  /crew <goal>  /lab <question>  /help  /auto [on|off]  /mode <m>  /with <sets|none>  /plan  /helper [off|on]  /network [on|off]  /brevity [brief|normal|detailed]  /thinking [auto|off|low|high|max]  /palette [name|#hex...|random|auto|list]  /rules [on|off|add <rule>|rm <n>]  /undo  /checkpoints  /rewind <n>  /clear  /exit
+  /agent <goal>  /crew <goal>  /lab <question>  /help  /auto [on|off]  /mode <m>  /with <sets|none>  /plan  /tools  /helper [off|on]  /network [on|off]  /brevity [brief|normal|detailed]  /thinking [auto|off|low|high|max]  /palette [name|#hex...|random|auto|list]  /rules [on|off|add <rule>|rm <n>]  /undo  /checkpoints  /rewind <n>  /clear  /exit
   /sessions  /resume <ref>  /new  /title <text>   (sessions are saved per project after every turn)
   /delete <ref>  /undelete     delete a session (this one if no ref), bring it back
   /attach <file...>            send files with your next message: images to the vision model, text inline
@@ -720,6 +720,14 @@ async function command(line: string) {
       }
       const h = agent.helper;
       return console.log(h ? `helper: ${describeHelper(h)}, after ${h.afterFailures ?? 3} failed calls in a row or a repeat loop (/helper off to stay local)` : `helper: off, everything stays on this machine${helper ? " (/helper on)" : ""}`);
+    }
+    case "/tools": {
+      const names = agent.toolNames;
+      const off = Object.keys(TOOLSETS).filter((n) => !agent.toolsets.includes(n));
+      console.log(`tools (${names.length}): ${names.join(", ") || "none"}`);
+      if (!agent.network) console.log("  /network on adds web_search, web_fetch and your MCP servers (maxx mcp list)");
+      if (off.length) console.log(`  /with ${off.join(",")} adds: ${off.map((n) => `${n} (${TOOLSETS[n]!.about})`).join("; ")}`);
+      return;
     }
     case "/network": {
       // Saved, so the next `maxx` and `maxx ui` start the same way.
