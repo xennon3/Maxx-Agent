@@ -228,7 +228,8 @@ test("a study designs a virtual lab, sweeps it, debates, looks ahead; the next s
   expect(labs).toHaveLength(1);
   expect(labs[0]!.studies).toEqual([s.id, s2.id]);
   expect(labs[0]!.runs).toBe(12);
-});
+  // Two studies with real sandboxed runs: Windows runners need more than bun's 5s default.
+}, 30_000);
 
 test("with virtual labs off, no lab is designed", async () => {
   const agent = await agentIn();
