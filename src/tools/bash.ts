@@ -43,6 +43,16 @@ export function dropWorkspaceCd(command: string, cwd: string, platform: NodeJS.P
   return same || dir === "." ? command.slice(m[0].length) : command;
 }
 
+// A command that never ends on its own: a server, a watcher, or a stream (a sensor
+// monitor, tail -f, ping -t). Cutting its output with | head does not stop it on
+// Windows, where nothing tells the writer the reader has gone.
+export function timeoutHint(command: string, timeout: number): string {
+  const cut = /\|\s*(head\b|select-object\s+-first\b|select\s+-first\b)/i.test(command);
+  return cut
+    ? `hint: this was killed after ${timeout}s. Piping a never-ending command into head does not stop it on Windows: the command keeps running after head exits. Give the command its own limit instead (a count, a duration, -Samples N, -Count N), or start it with background: true and read its output file.`
+    : "hint: if this is a server, watcher or stream that never ends, run it with background: true, or give it its own limit (a count or a duration).";
+}
+
 function hints(command: string, err: string): string {
   const out: string[] = [];
   if (/\bcd: (too many arguments|.*No such file or directory)/.test(err)) out.push("Commands already run in the project folder, so there is no need to cd into it. Quote paths that contain spaces.");
@@ -76,7 +86,7 @@ function refuseFetch(command: string, network?: boolean): string | undefined {
 export const bash = defineTool({
   name: "bash",
   description:
-    "Run a shell command in the project folder and return stdout, stderr and the exit code. Use for tests, builds and git. Servers and watchers (python -m http.server, npm run dev...) start in the background and return after a few seconds. The system prompt says which shell is in use.",
+    "Run a shell command in the project folder and return stdout, stderr and the exit code. Use for tests, builds and git. Servers and watchers (python -m http.server, npm run dev...) start in the background and return after a few seconds. A command that never ends on its own (a monitor, a sensor stream, tail -f, ping -t) needs background: true or its own limit (a sample count or duration); piping it into head does not stop it on Windows. The system prompt says which shell is in use.",
   schema: z.object({
     command: z.string().describe("The command to run"),
     timeout: z.number().int().min(1).max(600).optional().describe("Seconds before the command is killed, default 120"),
@@ -145,7 +155,7 @@ export const bash = defineTool({
     parts.push(`exit code: ${ended === "timeout" ? `killed after ${timeout}s` : proc.exitCode}`);
     if (out.trim()) parts.push(`stdout:\n${truncate(out)}`);
     if (err.trim()) parts.push(`stderr:\n${truncate(err)}`);
-    if (ended === "timeout") parts.push("hint: if this is a server or watcher, run it with background: true.");
+    if (ended === "timeout") parts.push(timeoutHint(cmd, timeout));
     return parts.join("\n") + hints(cmd, err);
   },
 });

@@ -57,3 +57,17 @@ test("Stop still wins over the stall timer", async () => {
     server.stop(true);
   }
 });
+
+// Luther's stuck run: `powershell -File monitor.ps1 | head -2`, a stream that never ends.
+test("a stream piped into head is stopped by Stop, and by the timeout with a clear hint", async () => {
+  const ctl = new AbortController();
+  const t0 = Date.now();
+  const run = bash.run({ command: "sleep 30 | head -2" }, { cwd: process.cwd(), signal: ctl.signal });
+  setTimeout(() => ctl.abort(), 200);
+  await expect(run).rejects.toThrow("stopped");
+  expect(Date.now() - t0).toBeLessThan(5000);
+  const out = String(await bash.run({ command: "sleep 30 | head -2", timeout: 1 }, { cwd: process.cwd() }));
+  expect(out).toContain("killed after 1s");
+  expect(out).toContain("does not stop it on Windows");
+  expect(Date.now() - t0).toBeLessThan(10000);
+}, 15000);
