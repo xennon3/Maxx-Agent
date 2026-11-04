@@ -58,7 +58,7 @@ await shot("2-running");
 await p.waitForSelector("#sendBtn:not([disabled])", { timeout: 120000 });
 await p.waitForTimeout(500);
 await shot("3-done");
-await p.click("#agentCfg");
+await p.click("#tuneBtn"); await p.click("#agentCfg");
 await p.waitForTimeout(200);
 await shot("4-settings");
 console.log(await p.locator("#board").innerText());

@@ -45,12 +45,12 @@ await page.waitForSelector("#model option", { state: "attached" });
 await page.click("#chatBtn");
 await page.waitForFunction(() => document.querySelector("#where")!.textContent!.includes("Chat"));
 
-await page.click("#palBtn");
+await page.click("#tuneBtn"); await page.click("#palBtn");
 await page.waitForSelector(".pal");
 await page.fill("#palSpec", "#ff6600 triad");
 await shot("1-picker");
 await page.click('#palDlg button[value=cancel]');
-await page.click("#palBtn");
+await page.click("#tuneBtn"); await page.click("#palBtn");
 await page.click('.pal:has-text("synthwave")');
 await page.waitForFunction(() => document.querySelector("#palBtn")!.textContent!.includes("synthwave"));
 await page.fill("#input", "chart my drink sales and draw the order flow");
@@ -59,7 +59,7 @@ await page.waitForSelector(".vis .body.mermaid svg", { timeout: 20000 });
 await page.waitForTimeout(800);
 await shot("2-chat-synthwave");
 
-await page.click("#palBtn");
+await page.click("#tuneBtn"); await page.click("#palBtn");
 await page.click('#palDlg button[value=random]');
 await page.waitForTimeout(1200);
 await shot("3-chat-random");

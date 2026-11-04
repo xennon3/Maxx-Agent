@@ -30,7 +30,7 @@ export const VOICE_HINT = `<div id="micHint"><span id="micText"></span><span cla
 export const VOICE_HTML = `
     <div class="micwrap">
       <button class="mic" id="micBtn" title="Talk to Maxx (Ctrl+Space)">🎙</button>
-      <button class="micmore" id="micMore" title="Voice settings">▾ voice</button>
+      <button class="micmore" id="micMore" title="Voice settings">▾</button>
       <div id="micMenu">
         <h4>Listen with</h4>
         <label><input type="radio" name="micEngine" value="auto"> Best available</label>

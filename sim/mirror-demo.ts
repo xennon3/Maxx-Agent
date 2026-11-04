@@ -44,7 +44,7 @@ await page.waitForSelector("#model option", { state: "attached" });
 await page.fill("#folder", app);
 await page.click("#openBtn");
 await page.waitForFunction(() => document.querySelector("#where")!.textContent!.includes("tipcalc"));
-await page.selectOption("#mode", "yolo");
+await page.evaluate((v: string) => (0, eval)("send")({ type: "settings", mode: v }), "yolo");
 await page.click("text=📱 Android");
 await page.click("#rail button[data-tab=screen]");
 await page.click("#phLive");

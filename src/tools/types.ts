@@ -1,11 +1,31 @@
 import type { z } from "zod";
 import type { Image } from "../image.ts";
+import type { LLMConfig, Message } from "../llm.ts";
+import type { Vision } from "../vision.ts";
 
 // "read" tools never prompt; "write" and "exec" go through the permission gate.
 export type Risk = "read" | "write" | "exec";
 
 // network: may commands install packages and download files? Unset means no limit.
-export type ToolContext = { cwd: string; network?: boolean };
+export type ToolContext = {
+  cwd: string;
+  network?: boolean;
+  // Set by the agent loop for tools that need a model or the user (rival_designs,
+  // persona_test, sketch_to_app, asset_kit). Tests pass their own.
+  signal?: AbortSignal;
+  llm?: LLMConfig;
+  vision?: Vision;
+  // A one-off request to the main model, outside the conversation.
+  think?(messages: Message[]): Promise<string>;
+  // Ask a model that can see about some images. Null when no model can see.
+  see?(images: Image[], question: string): Promise<string | null>;
+  // A question card for the user. Null when nobody answered.
+  ask?(q: { question: string; choices: string[]; guess?: string }): Promise<string | null>;
+  // Show pictures in the chat now, before the tool returns.
+  show?(images: Image[]): void;
+  // Images the user attached to their latest message.
+  attached?(): Image[];
+};
 
 // Most tools return text. Screen tools also return images, which the loop
 // shows to a vision model (see vision.ts). A "glance" is the screenshot an

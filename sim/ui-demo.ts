@@ -35,8 +35,10 @@ await shot("1-empty");
 await page.fill("#folder", app);
 await page.click("#openBtn");
 await page.waitForFunction(() => document.querySelector("#where")!.textContent!.includes("tipcalc"));
-await page.click("text=📱 Android");
-await page.waitForSelector(".chip.on");
+await page.click("#toolsBtn");
+await page.click("#sets .tset:has-text('Android')");
+await page.waitForSelector("#sets .switch.on");
+await page.keyboard.press("Escape");
 await page.fill("#input", "Create an Android tip calculator app and test it on my phone");
 await page.keyboard.press("Enter");
 

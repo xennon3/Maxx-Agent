@@ -7,6 +7,7 @@ import { basename, join, relative, resolve } from "node:path";
 import { doctor, doctorDevices } from "./doctor.ts";
 import type { LLMConfig } from "./llm.ts";
 import { TOOLSETS } from "./tools/index.ts";
+import { closest, loadRecipes } from "./recipes.ts";
 import { pickVision } from "./vision.ts";
 import { textOf } from "./context.ts";
 import { fitContext } from "./modelctx.ts";
@@ -15,6 +16,7 @@ import { replay } from "./replay.ts";
 import { startUI } from "./ui/server.ts";
 import { doctorVoice } from "./ui/voice.ts";
 import { doctorWeb, mcpCommand } from "./lookup-cli.ts";
+import { doctorMedia } from "./tools/media-doctor.ts";
 import { describe, SPINNER, statusLine, type StreamProgress } from "./progress.ts";
 import { launchedFromExplorer } from "./ui/launch.ts";
 import { ago, deleteSession, findSession, newSessionId, formatList, listProjects, listSessions, loadSession, restoreSession, saveSession, type Session, type SessionInfo } from "./sessions.ts";
@@ -58,6 +60,7 @@ usage:
   maxx doctor web             check that web search, page reading and the MCP servers work from here
   maxx mcp [add|rm] [name]    list, add or remove MCP servers (context7 library docs is on by default)
   maxx doctor voice           check the local Whisper used by the mic button in maxx ui
+  maxx doctor media           check the browser, image model, voices and ffmpeg the design and media tools use
   maxx replay <file.jsonl>    re-run the phone/desktop actions of an earlier session
   maxx sessions [--all]       list saved sessions for this project (or every project)
   maxx sessions rm <ref...>   delete sessions (asks first; -y skips that); they stay in the trash for 7 days
@@ -83,6 +86,8 @@ options:
                      or a \`check:\` line in MAXX.md); --check off for syntax checks only
   --fix-tries <n>    times a failed check goes back to the model (default 3, 0 = off)
   --no-plan          don't offer the plan checklist tool
+  --no-alarm         don't check changed web pages for design crimes before finishing
+  --no-timelapse     don't save a screenshot after each visible change (for timelapse GIFs)
   --helper <id>      a bigger model to hand the hard step to when the local one is stuck
                      (default $MAXX_HELPER or the app's saved setting; "off" disables it)
                      claude-* ids use the Claude API ($ANTHROPIC_API_KEY); with --helper-url, any
@@ -138,7 +143,7 @@ options:
   --resume <ref>     continue a session by number (from \`maxx sessions\`), id, or words from its title
 
 in a session:
-  /agent <goal>  /crew <goal>  /lab <question>  /help  /auto [on|off]  /mode <m>  /with <sets|none>  /plan  /helper [off|on]  /network [on|off]  /brevity [brief|normal|detailed]  /thinking [auto|off|low|high|max]  /palette [name|#hex...|random|auto|list]  /rules [on|off|add <rule>|rm <n>]  /undo  /checkpoints  /rewind <n>  /clear  /exit
+  /agent <goal>  /crew <goal>  /lab <question>  /help  /auto [on|off]  /mode <m>  /with <sets|none>  /plan  /tools  /recipe [name|save]  /helper [off|on]  /network [on|off]  /brevity [brief|normal|detailed]  /thinking [auto|off|low|high|max]  /palette [name|#hex...|random|auto|list]  /rules [on|off|add <rule>|rm <n>]  /undo  /checkpoints  /rewind <n>  /clear  /exit
   /sessions  /resume <ref>  /new  /title <text>   (sessions are saved per project after every turn)
   /delete <ref>  /undelete     delete a session (this one if no ref), bring it back
   /attach <file...>            send files with your next message: images to the vision model, text inline
@@ -159,6 +164,8 @@ const { values, positionals } = parseArgs({
     check: { type: "string" },
     "fix-tries": { type: "string" },
     "no-plan": { type: "boolean" },
+    "no-alarm": { type: "boolean" },
+    "no-timelapse": { type: "boolean" },
     helper: { type: "string" },
     "helper-url": { type: "string" },
     "helper-kind": { type: "string" },
@@ -279,6 +286,7 @@ const fromExplorer = launchedFromExplorer();
 const voice = { whisper: values.whisper ?? process.env.MAXX_WHISPER, whisperModel: values["whisper-model"] ?? process.env.MAXX_WHISPER_MODEL };
 
 if (positionals[0] === "doctor" && positionals[1] === "web") process.exit((await doctorWeb()) ? 0 : 1);
+if (positionals[0] === "doctor" && positionals[1] === "media") process.exit((await doctorMedia()) ? 0 : 1);
 if (positionals[0] === "mcp") process.exit(await mcpCommand(positionals.slice(1)).catch((e) => (console.error(String((e as Error).message)), 1)));
 if (positionals[0] === "lab") process.exit(await labCommand(positionals.slice(1), await resolveNetwork(values.network).catch(() => false)));
 if (positionals[0] === "doctor" && positionals[1] === "voice") process.exit((await doctorVoice({ whisper: voice.whisper, model: voice.whisperModel })) ? 0 : 1);
@@ -460,7 +468,7 @@ const goalSettings = agentSettings(fit.context, {
 const crew = crewSettings({ ...(await loadCrewSettings()), ...cleanCrew({ workers: values.workers, slots: values.slots, models: values["crew-models"] }) });
 if (values["max-tasks"]) crew.maxTasks = goalSettings.maxTasks;
 const probed = new Map<string, number>();
-const agent = await new Agent({ llm, cwd, permissions, contextWindow: fit.context, toolsets, vision, check, fixTries, plan: !values["no-plan"], helper, network, brevity, thinking, palette, learn, mapTokens: goalSettings.mapTokens }, io).init();
+const agent = await new Agent({ llm, cwd, permissions, contextWindow: fit.context, toolsets, vision, check, fixTries, plan: !values["no-plan"], alarm: !values["no-alarm"] && process.env.MAXX_ALARM !== "0", timelapse: !values["no-timelapse"] && process.env.MAXX_TIMELAPSE !== "0", helper, network, brevity, thinking, palette, learn, mapTokens: goalSettings.mapTokens }, io).init();
 let created = new Date().toISOString();
 let title = "";
 if (resumed) await resumeInto(resumed);
@@ -720,6 +728,31 @@ async function command(line: string) {
       }
       const h = agent.helper;
       return console.log(h ? `helper: ${describeHelper(h)}, after ${h.afterFailures ?? 3} failed calls in a row or a repeat loop (/helper off to stay local)` : `helper: off, everything stays on this machine${helper ? " (/helper on)" : ""}`);
+    }
+    case "/recipe":
+    case "/recipes": {
+      // List them, show one, or record the last task as a new one.
+      const [sub, ...rest] = line.slice(cmd!.length).trim().split(/\s+/).filter(Boolean);
+      if (sub === "save") {
+        console.log("(writing a recipe from this session...)");
+        const { recipe, path } = await agent.recordRecipe(rest.join(" "));
+        return console.log(`saved recipe ${recipe.name} (${recipe.when})\n  ${path}\n  edit the file to tune it; Maxx offers it for similar tasks`);
+      }
+      const all = await loadRecipes(cwd);
+      if (sub) {
+        const r = closest(all, sub);
+        return console.log(r ? `${r.name} (${r.from}): ${r.when}\n\n${r.body}` : `no recipe called ${sub}`);
+      }
+      for (const r of all) console.log(`  ${r.name.padEnd(22)} ${r.when}  (${r.from})`);
+      return console.log("  /recipe <name> shows one; /recipe save [what it is for] records the last task as a recipe");
+    }
+    case "/tools": {
+      const names = agent.toolNames;
+      const off = Object.keys(TOOLSETS).filter((n) => !agent.toolsets.includes(n));
+      console.log(`tools (${names.length}): ${names.join(", ") || "none"}`);
+      if (!agent.network) console.log("  /network on adds web_search, web_fetch and your MCP servers (maxx mcp list)");
+      if (off.length) console.log(`  /with ${off.join(",")} adds: ${off.map((n) => `${n} (${TOOLSETS[n]!.about})`).join("; ")}`);
+      return;
     }
     case "/network": {
       // Saved, so the next `maxx` and `maxx ui` start the same way.

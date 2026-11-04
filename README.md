@@ -560,6 +560,149 @@ template ships with a starter set.
 - **Terminal:** `maxx sound deep crunchy explosion` and `maxx sound music boss 4` write .wav files.
 - The bank at the top of `sound.js` is plain JSON, one sound per line, so tweaks are easy to diff.
 
+## Engineer's tools: tests, git, eyes on the page
+
+Every project gets these as well as the file and shell tools. `/tools` (or the 🧰 chip) lists exactly
+what the model can use right now, so you never have to take its word for it.
+
+- `run_tests` finds the runner (bun, npm, pnpm, yarn, pytest, cargo, go, Gradle, Maven, make), runs
+  it, and returns `PASSED` or only the failures, with their file and line. A 3,000-line Gradle log
+  comes back as about 20 lines.
+- `git` looks without changing anything: status, diff, log, show, blame, branches. `git_commit`
+  saves the work with a message, on a new branch if you want one. If the folder isn't a repository
+  yet, it creates one and adds a `.gitignore`.
+- `snap_page` opens a page in headless Edge at phone and desktop width and returns the screenshots.
+  It also reports console errors, and says when the content is wider than the screen.
+
+### 🎨 Studio
+
+Turn on the Studio chip (`--with studio`) for the design tools. They all draw with the browser's
+canvas, so they need no image library, and each one sends the model a picture of its result so it
+can check its own work.
+
+- `draw_svg` writes a logo, icon or illustration as SVG, shows it rendered, points out problems
+  (no `viewBox`, a script, a linked web image) and saves PNG copies at the sizes you ask for.
+- `image_edit` applies a list of steps to an image: resize, crop, trim, pad, remove the
+  background, pixelate, limit to a palette, tint, hue, adjust, flip, rotate, outline, shadow,
+  round corners, and more.
+- `sprite_sheet` packs animation frames (`art/walk-*.png`) into one sheet plus a JSON atlas, and
+  tells the model the exact `drawImage` call for frame n.
+- `make_icons` takes one square logo and writes every Android launcher size (adaptive icon
+  included, wired into the manifest), the PWA and Apple touch icons, `favicon.ico`, and a Windows
+  `.ico`.
+- `design_tokens` sets up a design system in `design/tokens.json` (colours, fonts, type scale,
+  spacing, corners, shadows) from a palette, then exports it to whatever the project uses: CSS
+  variables, Tailwind, Android `colors.xml` and `dimens.xml`, and a Jetpack Compose `Tokens.kt`.
+  Edit the JSON and call it again with `export` to update them all.
+- `pick_fonts` picks a heading and body pair for a mood ("retro arcade", "elegant wedding") from
+  20 tested pairings. With network access on, it downloads them into `fonts/` so the app works
+  offline.
+- `mood_board` takes up to six web pages or images, pulls out their main colours, fonts and corner
+  style, and writes `design/moodboard.html` with a short style brief to design from.
+
+### 🎬 Media
+
+`--with media` adds pictures, voices and video, all made on your own PC:
+
+- `image_generate` asks a local image model for game sprites, backgrounds, textures and website art.
+  It finds ComfyUI (port 8188), Stable Diffusion WebUI Forge or Automatic1111 started with `--api`
+  (port 7860), or any OpenAI-style images server you name in `~/.maxx/images.json`
+  (`{"url": "http://127.0.0.1:1234"}`). Fast models such as SDXL-Turbo and FLUX.1-schnell get
+  their few steps automatically. Styles (`pixel-art`, `game-sprite`, `flat-icon`, `texture`...)
+  fill in the right wording, and `transparent: true` removes the background for sprites.
+- `speak` turns text into a WAV file for character lines or a narrated app tour. It uses Piper's
+  natural voices when installed (put a voice `.onnx` in `~/.maxx/voices`), otherwise the voices
+  Windows already has.
+- `video` runs ffmpeg recipes: trim, a looping GIF for a README or store page, frames to video,
+  compress, extract audio, `.ogg` for game music, a thumbnail, and joining clips.
+
+`maxx doctor media` checks what is ready: the browser, an image server and its models, voices,
+ffmpeg, and the language servers the 🛠 Engineer tools use.
+
+### 🧭 Browser
+
+`--with browser` gives Maxx its own browser to test web apps and games the way a person would.
+
+- `browser_open` loads a project page or a `localhost` URL. It returns a screenshot with numbered
+  boxes on everything clickable, the same list as text (so a model without vision still knows what
+  is there), and the console output.
+- `browser_act` clicks, types and scrolls by those numbers. It can also hold a key for a set time,
+  which is what game testing needs.
+- `browser_eval` reads app state, such as `game.score`.
+- `profile_page` measures load and paint times, layout shifts, long JavaScript tasks, frame rate and
+  the heaviest files, then names the top three problems with a fix for each. At phone size it slows
+  the CPU 4x so a fast PC doesn't hide anything.
+
+Set `MAXX_BROWSER_HEADED=1` to see the browser window while Maxx works in it.
+
+### 🛠 Engineer
+
+`--with engineer` adds the tools a senior developer reaches for:
+
+- `code_nav`: definition, references, hover, an outline of a file, and its type errors. It asks the
+  installed language server: TypeScript 7's built-in one (`tsc --lsp`) or typescript-language-server,
+  pyright or pylsp, rust-analyzer, gopls, kotlin-language-server. With none installed, it falls back
+  to a careful text search and says what to install.
+- `rename_symbol`: renames a symbol everywhere through the language server, leaving look-alike
+  names untouched.
+- `probe`: print debugging without the mess. It shows the values at a line while the tests run,
+  then puts the file back.
+- `bisect`: `git bisect` with the tests, naming the commit that broke them.
+- `mutate`: plants small bugs one at a time (`<` becomes `<=`, `&&` becomes `||`) and reports which
+  ones the tests miss.
+- `release`: bumps the version, writes `CHANGELOG.md` from the git log, then builds. On Android it
+  builds the release APK or AAB; on the web it packs a zip with `index.html` at the root, ready
+  for itch.io.
+
+### ✨ Director
+
+`--with director` adds tools that make design decisions with you rather than for you:
+
+- `rival_designs`: before a screen is built, two designers with different styles (Swiss minimalist,
+  Neon arcade, Editorial, Brutalist...) each make it as a full page. Maxx screenshots both, checks
+  them for design crimes, scores them with vision, and asks you to pick. `design/rivals/index.html`
+  shows them side by side. Your picks go in `~/.maxx/taste.md`, and later designs lean your way.
+- `sketch_to_app`: attach a photo of a napkin or whiteboard sketch, and Maxx turns it into a web
+  page (or a Jetpack Compose screen for a `.kt` path) using your design tokens and fonts, then shows
+  the sketch and the result side by side. It needs a model that can see, or `--vision-model`.
+- `asset_kit`: one line such as "retro space shooter" gives a matched kit: palette (design tokens),
+  font pair, sprites (painted by the local image model when one is running, otherwise drawn as
+  SVG), sound effects and title music, with a preview page you can click to hear.
+- `persona_test`: made-up users (grandma, speedrunner, angry reviewer, kid, screen-reader user,
+  commuter, or your own) use the app in Maxx's browser or on the phone. Each writes a paragraph of
+  feedback, a score and a bug list, saved in `.maxx/personas/`.
+- `ugly_check` and `timelapse`: the two below, on demand.
+
+**Ugliness alarm.** After Maxx changes a web page, it loads it at phone and desktop size before
+saying done and looks for design crimes: text too faint to read, buttons too small to tap, cut-off
+text, sideways scrolling, tiny type, clashing colours, broken images, overlapping buttons and
+script errors. It sends the list back to the model once to fix. It is measured from the page, so it
+needs no vision model. Turn it off with `--no-alarm`.
+
+**Time-lapse.** Every change you can see saves a small screenshot in `.maxx/timelapse/` (kept out of
+git). Agent mode turns each finished goal into a looping GIF of about 20 seconds, and `timelapse`
+makes one whenever you ask. Maxx encodes the GIF itself, so no ffmpeg is needed. Turn it off with
+`--no-timelapse`.
+
+### Recipes
+
+Recipes are step-by-step playbooks, such as `fix-failing-test`, `responsive-page`, `pwa-install`,
+`game-juice`, `android-release` and `app-icons`. Only their names and a line each go in the
+system prompt. The model calls `recipe` to load the full steps when a task matches, which helps
+a small model far more than improvising.
+
+To add your own, write Markdown files with `name:` and `when:` front matter:
+
+- in `.maxx/recipes/` for the project (commit them, so the team gets them too)
+- in `~/.maxx/recipes/` for every project
+
+A recipe with the same name as a built-in one replaces it.
+
+**📜 Recipe recorder**: after a task goes well, press 📜 Recipe in the app (or type
+`/recipe save <what it is for>`). Maxx writes down the steps that worked, leaves out the dead ends,
+and adds a step that avoids the mistake that caused them. `/recipe` lists the recipes, and
+`/recipe <name>` shows one.
+
 ## Looking things up: web search and free MCP servers
 
 A small local model's knowledge stops at its training date, so it will happily describe last

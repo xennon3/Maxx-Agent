@@ -1,5 +1,5 @@
 import { existsSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { ServerWebSocket } from "bun";
 import { Agent, type AgentIO } from "../loop.ts";
@@ -78,7 +78,7 @@ export async function startUI(opts: UIOptions) {
     title: string;
     controller: AbortController | null;
   } | null = null;
-  const pending = new Map<string, { res: (a: Answer) => void; stillNeeded?: () => boolean }>();
+  const pending = new Map<string, { res: (a: Answer, stopped?: boolean, why?: string) => void; stillNeeded?: () => boolean }>();
   // Follow-up questions waiting for the user (ask_user, Agent mode's briefing).
   const questions = new Map<string, (a: string | null) => void>();
   let stage: Stage | null = null;
@@ -148,7 +148,14 @@ export async function startUI(opts: UIOptions) {
     ask: (question, preview, stillNeeded) =>
       new Promise<Answer>((res) => {
         const id = crypto.randomUUID();
-        pending.set(id, { res, stillNeeded });
+        // Closes the card on every open window, however it was answered.
+        pending.set(id, {
+          res: (a: Answer, stopped = false, why?: string) => {
+            send({ type: "askDone", id, answer: String(a).startsWith("no") ? "no" : a, stopped, why });
+            res(a);
+          },
+          stillNeeded,
+        });
         send({ type: "ask", id, question, preview });
       }),
     question: (q, signal) =>
@@ -237,6 +244,7 @@ export async function startUI(opts: UIOptions) {
         model: s.llm.model,
         mode: s.permissions.mode,
         toolsets: s.agent.toolsets,
+        tools: s.agent.toolNames,
         busy: !!s.controller,
         plan: s.agent.plan,
         board: s.agent.board,
@@ -299,9 +307,11 @@ export async function startUI(opts: UIOptions) {
     const agent = await new Agent(
       chat
         ? { llm, cwd: dir, permissions, vision, network, brevity, thinking, palette, contextWindow: fit.context, chat: true, plan: false, memory: false, fixTries: 0 }
-        : { llm, cwd: dir, permissions, toolsets, vision, helper, network, brevity, thinking, palette, learn, contextWindow: fit.context, tools: [...TOOLS, ...stage!.tools()], mapTokens: agentSettings(contextWindow, goalSaved).mapTokens },
+        : { llm, cwd: dir, permissions, toolsets, vision, helper, network, brevity, thinking, palette, learn, contextWindow: fit.context, tools: [...TOOLS, ...stage!.tools()], mapTokens: agentSettings(contextWindow, goalSaved).mapTokens, alarm: process.env.MAXX_ALARM !== "0", timelapse: process.env.MAXX_TIMELAPSE !== "0" },
       io,
     ).init();
+    // The alarm and the time-lapse look at the Preview panel's page, or the dev server it runs.
+    if (!chat) agent.surfaces = { previewUrl: (p) => stage!.preview.url(p), serverUrl: () => (stage!.runner?.list() ?? []).filter((p) => p.status === "running" && p.url).at(-1)?.url };
     if (saved) await agent.restore(saved.id, saved.history);
     state = { cwd: dir, agent, permissions, llm, created: saved?.created ?? new Date().toISOString(), title: saved?.title ?? "", controller: null };
     // A banner at the top, so it outlasts the redraw after each turn.
@@ -393,9 +403,8 @@ export async function startUI(opts: UIOptions) {
           let let_through = 0;
           for (const [id, p] of [...pending]) {
             if (p.stillNeeded && !p.stillNeeded()) {
-              p.res("yes");
               pending.delete(id);
-              send({ type: "askDone", id, answer: "yes", why: "auto" });
+              p.res("yes", false, "auto");
               let_through++;
             }
           }
@@ -482,6 +491,13 @@ export async function startUI(opts: UIOptions) {
         if (state.controller) throw new Error("stop the current turn first");
         io.note(await state.agent.undoTurn());
         await save();
+        return send(await snapshot());
+      }
+      case "recordRecipe": {
+        if (!state) throw new Error("open a project folder first");
+        if (state.controller) throw new Error("stop the current turn first");
+        const { recipe, path } = await state.agent.recordRecipe(String(m.hint ?? "").slice(0, 200));
+        send({ type: "recipe", name: recipe.name, when: recipe.when, path: relative(state.cwd, path).replaceAll("\\", "/") });
         return send(await snapshot());
       }
       case "agentSettings":
@@ -584,7 +600,7 @@ export async function startUI(opts: UIOptions) {
         return;
       case "stop":
         state?.controller?.abort();
-        for (const [id, p] of pending) (p.res("no"), pending.delete(id));
+        for (const [id, p] of pending) (p.res("no", true), pending.delete(id));
         for (const done of [...questions.values()]) done(null);
         for (const c of [...captures.values()]) c.rej(Object.assign(new Error("stopped"), { name: "AbortError" }));
         return;

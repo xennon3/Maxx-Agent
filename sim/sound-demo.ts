@@ -38,7 +38,7 @@ await page.waitForSelector("#model option", { state: "attached" });
 await page.fill("#folder", app);
 await page.click("#openBtn");
 await page.waitForFunction(() => document.querySelector("#where")!.textContent!.includes("arcade"));
-await page.selectOption("#mode", "yolo");
+await page.evaluate((v: string) => (0, eval)("send")({ type: "settings", mode: v }), "yolo");
 await page.fill("#input", "Make a spooky snake game with sound");
 await page.keyboard.press("Enter");
 await page.waitForSelector("#sendBtn:not([disabled])", { timeout: 30000 });

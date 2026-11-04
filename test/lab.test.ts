@@ -202,7 +202,8 @@ test.skipIf(!py)("the sandbox runs Python, reads METRIC/RESULT and blocks the ne
   const slow = await runTest({ dir, name: "t3", code: "import time\ntime.sleep(10)", runtime, seconds: 1, network: false });
   expect(slow.timedOut).toBe(true);
   expect(slow.ok).toBe(false);
-});
+  // Starting Python a few times takes longer than bun's 5s default on Windows runners.
+}, 30_000);
 
 test("the sandbox's JavaScript fallback runs on Maxx's own runtime", async () => {
   const dir = await mkdtemp(join(tmpdir(), "maxx-lab-js-"));
