@@ -329,44 +329,152 @@ ${VOICE_CSS}
 ${LAB_CSS}
 ${VIS_CSS}
 ${SOUND_CSS}
+/* Layout (batch 4): one calm header row, grouped menus, a centered reading column and one message box with its tools inside. */
+main { --col: max(16px, calc((100% - 860px) / 2)); container-type: inline-size; }
+header { flex-wrap: nowrap; gap: 6px; padding: 8px 16px; min-height: 52px; }
+header .where { flex: 1; max-width: none; min-width: 60px; margin-right: 6px; display: flex; flex-direction: column; line-height: 1.2; }
+header .where b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+header .where small { color: var(--mute); font-weight: 400; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+header select#model { flex: 0 1 230px; min-width: 96px; text-overflow: ellipsis; padding: 6px 8px; font-size: 13px; }
+.hbtn { padding: 6px 10px; font-size: 13px; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+.hbtn.gear { padding: 6px 8px; }
+.hbtn .n { background: var(--accent); color: var(--accent-ink); border-radius: 999px; font-size: 11px; padding: 0 6px; line-height: 16px; font-weight: 600; }
+.hbtn .ind:empty { display: none; }
+.hbtn .ind { font-size: 12px; letter-spacing: 1px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; padding: 2px; background: var(--bg); gap: 2px; flex: none; }
+.seg button { border: 0; background: none; padding: 4px 10px; font-size: 13px; border-radius: 7px; white-space: nowrap; color: var(--mute); }
+.seg button:hover { color: var(--ink); }
+.seg button.on { background: var(--panel); color: var(--ink); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.14); }
+.seg.small button { padding: 3px 8px; font-size: 12px; }
+#agentBtn.on { color: #1971c2; } #crewBtn.on { color: #7048e8; }
+/* The two menus */
+.pop { margin: 0; inset: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); padding: 12px 14px; box-shadow: 0 12px 36px rgba(0,0,0,.2); width: min(440px, calc(100vw - 24px)); max-height: calc(100vh - 80px); overflow: auto; }
+.pop h4 { margin: 0 0 2px; font-size: 13px; }
+.pop .hint { margin: 0 0 8px; color: var(--mute); font-size: 12px; }
+.pop .foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; color: var(--mute); font-size: 12.5px; }
+.pop .foot button, .prow button:not(.switch) { padding: 4px 10px; font-size: 12.5px; }
+.prow { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+.prow:first-child { border-top: 0; padding-top: 2px; }
+.prow .pl { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.prow .pl b { font-size: 13px; font-weight: 600; }
+.prow .pl span { color: var(--mute); font-size: 12px; line-height: 1.35; }
+.prow select { font-size: 12.5px; padding: 4px 6px; }
+.prow .pbtns { display: flex; gap: 6px; }
+#palBtn { display: inline-flex; align-items: center; gap: 6px; max-width: 170px; }
+#palBtn .sw { margin: 0; }
+#sets { display: flex; flex-direction: column; }
+#sets .tset { display: flex; align-items: center; gap: 10px; padding: 7px 4px; border-radius: 8px; cursor: pointer; }
+#sets .tset:hover { background: var(--bg); }
+#sets .tset .ic { font-size: 18px; width: 24px; text-align: center; flex: none; }
+.switch { position: relative; width: 36px; height: 20px; border-radius: 999px; padding: 0; background: var(--line); border: 0; flex: none; transition: background .15s; }
+.switch i { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: left .15s; }
+.switch.on { background: var(--accent); }
+.switch.on i { left: 18px; }
+/* The reading column: transcript, board, Plan and message box share one centered width. */
+#log { padding-left: var(--col); padding-right: var(--col); }
+.board, .plan { margin-left: var(--col); margin-right: var(--col); max-width: none; }
+.board.on + .plan.on { margin-top: 6px; }
+main:has(.board.on, .plan.on) #log { margin-top: 10px; border-top: 1px solid var(--line); }
+.activity, #okdock { padding-left: var(--col); padding-right: var(--col); }
+#toast { bottom: 104px; }
+body.noproj .projonly { display: none !important; }
+.composer { padding: 10px var(--col) 14px; border-top: 0; background: var(--bg); }
+.cbox { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); display: flex; flex-direction: column; box-shadow: 0 1px 4px rgba(0,0,0,.05); }
+.cbox:focus-within { border-color: var(--mute); }
+.cbox textarea, main:has(#okdock.on) .composer .cbox textarea { border: 0; background: none; height: 56px; resize: none; padding: 10px 12px 4px; outline: none; }
+body.agent .cbox { border-color: #1971c2; } body.crew .cbox { border-color: #7048e8; }
+body.agent .composer textarea, body.crew .composer textarea { border-color: transparent; }
+.cbar { display: flex; align-items: center; gap: 2px; padding: 4px 6px 6px; }
+.cbar .sp { flex: 1; }
+.cbar .sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
+.cbar .tb, .cbar .micmore { border: 1px solid transparent; background: none; padding: 4px 8px; font-size: 12.5px; border-radius: 8px; color: var(--mute); line-height: 1.4; white-space: nowrap; }
+.cbar .tb:hover:not(:disabled), .cbar .micmore:hover { background: var(--bg); color: var(--ink); }
+.cbar #clipBtn { font-size: 15px; padding: 3px 8px; }
+.cbar #autoBtn { align-self: auto; }
+.cbar #autoBtn.on { background: #f59f00; border-color: #f59f00; color: #1a1a1a; }
+.cbar #autoBtn.half { border-color: #f59f00; color: var(--ink); }
+.cbar .micwrap { flex-direction: row; align-items: center; gap: 0; }
+.cbar .mic { width: auto; height: auto; padding: 3px 8px; font-size: 15px; border: 1px solid transparent; background: none; }
+.cbar .mic:hover { background: var(--bg); }
+.cbar .micmore { height: auto; padding: 4px 4px; font-size: 11px; }
+.cbar #micMenu { bottom: 34px; }
+.cbar .kbd { color: var(--mute); font-size: 11.5px; margin-right: 6px; }
+.cbar #sendBtn, .cbar #stopBtn { padding: 5px 14px; border-radius: 9px; font-size: 13px; }
+.cbar #stopBtn:disabled { display: none; }
+.cbar:has(#stopBtn:not(:disabled)) #sendBtn, .cbar:has(#stopBtn:not(:disabled)) .kbd { display: none; }
+.cbar #sendBtn:disabled { opacity: .5; }
+/* Sidebar: open a folder from under Projects. */
+.projhead { display: flex; align-items: center; justify-content: space-between; padding-right: 12px; margin-top: 6px; }
+.projhead button { font-size: 11.5px; padding: 1px 8px; text-transform: none; letter-spacing: 0; border-radius: 999px; color: var(--ink); }
+.openarea { display: none; padding-top: 6px; }
+aside.adding .openarea { display: block; }
+aside.adding #addProj { background: var(--bg); }
+/* A narrow middle (the preview open on a laptop): the header keeps one row by dropping words, then the path. */
+@container (max-width: 900px) { header .lbl, .cbar .kbd { display: none; } .seg.modes button { padding: 4px 8px; font-size: 15px; } .hbtn { padding: 6px 8px; } }
+@container (max-width: 640px) { header .where small { display: none; } .cbar .tb { padding: 4px 5px; } }
+@media (max-width: 860px) { header { flex-wrap: wrap; } }
 </style>
 </head>
 <body>
-<aside>
+<aside id="aside">
   <div class="brand"><b>◆</b> Maxx</div>
-  <div class="openbox">
-    <input id="folder" placeholder="Project folder, e.g. C:\\code\\app" style="flex:1">
-    <button id="openBtn">Open</button>
-  </div>
-  <div class="openbox" id="pickRow" style="display:none"><button id="pickBtn" style="flex:1">Choose folder…</button></div>
   <div class="chathead">Chat</div>
   <div class="chatnav" id="chatnav"><button class="go" id="chatBtn" title="Everyday questions, with charts and diagrams drawn right in the chat. No project, no tools.">💬 New chat</button></div>
   ${LAB_NAV}
-  <div class="chathead">Projects</div>
+  <div class="chathead projhead">Projects<button id="addProj" title="Open a project folder">＋ Open</button></div>
+  <div class="openarea" id="openArea">
+    <div class="openbox">
+      <input id="folder" placeholder="Project folder, e.g. C:\\code\\app" style="flex:1">
+      <button id="openBtn">Open</button>
+    </div>
+    <div class="openbox" id="pickRow" style="display:none"><button id="pickBtn" style="flex:1">Choose folder…</button></div>
+  </div>
   <div class="projects" id="projects"></div>
 </aside>
 <main>
   <header>
     <div class="where" id="where">No project open</div>
+    <div class="seg modes projonly" id="modeSeg" role="group" aria-label="How Maxx works">
+      <button id="pairBtn" title="Pair: you and Maxx take turns. It does what you ask, then waits for you.">💬<span class="lbl"> Pair</span></button>
+      <button id="agentBtn" title="Agent mode: give Maxx a goal. It splits it into tasks and works through them on its own, checking each one and rewinding any that fail.">🤖<span class="lbl"> Agent</span></button>
+      <button id="crewBtn" title="Crew mode: give Maxx a goal. It splits it into tasks and several workers do them at the same time, each in its own copy of the project, then Maxx merges their work.">👥<span class="lbl"> Crew</span></button>
+    </div>
+    <button class="hbtn gear projonly" id="modeCfg" title="Settings for this mode">⚙</button>
     <select id="model" title="Model"></select>
-    <select id="mode" title="Permissions" class="projonly">
-      <option value="ask">Ask before acting</option>
-      <option value="auto-edit">Auto-approve edits</option>
-      <option value="yolo">⚡ Auto-run everything</option>
-    </select>
-    <span id="sets" class="projonly"></span>
-    <span class="chip" id="netBtn" title="Let Maxx look things up on the web (and in the MCP servers in ~/.maxx/mcp.json), install packages (pip, npm...) and download files">🌐 Network: off</span>
-    <span class="chip" id="briefBtn" title="How much Maxx says. Click to switch: Brief (short answers, no padding), Normal, Detailed (explanations and examples)">✂ Brief</span>
-    <span class="chip" id="thinkBtn" title="How much a reasoning model thinks before it acts. Click to switch: auto, off, low, high, max">💭 Think: auto</span>
-    <span class="chip" id="palBtn" title="The colors Maxx designs with: charts, diagrams, pages, apps and games. You can also say it in a message: “make it in synthwave colors”">🎨 Colors: auto</span>
-    <span class="chip rules projonly" id="rulesBtn" title="Rules Maxx learned when you corrected it (saying “no, use…”, denying a step with a reason, fixing its code by hand, or undoing a turn). They live in this project's MAXX.md.">📏 Rules</span>
-    <span class="chip agent projonly" id="agentBtn" title="Agent mode: give Maxx a goal. It splits it into tasks and works through them on its own, checking each one and rewinding any that fail.">🤖 Agent</span><span class="chip gear projonly" id="agentCfg" title="Agent mode settings">⚙</span>
-    <span class="chip crew projonly" id="crewBtn" title="Crew mode: give Maxx a goal. It splits it into tasks and several workers do them at the same time, each in its own copy of the project, then Maxx merges their work.">👥 Crew</span><span class="chip gear projonly" id="crewCfg" title="Crew mode settings">⚙</span>
-    <span class="chip helper projonly" id="helperBtn" title="A bigger model Maxx calls when the local one is stuck">🧠 Helper: off</span>
-    <button id="newBtn" title="Start a new session">New</button>
+    <button class="hbtn projonly" id="toolsBtn" popovertarget="toolsPop" title="Toolsets: extra tools Maxx can use in this project">🧰<span class="lbl"> Tools</span></button>
+    <button class="hbtn" id="tuneBtn" popovertarget="tunePop" title="Settings: permissions, network, replies, thinking, colors, rules and the helper model">⚙<span class="lbl"> Settings</span><span class="ind" id="tuneInd"></span></button>
+    <button class="hbtn" id="newBtn" title="Start a new session">＋<span class="lbl"> New</span></button>
   </header>
+  <div class="pop" id="toolsPop" popover>
+    <h4>Toolsets</h4>
+    <p class="hint">Extra tools for this project. Each one adds a few tools to what Maxx can use; fewer tools keep a small model focused.</p>
+    <div id="sets"></div>
+    <div class="foot"><span id="toolCount"></span><button id="toolsList">List them</button></div>
+  </div>
+  <div class="pop" id="tunePop" popover>
+    <div class="prow projonly"><div class="pl"><b>⚡ Permissions</b><span>What Maxx may do without asking</span></div>
+      <select id="mode" title="Permissions">
+        <option value="ask">Ask before acting</option>
+        <option value="auto-edit">Auto-approve edits</option>
+        <option value="yolo">⚡ Auto-run everything</option>
+      </select></div>
+    <div class="prow"><div class="pl"><b>🌐 Network</b><span>Web lookups, MCP servers, package installs and downloads</span></div>
+      <button class="switch" id="netBtn" role="switch" aria-checked="false" title="Let Maxx look things up on the web (and in the MCP servers in ~/.maxx/mcp.json), install packages (pip, npm...) and download files"><i></i></button></div>
+    <div class="prow"><div class="pl"><b>✂ Replies</b><span>How much Maxx says</span></div>
+      <div class="seg small" id="briefSeg"></div></div>
+    <div class="prow"><div class="pl"><b>💭 Thinking</b><span id="thinkSay">How much a reasoning model thinks before it acts</span></div>
+      <div class="seg small" id="thinkSeg"></div></div>
+    <div class="prow"><div class="pl"><b>🎨 Colors</b><span>The palette Maxx designs charts, pages, apps and games with</span></div>
+      <button id="palBtn" title="The colors Maxx designs with. You can also say it in a message: “make it in synthwave colors”">Auto</button></div>
+    <div class="prow projonly"><div class="pl"><b>📏 Rules</b><span id="rulesSay">Rules Maxx learned when you corrected it</span></div>
+      <button id="rulesBtn" title="Rules Maxx learned when you corrected it (saying “no, use…”, denying a step with a reason, fixing its code by hand, or undoing a turn). They live in this project's MAXX.md.">Edit</button></div>
+    <div class="prow projonly"><div class="pl"><b>🧠 Helper</b><span id="helperSay">A bigger model Maxx calls when the local one is stuck</span></div>
+      <button id="helperBtn" title="A bigger model Maxx calls when the local one is stuck">Off</button></div>
+    <div class="prow projonly"><div class="pl"><b>Modes</b><span>Budgets for Agent and Crew runs</span></div>
+      <span class="pbtns"><button id="agentCfg" title="Agent mode settings">🤖 Agent…</button><button id="crewCfg" title="Crew mode settings">👥 Crew…</button></span></div>
+  </div>
   <div class="board" id="board"></div>
-    <div class="plan" id="plan"></div>
+  <div class="plan" id="plan"></div>
   ${LAB_VIEW}
   <div id="log"></div>
   <div id="okdock"></div>
@@ -374,16 +482,19 @@ ${SOUND_CSS}
   ${VOICE_HINT}
   <div class="composer">
     <div class="files" id="files"></div>
-    <div class="row">
-      <button id="clipBtn" title="Attach files: images, code, anything. You can also drop or paste them.">📎</button>
-      <button id="autoBtn" class="projonly" title="">⚡ Auto</button>
-      <input type="file" id="fileInput" multiple hidden>${VOICE_HTML}
+    <div class="cbox">
       <textarea id="input" placeholder="Ask Maxx to build, fix or test something…  (Enter to send, Shift+Enter for a new line; drop or paste files to attach)"></textarea>
-      <div style="display:flex;flex-direction:column;gap:6px">
-        <button class="primary" id="sendBtn">Send</button>
-        <button class="danger" id="stopBtn" disabled>Stop</button>
-        <button id="recipeBtn" class="projonly" title="📜 Save what Maxx just did as a recipe in .maxx/recipes, so next time it follows the same steps">📜 Recipe</button>
-        <button id="undoBtn" class="projonly" disabled title="Put every file back as it was before Maxx's last turn. Then say what you wanted instead, and Maxx learns a rule from it.">↶ Undo</button>
+      <div class="cbar">
+        <button class="tb" id="clipBtn" title="Attach files: images, code, anything. You can also drop or paste them.">📎</button>
+        <input type="file" id="fileInput" multiple hidden>${VOICE_HTML}
+        <span class="sep projonly"></span>
+        <button class="tb projonly" id="autoBtn" title="">⚡ Auto</button>
+        <button class="tb projonly" id="recipeBtn" title="📜 Save what Maxx just did as a recipe in .maxx/recipes, so next time it follows the same steps">📜 Recipe</button>
+        <button class="tb projonly" id="undoBtn" disabled title="Put every file back as it was before Maxx's last turn. Then say what you wanted instead, and Maxx learns a rule from it.">↶ Undo</button>
+        <span class="sp"></span>
+        <span class="kbd" id="sendHint">Enter to send</span>
+        <button class="danger" id="stopBtn" disabled>■ Stop</button>
+        <button class="primary" id="sendBtn">Send ➤</button>
       </div>
     </div>
   </div>
@@ -1020,6 +1131,7 @@ function render(s) {
   $("pickRow").style.display = s.platform === "win32" ? "flex" : "none";
   // Sidebar
   document.body.classList.toggle("chat", !!(cur && cur.chat));
+  document.body.classList.toggle("noproj", !cur);
   const cn = $("chatnav"); cn.querySelectorAll(".sess").forEach((x) => x.remove());
   $("chatBtn").classList.toggle("on", !!(cur && cur.chat));
   for (const ss of (s.chat && s.chat.sessions) || []) cn.appendChild(sessRow(s.chat.cwd, ss, cur));
@@ -1040,53 +1152,56 @@ function render(s) {
   const models = want && !s.models.includes(want) ? [want, ...s.models] : s.models;
   if (!models.length) sel.innerHTML = "<option>No model: start LM Studio's server</option>";
   for (const id of models) { const o = document.createElement("option"); o.value = o.textContent = id; if (want === id) o.selected = true; sel.appendChild(o); }
-  $("where").textContent = cur ? (cur.chat ? "💬 Chat" : cur.cwd) : "No project open";
+  if (cur && !cur.chat) $("where").innerHTML = "<b>" + esc(cur.cwd.split(/[\\\\/]/).filter(Boolean).pop() || cur.cwd) + "</b><small>\u200e" + esc(cur.cwd) + "\u200e</small>";
+  else $("where").innerHTML = "<b>" + (cur ? "💬 Chat" : "No project open") + "</b>";
+  $("aside").classList.toggle("adding", !s.projects.length || openWanted);
   $("where").title = cur ? (cur.chat ? "No project: just ask. Charts and diagrams are drawn right here, and with 🌐 Network on Maxx can look things up on the web." : cur.cwd) : "";
   $("input").placeholder = cur && cur.chat ? "Ask anything. Try \u201cchart my monthly budget\u201d or \u201cdraw how a bill becomes a law\u201d  (Enter to send, Shift+Enter for a new line)" : PROJECT_HINT;
   if (cur) $("mode").value = cur.mode;
   drawAuto(cur && cur.mode);
+  // 🧰 Tools menu: one switch per toolset, and what the model can really use right now (so nobody has to ask it).
   const sets = $("sets"); sets.innerHTML = "";
+  const onSets = cur ? cur.toolsets : [];
   for (const t of s.toolsets) {
-    const c = div("chip" + (cur && cur.toolsets.includes(t.name) ? " on" : ""), t.name === "android" ? "📱 Android" : t.name === "desktop" ? "🖥 Desktop" : t.name === "studio" ? "🎨 Studio" : t.name === "browser" ? "🧭 Browser" : t.name === "engineer" ? "🛠 Engineer" : t.name === "media" ? "🎬 Media" : t.name);
-    c.title = t.about;
-    c.onclick = () => { if (!cur) return; const on = cur.toolsets.includes(t.name) ? cur.toolsets.filter((x) => x !== t.name) : [...cur.toolsets, t.name]; send({ type: "settings", toolsets: on }); };
-    sets.appendChild(c);
+    const on = onSets.includes(t.name), [ic, nm] = TOOLSET_NAME[t.name] || ["🧩", t.name];
+    const row = div("tset");
+    row.innerHTML = '<span class="ic">' + ic + '</span><span class="pl" style="flex:1;min-width:0;display:flex;flex-direction:column"><b style="font-size:13px">' + esc(nm) + '</b><span style="color:var(--mute);font-size:12px;line-height:1.35">' + esc(t.about) + '</span></span><button class="switch' + (on ? " on" : "") + '" role="switch" aria-checked="' + on + '" aria-label="' + esc(nm) + '"><i></i></button>';
+    row.onclick = () => { if (!cur) return; send({ type: "settings", toolsets: on ? cur.toolsets.filter((x) => x !== t.name) : [...cur.toolsets, t.name] }); };
+    sets.appendChild(row);
   }
-  // What the model can really use right now, so nobody has to ask it (it may not know).
-  if (cur) {
-    const tl = cur.tools || [];
-    const c = div("chip", "🧰 " + tl.length);
-    c.title = tl.length ? "Tools Maxx can use right now:\\n" + tl.join(", ") + "\\n\\nClick to list them here." : "No tools in this mode";
-    c.onclick = () => note("🧰 " + (cur.chat ? "Chat mode" : "This project") + " has " + tl.length + " tools: " + (tl.join(", ") || "none") + (cur.chat ? ". Open a project folder for files, commands, tests, git and the phone and desktop tools." : ". Switch on the chips beside this one for more."));
-    sets.appendChild(c);
-  }
+  const tl = (cur && cur.tools) || [];
+  $("toolCount").textContent = "🧰 " + tl.length + " tools ready" + (onSets.length ? " · " + onSets.length + " toolset" + (onSets.length > 1 ? "s" : "") + " on" : "");
+  $("toolCount").title = tl.join(", ");
+  $("toolsBtn").innerHTML = '🧰<span class="lbl"> Tools</span>' + (onSets.length ? ' <span class="n">' + onSets.length + "</span>" : "");
+  $("toolsBtn").title = "Toolsets: extra tools Maxx can use in this project. " + tl.length + " tools ready now" + (onSets.length ? " (" + onSets.join(", ") + ")" : "");
   drawPlan(cur && cur.plan);
   drawBoard(cur && cur.board);
   if (cur && cur.lab) { lastStudy = cur.lab; drawLab(lastStudy); drawPane(); }
   else if (!(cur && cur.research)) { lastStudy = null; drawLab(null); drawPane(); }
   drawAgent();
   drawResearch();
+  // ⚙ Settings menu
   const nb = $("netBtn");
-  nb.classList.toggle("on", !!s.network);
-  nb.textContent = s.network ? "🌐 Network: on" : "🌐 Network: off";
-  const bb = $("briefBtn");
-  bb.textContent = BREVITY_LABEL[s.brevity] || BREVITY_LABEL.brief;
-  bb.classList.toggle("on", s.brevity === "brief");
-  const tb = $("thinkBtn"), tl = s.thinking || "auto";
-  tb.textContent = THINKING_LABEL[tl] || THINKING_LABEL.auto;
-  tb.classList.toggle("on", tl !== "max");
-  tb.title = "How much a reasoning model thinks before it acts: " + (THINKING_SAY[tl] || "") + ". Click to switch: auto, off, low, high, max";
+  nb.classList.toggle("on", !!s.network); nb.setAttribute("aria-checked", String(!!s.network));
+  segment("briefSeg", Object.keys(BREVITY_LABEL), s.brevity || "brief", (k) => BREVITY_LABEL[k].replace(/^\S+\s/, ""), (k) => send({ type: "brevity", level: k }));
+  const tl2 = s.thinking || "auto";
+  segment("thinkSeg", Object.keys(THINKING_LABEL), tl2, (k) => k, (k) => send({ type: "thinking", level: k }));
+  $("thinkSay").textContent = "How long a reasoning model thinks before it acts";
+  $("thinkSeg").querySelectorAll("button").forEach((b) => { b.title = THINKING_SAY[b.textContent] || ""; });
+  $("thinkSeg").title = "Now: " + (THINKING_SAY[tl2] || "");
   const pb = $("palBtn"), pal = s.palette;
-  pb.classList.toggle("on", !!pal);
-  pb.innerHTML = "🎨 " + (pal ? esc(pal.name) + swatchHtml(pal.colors.slice(0, 8), "sw") : "Colors: auto");
+  pb.innerHTML = pal ? swatchHtml(pal.colors.slice(0, 6), "sw") + esc(pal.name) : "Auto · pick";
   const rb = $("rulesBtn"), rules = (cur && cur.rules) || [];
-  rb.classList.toggle("on", !!s.learn);
-  rb.textContent = "📏 Rules" + (rules.length ? ": " + rules.length : "") + (s.learn ? "" : " (off)");
+  rb.textContent = "Edit" + (rules.length ? " (" + rules.length + ")" : "");
+  $("rulesSay").textContent = (rules.length ? rules.length + " rule" + (rules.length > 1 ? "s" : "") + " in MAXX.md" : "No rules yet") + (s.learn ? "; learns when you correct Maxx" : "; learning is off");
   $("undoBtn").disabled = !(cur && cur.canUndo) || !!(cur && cur.busy);
-  const hb = $("helperBtn"), hs = s.helper;
+  const hs = s.helper;
   const helperOn = hs && !hs.off && hs.model;
-  hb.classList.toggle("on", !!helperOn);
-  hb.textContent = helperOn ? "🧠 " + hs.model : "🧠 Helper: off";
+  $("helperBtn").textContent = helperOn ? "Change" : "Set up";
+  $("helperSay").textContent = helperOn ? "On: " + hs.model + ", called when the local model is stuck" : "Off. A bigger model Maxx calls when the local one is stuck";
+  // The Settings button shows what is switched on that matters most: the internet, and a helper that may send the conversation out.
+  $("tuneInd").textContent = (s.network ? "🌐" : "") + (helperOn ? "🧠" : "");
+  $("tuneBtn").title = "Settings: permissions, network" + (s.network ? " (on)" : " (off)") + ", replies, thinking, colors, rules and the helper model";
   busy = !!(cur && cur.busy);
   $("stopBtn").disabled = !busy; $("sendBtn").disabled = busy;
   // Transcript, redrawn from the agent's history whenever a turn ends or a session opens
@@ -1094,8 +1209,9 @@ function render(s) {
     const log = $("log"); log.innerHTML = ""; live = null; streaming = null; writing = []; thinkCard = null;
     if (!cur) { log.innerHTML = '<div class="empty"><h2>Pick a project</h2>Open a folder on the left, or choose one of your recent sessions. Everything runs on this machine against LM Studio.</div>'; $("log").querySelector(".empty").appendChild(chatStart()); return; }
     if (!cur.history.length && cur.chat) log.appendChild(chatEmpty());
+    else if (!cur.history.length && cur.research) log.innerHTML = '<div class="empty">Approvals and notes from a running study show up here.</div>';
     else if (!cur.history.length) log.innerHTML = '<div class="empty"><h2>' + esc(cur.cwd.split(/[\\\\/]/).filter(Boolean).pop() || "") + '</h2>Ask for something: "make a tip calculator app and test it on my phone", "why does the build fail?"</div>';
-    if (!cur.history.length && !cur.chat && s.templates) $("log").querySelector(".empty").appendChild(starters(s.templates));
+    if (!cur.history.length && !cur.chat && !cur.research && s.templates) $("log").querySelector(".empty").appendChild(starters(s.templates));
     const results = cur.history.filter((h) => h.role === "tool").map((h) => h.text);
     let ri = 0;
     for (const h of cur.history) {
@@ -1279,13 +1395,19 @@ function drawAgent() {
   const on = agentOn(), crew = crewOn();
   $("agentBtn").classList.toggle("on", on);
   $("crewBtn").classList.toggle("on", crew);
+  $("pairBtn").classList.toggle("on", !on && !crew);
+  $("modeCfg").style.display = on || crew ? "" : "none";
+  $("modeCfg").title = crew ? "Crew mode settings" : "Agent mode settings";
   document.body.classList.toggle("agent", on);
   document.body.classList.toggle("crew", crew);
   if (state && state.current && !state.current.chat) $("input").placeholder = crew ? "Give the crew a goal, e.g. \u201cbuild a weather app with a search page, a 5-day forecast and a settings page\u201d. Workers do its tasks at the same time." : on ? "Give Maxx a goal, e.g. \u201cbuild a tip calculator web app and check it works\u201d. It plans the tasks and works through them on its own." : PROJECT_HINT;
 }
 const remember = (k, v) => { try { localStorage.setItem(k, v ? "1" : "0"); } catch {} };
-$("agentBtn").onclick = () => { agentMode = !agentOn(); if (agentMode) crewMode = false; remember("maxx.agent", agentMode); remember("maxx.crew", crewMode); drawAgent(); };
-$("crewBtn").onclick = () => { crewMode = !crewMode; if (crewMode) agentMode = false; remember("maxx.agent", agentMode); remember("maxx.crew", crewMode); drawAgent(); };
+function setWorkMode(m) { agentMode = m === "agent"; crewMode = m === "crew"; remember("maxx.agent", agentMode); remember("maxx.crew", crewMode); drawAgent(); }
+$("pairBtn").onclick = () => setWorkMode("pair");
+$("agentBtn").onclick = () => setWorkMode("agent");
+$("crewBtn").onclick = () => setWorkMode("crew");
+$("modeCfg").onclick = () => (crewOn() ? $("crewCfg") : $("agentCfg")).click();
 function crewForm(values) {
   const c = (state && state.crewMode) || {};
   const v = values || c.settings || {};
@@ -1334,14 +1456,29 @@ $("agentForm").onsubmit = (e) => {
   send({ type: "agentSettings", settings: out });
 };
 ${LAB_JS}
-$("briefBtn").onclick = () => {
-  const order = Object.keys(BREVITY_LABEL);
-  send({ type: "brevity", level: order[(order.indexOf((state && state.brevity) || "brief") + 1) % order.length] });
+// The two header menus are native popovers: a click outside or Esc closes them. They open under their button.
+const TOOLSET_NAME = { android: ["📱", "Android"], desktop: ["🖥", "Desktop"], browser: ["🧭", "Browser"], engineer: ["🛠", "Engineer"], studio: ["🎨", "Studio"], media: ["🎬", "Media"], director: ["✨", "Director"] };
+function segment(id, keys, cur, label, pick) {
+  const box = $(id); box.innerHTML = "";
+  for (const k of keys) { const b = document.createElement("button"); b.textContent = label(k); b.className = k === cur ? "on" : ""; b.onclick = () => pick(k); box.appendChild(b); }
+}
+for (const [pop, btn] of [["toolsPop", "toolsBtn"], ["tunePop", "tuneBtn"]]) {
+  $(pop).addEventListener("beforetoggle", (e) => {
+    if (e.newState !== "open") return;
+    const r = $(btn).getBoundingClientRect(), w = Math.min(440, innerWidth - 24);
+    $(pop).style.top = r.bottom + 6 + "px";
+    $(pop).style.left = Math.max(12, Math.min(r.right - w, innerWidth - w - 12)) + "px";
+  });
+}
+// A button in the Settings menu that opens a dialog closes the menu first.
+$("tunePop").addEventListener("click", (e) => { if (e.target.closest("#palBtn, #rulesBtn, #helperBtn, #agentCfg, #crewCfg")) $("tunePop").hidePopover(); }, true);
+$("toolsList").onclick = () => {
+  const cur = state && state.current, tl = (cur && cur.tools) || [];
+  $("toolsPop").hidePopover();
+  note("🧰 " + (cur && cur.chat ? "Chat mode" : "This project") + " has " + tl.length + " tools: " + (tl.join(", ") || "none") + (cur && cur.chat ? ". Open a project folder for files, commands, tests, git and the phone and desktop tools." : ". Switch on more toolsets in 🧰 Tools."));
 };
-$("thinkBtn").onclick = () => {
-  const order = Object.keys(THINKING_LABEL);
-  send({ type: "thinking", level: order[(order.indexOf((state && state.thinking) || "auto") + 1) % order.length] });
-};
+let openWanted = false;
+$("addProj").onclick = () => { openWanted = !$("aside").classList.contains("adding"); $("aside").classList.toggle("adding", openWanted); if (openWanted) $("folder").focus(); };
 $("netBtn").onclick = () => {
   const on = !(state && state.network);
   if (on && !confirm("Let Maxx use the internet?\\n\\nIt can then look up things it isn't sure about (web search, library docs), install packages (pip, npm...) and download files. Searches go to DuckDuckGo and the MCP servers in ~/.maxx/mcp.json. With 'Ask before acting', every install still asks first.")) return;

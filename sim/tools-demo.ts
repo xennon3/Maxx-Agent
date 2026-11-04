@@ -17,7 +17,7 @@ await p.goto(ui.link);
 await p.waitForTimeout(1500);
 await p.evaluate((cwd: string) => (0, eval)("send")({ type: "open", cwd, model: "qwen3.8-27b" }), proj);
 await p.waitForTimeout(1500);
-await p.evaluate(() => { const c = [...document.querySelectorAll("#sets .chip")].find((x) => x.textContent!.startsWith("🧰")) as HTMLElement; c.click(); });
+await p.click("#toolsBtn"); await p.click("#toolsList");
 await p.evaluate(() => (window as any).on({ type: "recipe", name: "add-settings-screen", when: "add a settings screen with saved preferences to an Android app", path: ".maxx/recipes/add-settings-screen.md" }));
 await p.waitForTimeout(300);
 await p.screenshot({ path: join(OUT, "1-tools-and-recipe.png") });

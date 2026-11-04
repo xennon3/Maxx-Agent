@@ -64,7 +64,7 @@ await page.waitForSelector(".msg.learned");
 await shot("2-learned-deny");
 
 // 2. Maxx writes, you fix it by hand, Maxx learns from the diff.
-await page.selectOption("#mode", "auto-edit");
+await page.evaluate((v: string) => (0, eval)("send")({ type: "settings", mode: v }), "auto-edit");
 queue.push({ tool: { name: "write_file", args: { path: "game.js", content: "const SPEED = 80;\nconst COLOR = 'lime';\n" } } }, { text: "Faster snake, brighter color." });
 await say("make the snake faster");
 await idle();
@@ -88,7 +88,7 @@ await idle();
 await shot("4-undo-learned");
 
 // 4. The rules dialog.
-await page.click("#rulesBtn");
+await page.click("#tuneBtn"); await page.click("#rulesBtn");
 await page.waitForSelector("#ruleList .rule");
 await shot("5-rules-dialog");
 console.log(`screenshots in ${OUT}`);

@@ -44,10 +44,11 @@ export const VIS_CSS = `
 .vis.bad .err { color: var(--bad); padding: 8px 10px; font: 12px/1.45 var(--mono); white-space: pre-wrap; }
 .vis.bad .err button { margin-left: 8px; font-family: system-ui, "Segoe UI", sans-serif; }
 .chatnav { padding: 0 12px 4px; display: flex; flex-direction: column; gap: 2px; }
-.chatnav .go { text-align: left; display: flex; gap: 8px; align-items: center; font-weight: 600; }
-.chatnav .go.on { background: var(--user); border-color: var(--accent); }
+.chatnav .go { text-align: left; display: flex; gap: 8px; align-items: center; font-weight: 600; border-color: transparent; background: none; padding: 6px 8px; }
+.chatnav .go:hover { background: var(--bg); }
+.chatnav .go.on { background: var(--user); border-color: transparent; box-shadow: inset 3px 0 0 var(--accent); }
 .chatnav .sess { padding-left: 12px; }
-.chathead { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--mute); padding: 8px 20px 0; }
+.chathead { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--mute); padding: 10px 20px 2px; font-weight: 600; }
 body.chat .projonly { display: none !important; }
 #visBox { flex: 1; min-height: 0; overflow: auto; border-top: 1px solid var(--line); background: var(--bg); padding: 12px; }
 #visBox .vis { margin: 0; height: 100%; display: flex; flex-direction: column; }

@@ -83,7 +83,7 @@ await shot("3-clash");
 await p.waitForSelector("#sendBtn:not([disabled])", { timeout: 120000 });
 await p.waitForTimeout(500);
 await shot("4-done");
-await p.click("#crewCfg");
+await p.click("#tuneBtn"); await p.click("#crewCfg");
 await p.waitForTimeout(200);
 await shot("5-settings");
 console.log(await p.locator("#board").innerText());
