@@ -307,9 +307,11 @@ export async function startUI(opts: UIOptions) {
     const agent = await new Agent(
       chat
         ? { llm, cwd: dir, permissions, vision, network, brevity, thinking, palette, contextWindow: fit.context, chat: true, plan: false, memory: false, fixTries: 0 }
-        : { llm, cwd: dir, permissions, toolsets, vision, helper, network, brevity, thinking, palette, learn, contextWindow: fit.context, tools: [...TOOLS, ...stage!.tools()], mapTokens: agentSettings(contextWindow, goalSaved).mapTokens },
+        : { llm, cwd: dir, permissions, toolsets, vision, helper, network, brevity, thinking, palette, learn, contextWindow: fit.context, tools: [...TOOLS, ...stage!.tools()], mapTokens: agentSettings(contextWindow, goalSaved).mapTokens, alarm: process.env.MAXX_ALARM !== "0", timelapse: process.env.MAXX_TIMELAPSE !== "0" },
       io,
     ).init();
+    // The alarm and the time-lapse look at the Preview panel's page, or the dev server it runs.
+    if (!chat) agent.surfaces = { previewUrl: (p) => stage!.preview.url(p), serverUrl: () => (stage!.runner?.list() ?? []).filter((p) => p.status === "running" && p.url).at(-1)?.url };
     if (saved) await agent.restore(saved.id, saved.history);
     state = { cwd: dir, agent, permissions, llm, created: saved?.created ?? new Date().toISOString(), title: saved?.title ?? "", controller: null };
     // A banner at the top, so it outlasts the redraw after each turn.

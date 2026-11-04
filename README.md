@@ -654,6 +654,36 @@ Set `MAXX_BROWSER_HEADED=1` to see the browser window while Maxx works in it.
   builds the release APK or AAB; on the web it packs a zip with `index.html` at the root, ready
   for itch.io.
 
+### ✨ Director
+
+`--with director` adds tools that make design decisions with you rather than for you:
+
+- `rival_designs`: before a screen is built, two designers with different styles (Swiss minimalist,
+  Neon arcade, Editorial, Brutalist...) each make it as a full page. Maxx screenshots both, checks
+  them for design crimes, scores them with vision, and asks you to pick. `design/rivals/index.html`
+  shows them side by side. Your picks go in `~/.maxx/taste.md`, and later designs lean your way.
+- `sketch_to_app`: attach a photo of a napkin or whiteboard sketch, and Maxx turns it into a web
+  page (or a Jetpack Compose screen for a `.kt` path) using your design tokens and fonts, then shows
+  the sketch and the result side by side. It needs a model that can see, or `--vision-model`.
+- `asset_kit`: one line such as "retro space shooter" gives a matched kit: palette (design tokens),
+  font pair, sprites (painted by the local image model when one is running, otherwise drawn as
+  SVG), sound effects and title music, with a preview page you can click to hear.
+- `persona_test`: made-up users (grandma, speedrunner, angry reviewer, kid, screen-reader user,
+  commuter, or your own) use the app in Maxx's browser or on the phone. Each writes a paragraph of
+  feedback, a score and a bug list, saved in `.maxx/personas/`.
+- `ugly_check` and `timelapse`: the two below, on demand.
+
+**Ugliness alarm.** After Maxx changes a web page, it loads it at phone and desktop size before
+saying done and looks for design crimes: text too faint to read, buttons too small to tap, cut-off
+text, sideways scrolling, tiny type, clashing colours, broken images, overlapping buttons and
+script errors. It sends the list back to the model once to fix. It is measured from the page, so it
+needs no vision model. Turn it off with `--no-alarm`.
+
+**Time-lapse.** Every change you can see saves a small screenshot in `.maxx/timelapse/` (kept out of
+git). Agent mode turns each finished goal into a looping GIF of about 20 seconds, and `timelapse`
+makes one whenever you ask. Maxx encodes the GIF itself, so no ffmpeg is needed. Turn it off with
+`--no-timelapse`.
+
 ### Recipes
 
 Recipes are step-by-step playbooks, such as `fix-failing-test`, `responsive-page`, `pwa-install`,

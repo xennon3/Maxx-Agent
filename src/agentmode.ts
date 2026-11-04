@@ -9,6 +9,7 @@ import { mapBudget, projectMap } from "./projectmap.ts";
 import { TEMPLATES } from "./templates/index.ts";
 import { briefingMessages, parseBriefing } from "./ask.ts";
 import { judgeLLM, judgeMessages, parseVerdict, pickSurface, type SurfaceOptions, type Verdict } from "./judge.ts";
+import { clearReel, makeTimelapse } from "./timelapse.ts";
 
 // Agent mode. The user gives a goal ("build a weather app and run it on my
 // phone"); Maxx has the model split it into a few tasks, then works through
@@ -174,6 +175,9 @@ export async function runGoal(agent: Agent, goal: string, events: GoalEvents, o:
   // Nobody may be watching, so an unanswered question gives way to the model's guess.
   const wait = agent.askWaitMs;
   agent.askWaitMs = s.askMinutes > 0 ? s.askMinutes * 60_000 : undefined;
+  if (o.surfaces) agent.surfaces = { ...agent.surfaces, ...o.surfaces };
+  // Each goal gets its own film.
+  if (agent.timelapse) await clearReel(agent.cwd).catch(() => {});
   try {
     const map = s.mapTokens > 0 ? await projectMap(agent.cwd, s.mapTokens).catch(() => "") : "";
     const empty = /folder is empty|\(0 files|\(1 file;/.test(map) || !map;
@@ -203,6 +207,12 @@ export async function runGoal(agent: Agent, goal: string, events: GoalEvents, o:
     board.state = "done";
     board.current = board.tasks.length;
     board.note = `All ${board.tasks.length} tasks done.`;
+    if (agent.timelapse) {
+      await agent.framesSettled();
+      const name = goal.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "build";
+      const film = await makeTimelapse(agent.cwd, `.maxx/timelapse/${name}.gif`).catch(() => null);
+      if (film) board.note += ` Time-lapse of the build: ${film.path} (${film.seconds.toFixed(0)}s, ${film.used} frames).`;
+    }
     emit();
     return board;
   } catch (e) {

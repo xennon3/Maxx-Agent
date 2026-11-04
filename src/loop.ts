@@ -26,6 +26,11 @@ import { mentionedPalette, paletteNote, palettePrompt, type Palette } from "./pa
 import { brief, describeHelper, HELPER_DEFAULTS, helperLLM, type Helper } from "./escalate.ts";
 import { mapBudget, projectMap, projectMapTool } from "./projectmap.ts";
 import type { Board } from "./agentmode.ts";
+import { findBrowser, isUiFile, judgeLLM, pickSurface, webPage, type SurfaceOptions } from "./judge.ts";
+import { crimeList, findCrimes } from "./crimes.ts";
+import { saveFrame } from "./timelapse.ts";
+import { loadTaste, tasteSummary } from "./tools/director.ts";
+import type { ToolContext } from "./tools/types.ts";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -99,6 +104,10 @@ export type AgentOptions = {
   mapTokens?: number;
   // Learn a rule for MAXX.md when the user corrects Maxx (default on; off with memory off and in chat).
   learn?: boolean;
+  // The ugliness alarm: after a web page changes, check it for design crimes before finishing (default off; the CLI and app turn it on).
+  alarm?: boolean;
+  // Save a screenshot after each change you can see, for a time-lapse GIF (default off; the CLI and app turn it on).
+  timelapse?: boolean;
 };
 
 export type Online = { tools: Tool<any>[]; notes: string[]; servers: string[] };
@@ -129,6 +138,13 @@ const BLOCKED_STEPS = 2;
 const KEEP_IMAGES = 2;
 const PRUNE_AT = 4;
 const FIX_TRIES = 3;
+// Rounds of the ugliness alarm per turn: one list of crimes, then the model's fix stands.
+const ALARM_ROUNDS = 1;
+
+function dataImage(url: string): Image | null {
+  const m = /^data:(image\/(?:png|jpeg));base64,(.+)$/.exec(url);
+  return m ? { mime: m[1] as Image["mime"], base64: m[2]! } : null;
+}
 
 export class Agent {
   history: Message[] = [];
@@ -157,6 +173,13 @@ export class Agent {
   askWaitMs?: number;
   // Questions asked in the current turn, and the turn's stop signal (a question must not outlive it).
   private asked = 0;
+  // Where to find the running app (the Preview panel, a dev server), for the alarm, time-lapse and judge.
+  surfaces: Partial<SurfaceOptions> = {};
+  // Screenshots for the time-lapse, taken one at a time in the background.
+  private frames: Promise<void> = Promise.resolve();
+  private alarmRounds = 0;
+  // Images the user attached to the latest message (sketch_to_app uses them).
+  private attachedNow: Image[] = [];
   private turnSignal?: AbortSignal;
   // Learning from corrections: what this turn did, and what the last one left behind.
   private turnDid: string[] = [];
@@ -373,7 +396,9 @@ export class Agent {
     // The map as it was when the session started; project_map gives a fresh one.
     const recipes = !this.opts.chat && this.tools.some((t) => t.name === "recipe") ? recipesPrompt(await loadRecipes(this.opts.cwd).catch(() => [])) : "";
     const map = !this.opts.chat && this.mapTokens > 0 ? await projectMap(this.opts.cwd, this.mapTokens).catch(() => "") : "";
-    const content = this.opts.chat ? chatPrompt(new Date(), this.lookupNote(), style) : await systemPrompt(this.opts.cwd, [...(notes ? [notes] : []), ...this.prompts, ...(recipes ? [recipes] : []), ...(map ? [`${map}\n(This map is from the start of the session; call project_map for a fresh one.)`] : []), ...(style ? [style] : [])]);
+    // Design taste from rival_designs picks, while design tools are on.
+    const taste = !this.opts.chat && this.tools.some((t) => t.name === "rival_designs" || t.name === "draw_svg") ? tasteSummary(await loadTaste()) : "";
+    const content = this.opts.chat ? chatPrompt(new Date(), this.lookupNote(), style) : await systemPrompt(this.opts.cwd, [...(notes ? [notes] : []), ...this.prompts, ...(recipes ? [recipes] : []), ...(taste ? [taste] : []), ...(map ? [`${map}\n(This map is from the start of the session; call project_map for a fresh one.)`] : []), ...(style ? [style] : [])]);
     if (this.history[0]?.role === "system") this.history[0] = { role: "system", content };
     else this.history.unshift({ role: "system", content });
   }
@@ -422,7 +447,9 @@ export class Agent {
     this.history.push({ role: "user", content: withPalette(userText, this.palette) });
     this.lastCheck = null;
     this.asked = 0;
+    this.alarmRounds = 0;
     this.turnSignal = signal;
+    this.attachedNow = Array.isArray(userText) ? userText.flatMap((p) => (p.type === "image_url" ? [dataImage(p.image_url.url)].filter((x): x is Image => !!x) : [])) : [];
     if (Array.isArray(userText)) this.pruneImages();
     const specs = toolSpecs(this.tools);
     let badCalls = 0;
@@ -625,7 +652,7 @@ export class Agent {
     const denied = result.startsWith("user denied this tool call");
     const bad = failed(result) || denied;
     if (tool && tool.risk !== "read") this.turnDid.push(`${denied ? "(denied) " : ""}${name} ${tool.ruleKey?.(args as never) ?? ""}`.trim().slice(0, 160));
-    if (tool?.risk === "write" && typeof args.path === "string" && !bad) changed.add(args.path), this.turnFiles.add(args.path);
+    if (tool?.risk === "write" && typeof args.path === "string" && !bad) changed.add(args.path), this.turnFiles.add(args.path), this.captureFrame(args.path);
     if (name !== "bash") return lastFail;
     const command = String(args.command ?? "");
     if (bad) return command;
@@ -656,6 +683,15 @@ export class Agent {
         return "fix";
       }
       if (r) this.io.note(`(checked: ${r.what} passed)`);
+      if (this.opts.alarm && files.some(isUiFile) && this.alarmRounds < ALARM_ROUNDS && !signal?.aborted) {
+        this.alarmRounds++;
+        const crimes = await this.uglyCheck(files, signal);
+        if (crimes) {
+          const text = `Maxx's ugliness alarm checked the page at phone and desktop size and found design crimes:\n${crimes}\nFix them (or say why one is on purpose), then reply when done.`;
+          this.history.push({ role: "user", content: [{ type: "text", text }] });
+          return "fix";
+        }
+      }
     }
     const open = this.plan.map((s, i) => (s.done ? 0 : i + 1)).filter(Boolean);
     if (!nudged && this.plan.length && open.length) {
@@ -751,6 +787,67 @@ export class Agent {
     }
   }
 
+  // What a tool gets: the folder, and for the tools that need them, the model, eyes and the user.
+  toolCtx(): ToolContext {
+    const signal = this.turnSignal;
+    return {
+      cwd: this.opts.cwd,
+      network: this.network,
+      signal,
+      llm: this.opts.llm,
+      vision: this.vision,
+      think: (messages) => this.think(messages, signal),
+      see: (images, question) => this.see(images, question, signal),
+      ask: this.io.question ? async (q) => (await this.ask(q, signal)).answer : undefined,
+      show: (images) => this.io.image?.("maxx", images),
+      attached: () => this.attachedNow,
+    };
+  }
+
+  // Ask a model that can see. Null when none can.
+  async see(images: Image[], question: string, signal?: AbortSignal): Promise<string | null> {
+    const llm = judgeLLM(this.opts.llm, this.vision);
+    if (!llm) return null;
+    return this.think([{ role: "user", content: [{ type: "text", text: question }, ...images.map(imagePart)] }], signal, llm);
+  }
+
+  // The time-lapse: one screenshot after each change you can see, in the background.
+  private captureFrame(path: string) {
+    if (!this.opts.timelapse || !isUiFile(path)) return;
+    const cwd = this.opts.cwd;
+    this.frames = this.frames.then(async () => {
+      const surface = await pickSurface({ cwd, changed: [path], android: this.toolsets.includes("android"), ...this.surfaces });
+      if (surface) await saveFrame(cwd, await surface.shoot(), path.split(/[\\/]/).pop());
+    }).catch(() => {});
+  }
+
+  get timelapse(): boolean {
+    return !!this.opts.timelapse;
+  }
+
+  // Resolves once the time-lapse has its latest frame.
+  framesSettled(): Promise<void> {
+    return this.frames;
+  }
+
+  // The ugliness alarm: design crimes on the page that changed. Null: nothing to check.
+  async uglyCheck(files: string[], signal?: AbortSignal): Promise<string | null> {
+    const browser = findBrowser();
+    if (!browser) return null;
+    const web = await webPage({ cwd: this.opts.cwd, changed: files, android: false, ...this.surfaces }).catch(() => null);
+    if (!web) return null;
+    this.io.toolStart("ugly_check", JSON.stringify({ page: web.label }));
+    try {
+      const crimes = await findCrimes(browser, web.url, { signal });
+      const text = crimes.length ? crimeList(crimes) : "";
+      this.io.toolEnd("ugly_check", text || "no design crimes found");
+      return text;
+    } catch (e) {
+      this.io.toolEnd("ugly_check", `skipped: ${(e as Error).message}`);
+      return null;
+    }
+  }
+
   private async runTool(call: ToolCall): Promise<{ result: string; bad: boolean; images?: Image[]; glance?: boolean; args?: Record<string, unknown> }> {
     const tool = findTool(call.name, this.tools);
     if (!tool) return { result: `error: unknown tool "${call.name}". Available: ${this.tools.map((t) => t.name).join(", ")}`, bad: true };
@@ -767,7 +864,7 @@ export class Agent {
       return { result: `error: invalid arguments for ${tool.name}: ${issues}`, bad: true };
     }
     const args = parsed.data;
-    const ctx = { cwd: this.opts.cwd, network: this.network };
+    const ctx = this.toolCtx();
     this.io.toolStart(tool.name, JSON.stringify(args));
 
     const refused = tool.refuse?.(args, ctx);

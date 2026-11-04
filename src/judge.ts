@@ -101,13 +101,22 @@ export async function pickSurface(o: SurfaceOptions): Promise<Surface | null> {
   }
   const browser = o.browser === undefined ? findBrowser() : o.browser;
   if (!browser) return null;
-  const server = o.serverUrl?.();
-  const page = server ? null : (ui.find((p) => /\.html?$/i.test(p)) ?? (await htmlFiles(o.cwd))[0]);
-  if (!server && !page) return null;
-  const url = server ?? (o.previewUrl ? o.previewUrl(page!) : pathToFileURL(join(o.cwd, page!)).href);
+  const web = await webPage(o);
+  if (!web) return null;
   return {
     kind: "web",
-    label: `${server ?? page} in a browser at phone size`,
-    shoot: async (signal) => toShot(decodePng(await browserShot(browser, url, { signal })), { maxSide: 900, quality: 70 }),
+    label: `${web.label} in a browser at phone size`,
+    shoot: async (signal) => toShot(decodePng(await browserShot(browser, web.url, { signal })), { maxSide: 900, quality: 70 }),
   };
+}
+
+// The web page that shows what changed: the dev server, else the changed (or first) HTML file.
+export async function webPage(o: SurfaceOptions): Promise<{ url: string; label: string } | null> {
+  const ui = o.changed.filter(isUiFile);
+  if (!ui.length) return null;
+  const server = o.serverUrl?.();
+  if (server) return { url: server, label: server };
+  const page = ui.find((p) => /\.html?$/i.test(p)) ?? (await htmlFiles(o.cwd))[0];
+  if (!page) return null;
+  return { url: o.previewUrl ? o.previewUrl(page) : pathToFileURL(join(o.cwd, page)).href, label: page };
 }

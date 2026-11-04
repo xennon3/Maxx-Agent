@@ -86,6 +86,8 @@ options:
                      or a \`check:\` line in MAXX.md); --check off for syntax checks only
   --fix-tries <n>    times a failed check goes back to the model (default 3, 0 = off)
   --no-plan          don't offer the plan checklist tool
+  --no-alarm         don't check changed web pages for design crimes before finishing
+  --no-timelapse     don't save a screenshot after each visible change (for timelapse GIFs)
   --helper <id>      a bigger model to hand the hard step to when the local one is stuck
                      (default $MAXX_HELPER or the app's saved setting; "off" disables it)
                      claude-* ids use the Claude API ($ANTHROPIC_API_KEY); with --helper-url, any
@@ -162,6 +164,8 @@ const { values, positionals } = parseArgs({
     check: { type: "string" },
     "fix-tries": { type: "string" },
     "no-plan": { type: "boolean" },
+    "no-alarm": { type: "boolean" },
+    "no-timelapse": { type: "boolean" },
     helper: { type: "string" },
     "helper-url": { type: "string" },
     "helper-kind": { type: "string" },
@@ -464,7 +468,7 @@ const goalSettings = agentSettings(fit.context, {
 const crew = crewSettings({ ...(await loadCrewSettings()), ...cleanCrew({ workers: values.workers, slots: values.slots, models: values["crew-models"] }) });
 if (values["max-tasks"]) crew.maxTasks = goalSettings.maxTasks;
 const probed = new Map<string, number>();
-const agent = await new Agent({ llm, cwd, permissions, contextWindow: fit.context, toolsets, vision, check, fixTries, plan: !values["no-plan"], helper, network, brevity, thinking, palette, learn, mapTokens: goalSettings.mapTokens }, io).init();
+const agent = await new Agent({ llm, cwd, permissions, contextWindow: fit.context, toolsets, vision, check, fixTries, plan: !values["no-plan"], alarm: !values["no-alarm"] && process.env.MAXX_ALARM !== "0", timelapse: !values["no-timelapse"] && process.env.MAXX_TIMELAPSE !== "0", helper, network, brevity, thinking, palette, learn, mapTokens: goalSettings.mapTokens }, io).init();
 let created = new Date().toISOString();
 let title = "";
 if (resumed) await resumeInto(resumed);
