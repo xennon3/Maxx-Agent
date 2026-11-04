@@ -26,6 +26,7 @@ import { mentionedPalette, paletteNote, palettePrompt, type Palette } from "./pa
 import { brief, describeHelper, HELPER_DEFAULTS, helperLLM, type Helper } from "./escalate.ts";
 import { mapBudget, projectMap, projectMapTool } from "./projectmap.ts";
 import type { Board } from "./agentmode.ts";
+import { afterRun, builtAlready, doneRecord, noteDone, planNudge, STEP_LIMIT, summaryChars, type Done } from "./redo.ts";
 import { findBrowser, isUiFile, judgeLLM, pickSurface, webPage, type SurfaceOptions } from "./judge.ts";
 import { crimeList, findCrimes } from "./crimes.ts";
 import { saveFrame } from "./timelapse.ts";
@@ -186,6 +187,14 @@ export class Agent {
   private turnFiles = new Set<string>();
   private turnFrom = 0;
   private lastTurn: { did: string[]; files: Map<string, string>; start?: string; undone: boolean } | null = null;
+  // What already worked this session, from Maxx's own records, so a compaction can't make the model forget it built the app.
+  private done: Done[] = [];
+  private turnNo = 0;
+  // The current request in the user's words, kept for the compaction record.
+  private turnAsk = "";
+  // The model's commands since its last file change, while they all passed (see afterRun):
+  // when one is Maxx's own build check, running the check again would only build the app twice.
+  private cleanRuns: string[] = [];
   private corrections: Correction[] = [];
 
   constructor(private opts: AgentOptions, readonly io: AgentIO) {
@@ -405,6 +414,8 @@ export class Agent {
 
   async init() {
     this.history = [];
+    this.done = [];
+    this.turnAsk = "";
     this.setPlan([]);
     this.marks = [];
     this.board = null;
@@ -432,6 +443,9 @@ export class Agent {
     if (learning) await this.noticeCorrection(userText).catch(() => {});
     this.turnDid = [];
     this.turnFiles = new Set();
+    this.turnNo++;
+    // Agent mode's task prompts are reports from Maxx, not the user's words; the goal stays the ask.
+    if (learning || !this.turnAsk) this.turnAsk = (typeof userText === "string" ? userText : userText.map((p) => (p.type === "text" ? p.text : "")).join("\n")).trim();
     this.turnFrom = this.checkpoints.count;
     let answer = "";
     try {
@@ -446,6 +460,7 @@ export class Agent {
     dropThinking(this.history);
     this.history.push({ role: "user", content: withPalette(userText, this.palette) });
     this.lastCheck = null;
+    this.cleanRuns = [];
     this.asked = 0;
     this.alarmRounds = 0;
     this.turnSignal = signal;
@@ -643,7 +658,7 @@ export class Agent {
       }
     }
     if (helping) handBack("the turn hit its step limit");
-    return "Stopped: reached the step limit for one turn.";
+    return STEP_LIMIT;
   }
 
   // Bookkeeping after each tool call: which files changed, and lessons from a fix that worked.
@@ -653,8 +668,11 @@ export class Agent {
     const bad = failed(result) || denied;
     if (tool && tool.risk !== "read") this.turnDid.push(`${denied ? "(denied) " : ""}${name} ${tool.ruleKey?.(args as never) ?? ""}`.trim().slice(0, 160));
     if (tool?.risk === "write" && typeof args.path === "string" && !bad) changed.add(args.path), this.turnFiles.add(args.path), this.captureFrame(args.path);
+    if (tool && tool.risk !== "read" && !bad) this.done = noteDone(this.done, this.turnNo, `${name} ${tool.ruleKey?.(args as never) ?? ""}`);
+    if (tool?.risk === "write") this.cleanRuns = [];
     if (name !== "bash") return lastFail;
     const command = String(args.command ?? "");
+    this.cleanRuns = afterRun(this.cleanRuns, command, !bad);
     if (bad) return command;
     const lesson = this.opts.memory !== false && lastFail ? swapLesson(lastFail, command) : null;
     if (lesson && (await addLesson(this.opts.cwd, lesson).catch(() => false))) this.io.note(`(noted in MAXX.md: ${lesson})`);
@@ -695,7 +713,7 @@ export class Agent {
     }
     const open = this.plan.map((s, i) => (s.done ? 0 : i + 1)).filter(Boolean);
     if (!nudged && this.plan.length && open.length) {
-      const text = `Maxx: plan step${open.length > 1 ? "s" : ""} ${open.join(", ")} not ticked yet.\n${formatPlan(this.plan)}\nDo the next step now. If it is already done, call plan with done set to its number.`;
+      const text = planNudge(open, formatPlan(this.plan));
       this.history.push({ role: "user", content: [{ type: "text", text }] });
       return "plan";
     }
@@ -703,6 +721,19 @@ export class Agent {
   }
 
   // Quick syntax check of the changed files, then the project's build command.
+  // Check files outside a turn's own fix-it loop (Agent mode, after a try that ran out of steps). Sets lastCheck.
+  async verify(files: string[], signal?: AbortSignal): Promise<CheckResult | null> {
+    if (!files.length || (this.opts.fixTries ?? FIX_TRIES) <= 0) return null;
+    const r = await this.check(files, signal);
+    if (r) this.lastCheck = r;
+    return r;
+  }
+
+  // Turns sent so far; Agent mode keeps it to forget a whole try (which can take more than one turn).
+  get turns(): number {
+    return this.turnNo;
+  }
+
   private async check(files: string[], signal?: AbortSignal): Promise<CheckResult | null> {
     const quick = await quickCheck(this.opts.cwd, files);
     if (quick && !quick.ok) {
@@ -712,6 +743,12 @@ export class Agent {
     }
     const command = this.opts.check === false ? undefined : this.opts.check || detectCheck(this.opts.cwd);
     if (!command || signal?.aborted) return quick;
+    // The model just ran this build itself, after its last change, and it passed: running it again only builds the app twice.
+    const ran = builtAlready(this.cleanRuns, command);
+    if (ran) {
+      this.io.note(`(skipped Maxx's build check: the model already ran \`${ran.slice(0, 120)}\` after its last change, and it passed)`);
+      return { ok: true, what: `\`${command}\`` };
+    }
     const args = { command, timeout: 600 };
     this.io.toolStart("check", JSON.stringify(args));
     if (this.opts.permissions.needsPrompt(bash, args)) {
@@ -1002,6 +1039,7 @@ export class Agent {
     if (!r.ok) return `Couldn't undo: ${r.error}`;
     last.undone = true;
     last.files = new Map();
+    this.done = this.done.filter((d) => d.turn !== this.turnNo);
     this.history.push({ role: "user", content: [{ type: "text", text: "Maxx: the user undid all file changes from your last turn, so the files are back as they were before it. Do not redo that work unless asked." }] });
     return `Undid the last turn${r.removed.length ? ` (and removed ${r.removed.length} new file${r.removed.length > 1 ? "s" : ""})` : ""}. Tell Maxx what you wanted instead; it will learn a rule from it.`;
   }
@@ -1013,11 +1051,16 @@ export class Agent {
   // The user put files back by hand (/rewind): what they say next is a correction too.
   markUndone() {
     if (this.lastTurn) (this.lastTurn.undone = true), (this.lastTurn.files = new Map());
+    // A rewind can go back further than one turn; the record of finished work no longer holds.
+    this.done = [];
   }
 
   // Agent mode rewinds tasks itself; that is not the user correcting anything.
-  forgetTurn() {
+  // `since`: the turn count before the try began (default: only the last turn is forgotten).
+  forgetTurn(since = this.turnNo - 1) {
     this.lastTurn = null;
+    // The files went back to before that try, so what it did is no longer done.
+    this.done = this.done.filter((d) => d.turn <= since);
   }
 
   private async maybeCompact() {
@@ -1025,13 +1068,14 @@ export class Agent {
     if (estimateTokens(this.history) < window * 0.7) return;
     this.io.note("(compacting older turns to free context)");
     this.marks = [];
+    const record = doneRecord(this.done, this.turnAsk);
     this.history = await compact(this.history, async (transcript) => {
       const res = await complete(this.opts.llm, [
         { role: "system", content: "You summarize coding sessions for handoff. Be terse and specific." },
-        { role: "user", content: `Summarize this session so far: the user's goal, files read or changed, decisions made, commands run and their outcomes, and what is left to do.\n\n${transcript}` },
+        { role: "user", content: `Summarize this session so far: the user's goal, what is already finished (say plainly that it is done), files read or changed, decisions made, commands run and their outcomes, and what is left to do.\n\n${transcript}` },
       ], []);
-      return res.content;
-    });
+      return [res.content, record].filter(Boolean).join("\n\n");
+    }, 6, summaryChars(window));
   }
 }
 
