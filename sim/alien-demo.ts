@@ -6,7 +6,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { decodePng } from "../src/image.ts";
 import { encodeGif } from "../src/gif.ts";
-import { ACTS, ALIEN_CSS, CHARS, alienSvg } from "../src/ui/aliens-page.ts";
+import { ACTS, ALIEN_CSS, CHARS, PICS, alienSvg } from "../src/ui/aliens-page.ts";
 const ROOT = resolve(import.meta.dir, "..");
 const OUT = join(ROOT, "sim", "out", "alien");
 rmSync(OUT, { recursive: true, force: true });
@@ -67,7 +67,7 @@ body{margin:0;background:${theme === "dark" ? "#1d1d1b" : "#fff"};color:${theme 
 .t{display:flex;flex-direction:column;align-items:center}.t div{width:112px;height:84px}</style>
 <div id="g">${acts.map((a) => `<div class="t"><div>${alienSvg(char, a)}</div>${ACTS[a]!.icon} ${ACTS[a]!.label.replace("Waiting for your OK", "Asking you")}</div>`).join("")}</div>`;
 const g = await browser.newPage({ viewport: { width: 700, height: 300 }, deviceScaleFactor: 1 });
-for (const char of Object.keys(CHARS)) {
+for (const char of [...Object.keys(PICS), ...Object.keys(CHARS)]) {
   await g.setContent(sheet(char)); await g.waitForTimeout(200);
   const frames = [];
   for (let f = 0; f < 36; f++) {
