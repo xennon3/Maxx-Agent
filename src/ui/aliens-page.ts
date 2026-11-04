@@ -10,6 +10,28 @@
 // ALIEN_JS is a plain string spliced into page.ts's script, so it has no backslashes
 // of its own (page.ts's literal text needs them doubled; a spliced value does not).
 
+import { readFileSync } from "node:fs";
+// @ts-ignore: file imports have no type declarations (they embed in maxx.exe)
+import H_TYPE from "./aliens/hoodie/type.webp" with { type: "file" };
+// @ts-ignore
+import H_READ from "./aliens/hoodie/read.webp" with { type: "file" };
+// @ts-ignore
+import H_RUN from "./aliens/hoodie/run.webp" with { type: "file" };
+// @ts-ignore
+import H_WEB from "./aliens/hoodie/web.webp" with { type: "file" };
+// @ts-ignore
+import H_DRAW from "./aliens/hoodie/draw.webp" with { type: "file" };
+// @ts-ignore
+import H_PHONE from "./aliens/hoodie/phone.webp" with { type: "file" };
+// @ts-ignore
+import H_SOUND from "./aliens/hoodie/sound.webp" with { type: "file" };
+// @ts-ignore
+import H_THINK from "./aliens/hoodie/think.webp" with { type: "file" };
+// @ts-ignore
+import H_WAIT from "./aliens/hoodie/wait.webp" with { type: "file" };
+// @ts-ignore
+import H_ASK from "./aliens/hoodie/ask.webp" with { type: "file" };
+
 type Char = { name: string; say: string; sk: string; skd: string; head: [number, number, number]; body: string };
 type Act = { label: string; icon: string; back?: string; front: string; arms?: (c: Char) => string };
 
@@ -71,6 +93,16 @@ export const CHARS: Record<string, Char> = {
 <rect x="10" y="22" width="12" height="14" fill="var(--sk)"/><rect x="12" y="25" width="2" height="2" fill="var(--skd)"/><rect x="18" y="29" width="2" height="2" fill="var(--skd)"/>
 <rect x="10" y="36" width="4" height="7" fill="var(--sk)"/><rect x="18" y="36" width="4" height="7" fill="var(--sk)"/>
 <rect x="8" y="43" width="6" height="2" fill="var(--skd)"/><rect x="18" y="43" width="6" height="2" fill="var(--skd)"/></g>`,
+  },
+};
+
+// Drawn aliens: one animated WebP per scene instead of SVG. Hoodie is Luther's own
+// alien (his GIFs, shrunk to 160px animated WebP, which keeps soft transparent edges).
+const webp = (path: string) => "data:image/webp;base64," + readFileSync(path).toString("base64");
+export const PICS: Record<string, { name: string; say: string; frames: Record<string, string> }> = {
+  hoodie: {
+    name: "Hoodie", say: "Luther's own alien in a blue hoodie",
+    frames: { type: H_TYPE, read: H_READ, run: H_RUN, web: H_WEB, draw: H_DRAW, phone: H_PHONE, sound: H_SOUND, think: H_THINK, wait: H_WAIT, ask: H_ASK },
   },
 };
 
@@ -182,6 +214,9 @@ export const ALIEN_CSS = `
 .buddy { display: none; flex: none; width: 64px; height: 48px; margin: -6px 0; }
 .activity.alien .buddy { display: block; }
 .activity.alien .spin { display: none; }
+img.alimg { width: 100%; height: 100%; object-fit: contain; display: block; }
+.buddy:has(img) { width: 60px; height: 60px; margin: -12px 0; }
+.alcard .pic img.alimg { width: 96px; height: 96px; }
 svg.al { width: 100%; height: 100%; overflow: visible; display: block; --sp: .3s; }
 svg.al * { transform-box: view-box; }
 svg.al .blink { animation: al-blink 4.2s infinite; }
@@ -297,7 +332,10 @@ export const ALIEN_HTML = `<dialog id="alienDlg"><form method="dialog">
 
 // The scenes as data, combined in the page.
 const DATA = {
-  chars: Object.fromEntries(Object.entries(CHARS).map(([k, c]) => [k, { name: c.name, say: c.say, body: c.body }])),
+  chars: Object.fromEntries([
+    ...Object.entries(PICS).map(([k, c]) => [k, { name: c.name, say: c.say, pics: Object.fromEntries(Object.entries(c.frames).map(([a, f]) => [a, webp(f)])) }]),
+    ...Object.entries(CHARS).map(([k, c]) => [k, { name: c.name, say: c.say, body: c.body }]),
+  ]),
   acts: Object.fromEntries(Object.entries(ACTS).map(([k, a]) => [k, { label: a.label, icon: a.icon }])),
   // Arms depend on the character (headphones and chin sit on its head), so they are built per pair.
   parts: Object.fromEntries(Object.entries(CHARS).map(([ck, c]) => [ck, Object.fromEntries(Object.entries(ACTS).map(([ak, a]) => [ak, [a.back ?? "", a.front + (a.arms ? a.arms(c) : "")]]))])),
@@ -305,6 +343,8 @@ const DATA = {
 };
 
 export function alienSvg(char: string, act: string): string {
+  const pic = DATA.chars[char]?.pics?.[act];
+  if (pic) return `<img class="alimg" alt="" src="${pic}">`;
   const c = DATA.parts[char]?.[act];
   if (!c) return "";
   return `<svg class="al c-${char} a-${act}" viewBox="0 0 64 48" aria-hidden="true">${c[0]}${CHARS[char]!.body}${c[1]}</svg>`;
@@ -313,10 +353,10 @@ export function alienSvg(char: string, act: string): string {
 export const ALIEN_JS = `
 const ALIENS = ${JSON.stringify(DATA)};
 const ALIEN_TOOLS = ALIENS.tools.map((p) => [new RegExp(p[0]), p[1]]);
-const alien = { pick: "zorp", match: true, turn: "zorp", shown: "", act: "type", since: 0, preview: "type" };
+const alien = { pick: "hoodie", match: true, turn: "hoodie", shown: "", act: "type", since: 0, preview: "type" };
 try { const v = localStorage.getItem("maxx.alien"); if (v && (v === "off" || v === "random" || ALIENS.chars[v])) alien.pick = v; } catch {}
 try { alien.match = localStorage.getItem("maxx.alien.match") !== "0"; } catch {}
-function alienSvg(c, a) { const p = ALIENS.parts[c][a]; return '<svg class="al c-' + c + ' a-' + a + '" viewBox="0 0 64 48" aria-hidden="true">' + p[0] + ALIENS.chars[c].body + p[1] + "</svg>"; }
+function alienSvg(c, a) { const ch = ALIENS.chars[c]; if (ch.pics) return '<img class="alimg" alt="" src="' + ch.pics[a] + '">'; const p = ALIENS.parts[c][a]; return '<svg class="al c-' + c + ' a-' + a + '" viewBox="0 0 64 48" aria-hidden="true">' + p[0] + ALIENS.chars[c].body + p[1] + "</svg>"; }
 function alienName() { return alien.pick === "off" ? "Off" : alien.pick === "random" ? "🎲 Random" : ALIENS.chars[alien.pick].name; }
 // A new Random alien for each turn.
 function alienTurn() { const ks = Object.keys(ALIENS.chars); alien.turn = alien.pick === "random" ? ks[Math.floor(Math.random() * ks.length)] : alien.pick; }
@@ -346,7 +386,7 @@ function drawAlien(a) {
   // Typing speed follows the model's: about 3 keystrokes a token.
   const tps = a && a.tokens && a.generatingMs >= 1000 ? a.tokens / (a.generatingMs / 1000) : 0;
   const sp = tps ? Math.max(0.09, Math.min(0.45, 2.4 / tps)) : 0.3;
-  const svg = box.firstChild; if (svg) svg.style.setProperty("--sp", sp.toFixed(3) + "s");
+  const svg = box.firstChild; if (svg && svg.style) svg.style.setProperty("--sp", sp.toFixed(3) + "s");
 }
 function alienBtn() { $("alienBtn").textContent = alienName(); }
 function alienGallery() {

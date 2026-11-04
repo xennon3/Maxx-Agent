@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ACTS, ALIEN_JS, CHARS, TOOL_ACT, alienSvg } from "../src/ui/aliens-page.ts";
+import { ACTS, ALIEN_JS, CHARS, PICS, TOOL_ACT, alienSvg } from "../src/ui/aliens-page.ts";
 import { PAGE } from "../src/ui/page.ts";
 
 test("every alien can play every scene", () => {
@@ -28,4 +28,9 @@ test("the buddy is in the page and the spliced script parses", () => {
   expect(ALIEN_JS).not.toContain("`");
   const js = PAGE.split("<script>")[1]!.split("</script>")[0]!;
   expect(() => new Function(js)).not.toThrow();
+});
+
+test("the drawn alien has a picture for every scene and is the default", () => {
+  for (const c of Object.keys(PICS)) for (const a of Object.keys(ACTS)) expect(alienSvg(c, a)).toStartWith('<img class="alimg" alt="" src="data:image/webp;base64,');
+  expect(ALIEN_JS).toContain('pick: "hoodie"');
 });
