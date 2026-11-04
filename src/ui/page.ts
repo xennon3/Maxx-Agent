@@ -5,6 +5,7 @@ import { BREVITY_LABEL } from "../brevity.ts";
 import { THINKING_LABEL, THINKING_SAY } from "../thinking.ts";
 import { VOICE_CSS, VOICE_HINT, VOICE_HTML, VOICE_JS } from "./voice-page.ts";
 import { LAB_CSS, LAB_HTML, LAB_JS, LAB_NAV, LAB_VIEW } from "./lab-page.ts";
+import { ALIEN_CSS, ALIEN_HTML, ALIEN_JS } from "./aliens-page.ts";
 
 // The whole web UI in one string, so the compiled maxx.exe carries it.
 export const PAGE = /* html */ `<!doctype html>
@@ -329,6 +330,7 @@ ${VOICE_CSS}
 ${LAB_CSS}
 ${VIS_CSS}
 ${SOUND_CSS}
+${ALIEN_CSS}
 /* Layout (batch 4): one calm header row, grouped menus, a centered reading column and one message box with its tools inside. */
 main { --col: max(16px, calc((100% - 860px) / 2)); container-type: inline-size; }
 header { flex-wrap: nowrap; gap: 6px; padding: 8px 16px; min-height: 52px; }
@@ -466,6 +468,8 @@ aside.adding #addProj { background: var(--bg); }
       <div class="seg small" id="thinkSeg"></div></div>
     <div class="prow"><div class="pl"><b>🎨 Colors</b><span>The palette Maxx designs charts, pages, apps and games with</span></div>
       <button id="palBtn" title="The colors Maxx designs with. You can also say it in a message: “make it in synthwave colors”">Auto</button></div>
+    <div class="prow"><div class="pl"><b>👽 Typing buddy</b><span>The alien that acts out what Maxx is doing while it works</span></div>
+      <button id="alienBtn" title="Pick the alien in the status bar, or turn it off">Zorp</button></div>
     <div class="prow projonly"><div class="pl"><b>📏 Rules</b><span id="rulesSay">Rules Maxx learned when you corrected it</span></div>
       <button id="rulesBtn" title="Rules Maxx learned when you corrected it (saying “no, use…”, denying a step with a reason, fixing its code by hand, or undoing a turn). They live in this project's MAXX.md.">Edit</button></div>
     <div class="prow projonly"><div class="pl"><b>🧠 Helper</b><span id="helperSay">A bigger model Maxx calls when the local one is stuck</span></div>
@@ -478,7 +482,7 @@ aside.adding #addProj { background: var(--bg); }
   ${LAB_VIEW}
   <div id="log"></div>
   <div id="okdock"></div>
-  <div class="activity" id="activity"><span class="spin" id="actSpin">⠋</span><span class="what" id="actWhat"></span><span class="meta" id="actMeta"></span><span class="tail" id="actTail"></span></div>
+  <div class="activity" id="activity"><span class="buddy" id="actBuddy"></span><span class="spin" id="actSpin">⠋</span><span class="what" id="actWhat"></span><span class="meta" id="actMeta"></span><span class="tail" id="actTail"></span></div>
   ${VOICE_HINT}
   <div class="composer">
     <div class="files" id="files"></div>
@@ -573,6 +577,7 @@ ${STAGE_HTML}
   <div class="btns"><button class="left" value="reset" formnovalidate>Defaults</button><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="save">Save</button></div>
 </form></dialog>
 ${LAB_HTML}
+${ALIEN_HTML}
 <div id="zoom"><img id="zoomImg" alt=""></div>
 <div id="drop">Drop files to attach them to your message</div>
 <div id="toast"><span id="toastText"></span><button id="toastBtn">Undo</button></div>
@@ -745,6 +750,7 @@ function drawActivity() {
   const bar = $("activity");
   bar.classList.toggle("on", !!(busy && act));
   if (!busy || !act) return;
+  drawAlien(act);
   const ms = act.elapsedMs + Date.now() - act.at;
   const meta = [];
   if (act.lines > 1) meta.push(act.lines + " lines");
@@ -765,7 +771,7 @@ function progress(m) {
   if (m.phase === "waiting") abandonWriting();
   if (m.phase === "done") return activity({ title: "Working" });
   const tail = (m.preview || "").split("\\n").filter((l) => l.trim()).pop() || "";
-  activity({ phase: m.phase, title: m.title, tokens: m.tokens, elapsedMs: m.elapsedMs, generatingMs: m.generatingMs || 0, lines: m.lines, tail: m.phase === "tool" ? "" : tail.trim().slice(-160) });
+  activity({ phase: m.phase, tool: m.tool && m.tool.name, title: m.title, tokens: m.tokens, elapsedMs: m.elapsedMs, generatingMs: m.generatingMs || 0, lines: m.lines, tail: m.phase === "tool" ? "" : tail.trim().slice(-160) });
   if (m.phase === "thinking") {
     if (!thinkCard) { streaming = null; thinkCard = add(document.createElement("details")); thinkCard.className = "think"; thinkCard.innerHTML = "<summary></summary><pre></pre>"; }
     thinkCard.ms = m.elapsedMs;
@@ -815,7 +821,7 @@ function on(m) {
       // A question gets its own card (below), not a tool card.
       if (m.name === "ask_user") { writing.forEach((d) => d && d.remove()); writing = []; live = null; return; }
       const [verb, arg] = label(m.name, m.args);
-      activity({ title: verb + " " + arg.slice(0, 80) });
+      activity({ title: verb + " " + arg.slice(0, 80), tool: m.name });
       // The card that showed the call being written becomes the card that runs it.
       let i = writing.findIndex((d) => d && d.tool === m.name);
       if (i < 0) i = writing.findIndex(Boolean);
@@ -876,6 +882,7 @@ function on(m) {
       $("rgo").disabled = busy; $("rstop").disabled = !busy;
       if (!busy) { helperLive = null; $("activity").classList.remove("helper"); }
       if (!busy) { streaming = null; thinkCard = null; abandonWriting(); for (const id of [...askCards.keys()]) askClosed(id, "Stopped"); }
+      if (busy) alienTurn();
       activity(busy ? { title: "Starting" } : null);
       return;
     case "done": streaming = null; return;
@@ -1124,6 +1131,7 @@ ${STAGE_JS}
 ${VOICE_JS}
 ${VIS_JS}
 ${SOUND_JS}
+${ALIEN_JS}
 
 function render(s) {
   state = s;
