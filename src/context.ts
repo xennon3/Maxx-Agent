@@ -81,6 +81,9 @@ export async function compact(
   history: Message[],
   summarize: (transcript: string) => Promise<string>,
   keepRecent = 6,
+  // A transcript bigger than the model's window gets cut by the server from the
+  // front, where the goal is; keep it to what the summarizer can read.
+  maxChars = 60_000,
 ): Promise<Message[]> {
   const [system, ...rest] = history;
   if (!system || rest.length <= keepRecent + 2) return history;
@@ -91,7 +94,7 @@ export async function compact(
   const transcript = old
     .map((m) => `${m.role}: ${textOf(m.content)}${"tool_calls" in m && m.tool_calls ? " [tools: " + m.tool_calls.map((t) => t.function.name + " " + t.function.arguments).join("; ") + "]" : ""}`)
     .join("\n")
-    .slice(-60_000);
+    .slice(-maxChars);
   const summary = await summarize(transcript);
-  return [system, { role: "user", content: `Summary of the earlier conversation (older turns were compacted):\n${summary}` }, ...recent];
+  return [system, { role: "user", content: `Summary of the earlier conversation (older turns were compacted; this is a record of past work, not a new request):\n${summary}` }, ...recent];
 }

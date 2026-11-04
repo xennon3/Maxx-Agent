@@ -10,6 +10,7 @@ import { TEMPLATES } from "./templates/index.ts";
 import { briefingMessages, parseBriefing } from "./ask.ts";
 import { judgeLLM, judgeMessages, parseVerdict, pickSurface, type SurfaceOptions, type Verdict } from "./judge.ts";
 import { clearReel, makeTimelapse } from "./timelapse.ts";
+import { finishUpPrompt, outOfSteps } from "./redo.ts";
 
 // Agent mode. The user gives a goal ("build a weather app and run it on my
 // phone"); Maxx has the model split it into a few tasks, then works through
@@ -120,7 +121,8 @@ export function planMessages(goal: string, map: string, max: number, empty: bool
 }
 
 const mark = (t: Task, i: number, cur: number) => (t.status === "done" ? "[x]" : i === cur ? "[>]" : t.status === "failed" ? "[!]" : "[ ]");
-export const formatBoard = (b: Board) => b.tasks.map((t, i) => `${mark(t, i, b.current)} ${i + 1}. ${t.text}`).join("\n");
+// A done task carries what it reported, so a later task knows what is already built.
+export const formatBoard = (b: Board) => b.tasks.map((t, i) => `${mark(t, i, b.current)} ${i + 1}. ${t.text}${t.status === "done" && t.answer ? ` (done: ${t.answer})` : ""}`).join("\n");
 
 export function taskPrompt(b: Board, map: string, retry: string): string {
   const t = b.tasks[b.current]!;
@@ -134,6 +136,7 @@ export function taskPrompt(b: Board, map: string, retry: string): string {
     t.check ? `Done when: ${t.check}` : "",
     retry ? `Your last try at this task failed (${retry}), so Maxx put the files back the way they were before it. Do not repeat that approach; try a different one.` : "",
     map,
+    b.tasks.some((x) => x.status === "done") ? "Tasks marked [x] are done and on disk: do not build or write them again. If an earlier task already did this one too, check that it works and reply DONE." : "",
     "Work on this task only. If it needs a choice only the user can make, call ask_user. When it is done and checked, reply with one short line starting with DONE. If you cannot do it, reply STUCK: and why.",
   ].filter(Boolean).join("\n");
 }
@@ -241,9 +244,18 @@ export async function workTask(agent: Agent, board: Board, events: GoalEvents, o
     task.tries++;
     task.status = "doing";
     emit();
+    const turnsBefore = agent.turns;
     // The map costs context, so it goes with the first task and with retries only.
     const fresh = s.mapTokens > 0 && (board.current === 0 || retry) ? await projectMap(agent.cwd, s.mapTokens).catch(() => "") : "";
     let answer = await agent.send(asReport(taskPrompt(board, fresh, retry)), o.signal, { maxSteps: s.stepsPerTask, learn: false });
+    // Out of steps is not a failed try: the work is often done, or nearly. Rewinding it
+    // here is what made Maxx build the whole app a second time. Keep it and let the model finish.
+    if (outOfSteps(answer)) {
+      agent.note(`(Agent mode: task ${board.current + 1} used its ${s.stepsPerTask} steps; the work is kept and the model gets a few more to finish)`);
+      answer = await agent.send(asReport(finishUpPrompt(board.current + 1, s.stepsPerTask)), o.signal, { maxSteps: Math.max(3, Math.ceil(s.stepsPerTask / 3)), learn: false });
+      // Its last check ran in the try that ran out, if at all; check what the task changed now.
+      if (!outOfSteps(answer) && !agent.lastCheck && before) await agent.verify(await agent.checkpoints.changed(before), o.signal);
+    }
     let r = outcome(answer, agent.lastCheck);
     if (r.ok && s.judge) {
       const j = await judgeTask(agent, board, task, before, events, o, emit);
@@ -271,7 +283,7 @@ export async function workTask(agent: Agent, board: Board, events: GoalEvents, o
     // Keep the failed try (/checkpoints lists it), then rewind to before the task.
     await agent.checkpoints.snapshot(`agent: task ${board.current + 1} try ${task.tries} (failed)`);
     const back = before ? await agent.checkpoints.rewind(before) : { ok: false, removed: [], error: "no snapshot" };
-    agent.forgetTurn(); // a rewind by Agent mode, not a correction from the user
+    agent.forgetTurn(turnsBefore); // a rewind by Agent mode, not a correction from the user
     if (back.ok) agent.note(`(Agent mode: rewound the files to before task ${board.current + 1})`);
     if (task.tries >= s.tries || !back.ok) {
       task.status = "failed";
