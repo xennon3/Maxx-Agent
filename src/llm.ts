@@ -138,11 +138,37 @@ async function streamOnce(
   if (outer?.aborted) ctl.abort();
   outer?.addEventListener("abort", stop, { once: true });
   const signal = ctl.signal;
+  // A server that stops sending (a crashed model, a full GPU, a dropped
+  // connection) would hold the turn forever: give up on it after a while.
+  let stalled = 0;
+  let dog: ReturnType<typeof setTimeout> | undefined;
+  const arm = (ms: number) => {
+    clearTimeout(dog);
+    dog = setTimeout(() => ((stalled = ms), ctl.abort()), ms);
+  };
+  arm(STALL.firstMs);
+  const progress = (p: StreamProgress) => {
+    if (p.tokens) arm(STALL.idleMs);
+    onProgress(p);
+  };
   try {
-    return await streamBody(cfg, messages, tools, onToken, signal, onProgress, extra, budget, ctl);
+    return await streamBody(cfg, messages, tools, onToken, signal, progress, extra, budget, ctl);
+  } catch (e) {
+    if (stalled && !outer?.aborted) throw new Error(stallMessage(cfg, stalled));
+    throw e;
   } finally {
+    clearTimeout(dog);
     outer?.removeEventListener("abort", stop);
   }
+}
+
+// How long Maxx waits on a quiet model server: for the first token (the server
+// may be reading a long prompt or loading the model), then between tokens.
+export const STALL = { firstMs: 15 * 60_000, idleMs: 4 * 60_000 };
+
+export function stallMessage(cfg: Pick<LLMConfig, "model" | "baseURL">, ms: number): string {
+  const min = Math.round(ms / 60_000);
+  return `the model server stopped answering: ${cfg.model} at ${cfg.baseURL} sent nothing for ${min} minute${min === 1 ? "" : "s"}. Check that it is still running (and the model still loaded), then send your message again.`;
 }
 
 async function streamBody(

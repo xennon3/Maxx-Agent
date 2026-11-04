@@ -501,7 +501,7 @@ export class Agent {
     let failedInARow = 0;
 
     for (let step = 0; step < (o.maxSteps ?? this.opts.maxSteps ?? 50); step++) {
-      await this.maybeCompact();
+      await this.maybeCompact(signal);
       if (helping && !this.helper) handBack("the helper was turned off");
       const helper = helping && this.helper;
       const thinking = planFor(this.thinking, size, { step, failed: lastFailed, failures: failedInARow });
@@ -522,7 +522,7 @@ export class Agent {
         if (real && real < this.contextWindow) {
           this.io.note(`(${this.opts.llm.model} has only ${real} tokens of context, not ${this.contextWindow}; Maxx now plans for ${real})`);
           this.opts.contextWindow = real;
-          await this.maybeCompact();
+          await this.maybeCompact(signal);
           continue;
         }
         // A helper that can't be reached (no key, no credit, offline) must not end the turn.
@@ -579,7 +579,8 @@ export class Agent {
       let stepFailed = false;
       let trigger = "";
       for (const call of res.toolCalls) {
-        let { result, bad, images, glance, args } = await this.runTool(call);
+        // After Stop, the rest of the step's calls don't run, but each still gets a result so the history stays whole.
+        let { result, bad, images, glance, args } = signal?.aborted ? { result: "error: not run, the user pressed Stop", bad: false } as Awaited<ReturnType<Agent["runTool"]>> : await this.runTool(call);
         badCalls = bad ? badCalls + 1 : 0;
         if (args) await this.learn(call.name, args, result, changed, lastFail).then((f) => (lastFail = f));
         const fail = bad || failed(result);
@@ -759,7 +760,8 @@ export class Agent {
       }
       if (answer === "always") await this.opts.permissions.remember(bash, args);
     }
-    const output = truncate(String(await bash.run(args, { cwd: this.opts.cwd, network: this.network })));
+    // Stop reaches the build too (it throws AbortError, which ends the turn).
+    const output = truncate(String(await bash.run(args, { cwd: this.opts.cwd, network: this.network, signal })));
     this.io.toolEnd("check", output);
     return failed(output) ? { ok: false, what: `\`${command}\``, output } : { ok: true, what: `\`${command}\`` };
   }
@@ -1003,7 +1005,8 @@ export class Agent {
     this.lastTurn = { did, files, start: this.checkpoints.shaAt(this.turnFrom), undone: false };
     if (!learning || !this.corrections.length) return;
     const todo = this.corrections.splice(0);
-    for (const c of todo.slice(-2)) await this.learnFrom(c, signal?.aborted ? undefined : signal);
+    // After Stop no model call: learnFrom falls back to a plain rule, so the UI frees up at once.
+    for (const c of todo.slice(-2)) await this.learnFrom(c, signal);
   }
 
   // One correction, one rule (or none, when it was only a change of mind).
@@ -1063,18 +1066,23 @@ export class Agent {
     this.done = this.done.filter((d) => d.turn <= since);
   }
 
-  private async maybeCompact() {
+  private async maybeCompact(signal?: AbortSignal) {
     const window = this.opts.contextWindow ?? 32_768;
     if (estimateTokens(this.history) < window * 0.7) return;
     this.io.note("(compacting older turns to free context)");
     this.marks = [];
     const record = doneRecord(this.done, this.turnAsk);
     this.history = await compact(this.history, async (transcript) => {
-      const res = await complete(this.opts.llm, [
+      // With the turn's signal (Stop ends it) and progress (the bar keeps moving while a slow model reads the transcript).
+      const ask: Message[] = [
         { role: "system", content: "You summarize coding sessions for handoff. Be terse and specific." },
         { role: "user", content: `Summarize this session so far: the user's goal, what is already finished (say plainly that it is done), files read or changed, decisions made, commands run and their outcomes, and what is left to do.\n\n${transcript}` },
-      ], []);
-      return [res.content, record].filter(Boolean).join("\n\n");
+      ];
+      // A summary needs no long think; a thinking model left to its habit can spend minutes here.
+      const llm = this.opts.llm.provider === "anthropic" ? this.opts.llm : { ...this.opts.llm, thinking: { tier: 0 as const, budget: 512, why: "a summary of older turns" } };
+      const promptTokens = estimateTokens(ask);
+      const res = await complete(llm, ask, [], () => {}, signal, (p) => this.io.progress?.({ ...p, promptTokens }));
+      return [res.content.replace(/<think>[\s\S]*?<\/think>/g, "").trim(), record].filter(Boolean).join("\n\n");
     }, 6, summaryChars(window));
   }
 }

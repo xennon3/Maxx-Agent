@@ -9,6 +9,22 @@ import { blocked, fetches, OFFLINE_ENV } from "../network.ts";
 // timeout. These start in the background even when the model does not ask.
 const LONG_RUNNING = /\b(http\.server|(npm|pnpm|yarn|bun)( run)? (dev|start|serve|preview)|vite( dev)?$|next dev|webpack serve|live-server|flask run|uvicorn|manage\.py runserver|php -S)\b/;
 const BACKGROUND_WAIT_MS = 4000;
+// After a kill, how long to wait for the last output before giving up on the pipes.
+const KILL_GRACE_MS = 2000;
+
+// proc.kill() ends only the shell; on Windows its children (java, node, gradle)
+// live on and keep the output pipes open. taskkill /T ends the whole tree.
+export function killTree(proc: { pid: number; kill(): void }) {
+  if (process.platform === "win32") {
+    try {
+      Bun.spawn(["taskkill", "/T", "/F", "/PID", String(proc.pid)], { stdout: "ignore", stderr: "ignore", stdin: "ignore" });
+      return;
+    } catch {}
+  }
+  try {
+    proc.kill();
+  } catch {}
+}
 
 // Background processes die with Maxx instead of holding ports after it exits.
 const running = new Set<{ kill(): void }>();
@@ -36,12 +52,14 @@ function hints(command: string, err: string): string {
 
 // Keep reading a stream to its end, so a chatty server never blocks on a full
 // pipe; only the first part is kept, and can be looked at any time.
-function drain(stream: ReadableStream<Uint8Array>, keep = 40_000) {
+function drain(stream: ReadableStream<Uint8Array>, keep = 40_000, cut = false) {
   const decoder = new TextDecoder();
   const sink = { text: "", done: Promise.resolve() };
   sink.done = (async () => {
     for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
       if (sink.text.length < keep) sink.text += decoder.decode(chunk, { stream: true });
+      // A command's output keeps going: drop the middle, keep the end (where the errors are).
+      else if (cut) sink.text = sink.text.slice(0, keep / 4) + sink.text.slice(-keep / 2) + decoder.decode(chunk, { stream: true });
     }
   })().catch(() => {});
   return sink;
@@ -97,15 +115,37 @@ export const bash = defineTool({
       return parts.join("\n") + hints(cmd, err);
     }
 
-    let killed = false;
-    const timer = setTimeout(() => ((killed = true), proc.kill()), timeout * 1000);
-    const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-    await proc.exited;
-    clearTimeout(timer);
-    parts.push(`exit code: ${killed ? `killed after ${timeout}s` : proc.exitCode}`);
+    // Stop (the user) and the timeout both end the whole process tree. Output is
+    // read as it comes, so a child that keeps the pipe open (a Gradle daemon, a
+    // server started with &) can't hold the turn after the command is gone.
+    let ended = "" as "" | "timeout" | "stopped";
+    let endNow = () => {};
+    const gone = new Promise<void>((r) => (endNow = r));
+    const end = (why: "timeout" | "stopped") => {
+      if (ended) return;
+      ended = why;
+      killTree(proc);
+      endNow();
+    };
+    const timer = setTimeout(() => end("timeout"), timeout * 1000);
+    const onStop = () => end("stopped");
+    if (ctx.signal?.aborted) onStop();
+    ctx.signal?.addEventListener("abort", onStop, { once: true });
+    const stdout = drain(proc.stdout, 4_000_000, true), stderr = drain(proc.stderr, 4_000_000, true);
+    try {
+      await Promise.race([proc.exited, gone]);
+      // The last output, but not forever: something it started may still hold the pipes.
+      await Promise.race([Promise.all([stdout.done, stderr.done]), Bun.sleep(KILL_GRACE_MS)]);
+    } finally {
+      clearTimeout(timer);
+      ctx.signal?.removeEventListener("abort", onStop);
+    }
+    if (ended === "stopped") throw Object.assign(new Error("stopped"), { name: "AbortError" });
+    const out = stdout.text, err = stderr.text;
+    parts.push(`exit code: ${ended === "timeout" ? `killed after ${timeout}s` : proc.exitCode}`);
     if (out.trim()) parts.push(`stdout:\n${truncate(out)}`);
     if (err.trim()) parts.push(`stderr:\n${truncate(err)}`);
-    if (killed) parts.push("hint: if this is a server or watcher, run it with background: true.");
+    if (ended === "timeout") parts.push("hint: if this is a server or watcher, run it with background: true.");
     return parts.join("\n") + hints(cmd, err);
   },
 });
