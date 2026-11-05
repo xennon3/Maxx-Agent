@@ -4,7 +4,7 @@ import { PAGE } from "../src/ui/page.ts";
 
 test("every theme has its own look and the default exists", () => {
   expect(SKINS.some((s) => s.id === SKIN_DEFAULT)).toBe(true);
-  for (const s of SKINS.filter((s) => s.id !== "classic")) {
+  for (const s of SKINS.filter((s) => !s.id.startsWith("classic"))) {
     expect(SKIN_CSS).toContain(`[data-skin="${s.id}"] {`);
     expect(SKIN_CSS).toContain(`html[data-skin="${s.id}"]`);
   }

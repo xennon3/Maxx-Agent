@@ -40,6 +40,7 @@ export const SKIN_DEFAULT = "abduction";
 
 export const SKINS: Skin[] = [
   { id: "classic", name: "Classic", say: "The original: warm paper and orange, follows Windows light/dark", glyph: "◆", dark: null },
+  { id: "classic-dark", name: "Classic Dark", say: "The original look, always dark, whatever Windows is set to", glyph: "◆", dark: true },
   { id: "abduction", name: "Abduction", say: "Deep space, alien lime and hoodie blue. A tractor beam under every step", glyph: "🛸", dark: true },
   { id: "phosphor", name: "Phosphor", say: "A green CRT terminal: scanlines, glow, square corners, VT323", glyph: "▌", dark: true },
   { id: "nightdrive", name: "Nightdrive", say: "Synthwave: a neon grid racing to a striped sun, chrome letters", glyph: "▲", dark: true },
@@ -72,6 +73,10 @@ html[data-skin]:not([data-skin="classic"]) dialog::backdrop { background: color-
 html[data-skin]:not([data-skin="classic"]) .seg button.on { color: var(--seg-on-ink, var(--ink)) !important; }
 html[data-skin]:not([data-skin="classic"]) .brand b { color: var(--accent); text-shadow: var(--glow); }
 @media (prefers-reduced-motion: reduce) { html[data-skin] *, html[data-skin] *::before, html[data-skin] *::after, html[data-skin]::after { animation: none !important; } }
+`;
+
+const CLASSIC_DARK = `
+[data-skin="classic-dark"] { --bg: #141413; --panel: #1d1d1b; --ink: #ecebe6; --mute: #9a9991; --line: #2f2e2b; --code: #252422; --user: #2b2117; --seg-on-ink: #ecebe6; }
 `;
 
 const ABDUCTION = `
@@ -313,7 +318,7 @@ const PICKER = `
 .skin .dots i { width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--line); }
 `;
 
-export const SKIN_CSS = [FONTS, BASE, ABDUCTION, PHOSPHOR, NIGHTDRIVE, BLUEPRINT, RISO, ABYSS, PICKER].join("\n");
+export const SKIN_CSS = [FONTS, BASE, CLASSIC_DARK, ABDUCTION, PHOSPHOR, NIGHTDRIVE, BLUEPRINT, RISO, ABYSS, PICKER].join("\n");
 
 // Runs in <head> before anything paints, so the window never flashes the wrong theme.
 export const SKIN_BOOT = `<script data-skin-boot>(function(){var M=${JSON.stringify(Object.fromEntries(SKINS.map((s) => [s.id, s.dark])))};var s="${SKIN_DEFAULT}";try{var v=localStorage.getItem("maxx.skin");if(v&&v in M)s=v;}catch(e){}var h=document.documentElement;h.dataset.skin=s;if(M[s]!==null){h.dataset.dark=M[s]?"1":"0";h.style.colorScheme=M[s]?"dark":"light";}})();</script>`;
