@@ -78,7 +78,7 @@ const visuals = (() => {
   const follow = () => { if (atEnd) $("log").scrollTop = $("log").scrollHeight; };
   const frames = new Set(); // { frame, card, kind } for each html iframe
   let mermaidQueue = Promise.resolve(), seq = 0;
-  const dark = () => matchMedia("(prefers-color-scheme: dark)").matches;
+  const dark = () => { const d = document.documentElement.dataset.dark; return d ? d === "1" : matchMedia("(prefers-color-scheme: dark)").matches; };
   const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
   function lib(name) {
@@ -191,7 +191,7 @@ const visuals = (() => {
   async function drawChart(cfg, body) {
     const Chart = await lib("chart");
     Chart.defaults.color = css("--mute"); Chart.defaults.borderColor = css("--line");
-    Chart.defaults.font.family = 'system-ui, "Segoe UI", sans-serif';
+    Chart.defaults.font.family = css("--font") || 'system-ui, "Segoe UI", sans-serif';
     if (!cfg || typeof cfg !== "object" || !cfg.type || !cfg.data) throw new Error('a chart needs "type" and "data"');
     colorize(cfg);
     cfg.options = Object.assign({ responsive: true, maintainAspectRatio: false, animation: { duration: 400 } }, cfg.options || {});
@@ -241,7 +241,7 @@ const visuals = (() => {
   // Mermaid's "base" theme takes its colors from variables: nodes, pie slices,
   // mindmap and timeline sections all come from the palette.
   function mermaidConfig(colors) {
-    const base = { startOnLoad: false, securityLevel: "strict", fontFamily: 'system-ui, "Segoe UI", sans-serif' };
+    const base = { startOnLoad: false, securityLevel: "strict", fontFamily: css("--font") || 'system-ui, "Segoe UI", sans-serif' };
     if (!colors) return Object.assign(base, { theme: dark() ? "dark" : "default" });
     const lum = (h) => { const v = [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4))); return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]; };
     const on = (h) => (lum(h) > 0.4 ? "#1a1a1a" : "#ffffff");

@@ -6,6 +6,7 @@ import { THINKING_LABEL, THINKING_SAY } from "../thinking.ts";
 import { VOICE_CSS, VOICE_HINT, VOICE_HTML, VOICE_JS } from "./voice-page.ts";
 import { LAB_CSS, LAB_HTML, LAB_JS, LAB_NAV, LAB_VIEW } from "./lab-page.ts";
 import { ALIEN_CSS, ALIEN_HTML, ALIEN_JS } from "./aliens-page.ts";
+import { SKIN_BOOT, SKIN_CSS, SKIN_HTML, SKIN_JS, SKIN_ROW } from "./themes-page.ts";
 import { CONNECT_CSS, CONNECT_HTML, CONNECT_JS, CONNECT_TOOLS_HTML } from "./connect-page.ts";
 
 // The whole web UI in one string, so the compiled maxx.exe carries it.
@@ -15,18 +16,20 @@ export const PAGE = /* html */ `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Maxx</title>
+${SKIN_BOOT}
 <style>
 :root {
   --bg: #f6f6f3; --panel: #ffffff; --ink: #1d1d1b; --mute: #6d6d68; --line: #e3e2dc;
   --accent: #d9480f; --accent-ink: #fff; --ok: #2b8a3e; --bad: #c92a2a; --code: #f0efe9; --user: #fff4e6;
   --radius: 10px; --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  --font: system-ui, "Segoe UI", sans-serif; --agent: #1971c2; --crew: #7048e8; --warn: #f59f00; --warn-ink: #1a1a1a;
 }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #141413; --panel: #1d1d1b; --ink: #ecebe6; --mute: #9a9991; --line: #2f2e2b; --code: #252422; --user: #2b2117; }
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
-body { background: var(--bg); color: var(--ink); font: 14px/1.5 system-ui, "Segoe UI", sans-serif; display: grid; grid-template-columns: 260px 1fr auto; grid-template-rows: 100vh; overflow: hidden; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.5 var(--font); display: grid; grid-template-columns: 260px 1fr auto; grid-template-rows: 100vh; overflow: hidden; }
 #sets { display: flex; gap: 6px; }
 .msg code { font-family: var(--mono); font-size: 12.5px; background: var(--code); padding: 1px 4px; border-radius: 4px; }
 .msg pre { background: var(--code); padding: 8px 10px; border-radius: 8px; overflow: auto; font: 12px/1.45 var(--mono); }
@@ -85,10 +88,10 @@ header .where { font-weight: 600; margin-right: auto; overflow: hidden; text-ove
 /* A step waiting for the user's OK is pinned above the message box, outside the scrolling transcript, so its buttons can't end up out of reach. */
 #okdock { display: none; flex-direction: column; gap: 8px; padding: 8px 16px; border-top: 2px solid var(--accent); background: var(--bg); max-height: 45vh; overflow: auto; flex: none; }
 #okdock.on { display: flex; }
-#okdock .ask { box-shadow: 0 -2px 14px rgba(217,72,15,.18); animation: okpulse 1.6s ease-in-out 3; }
+#okdock .ask { box-shadow: 0 -2px 14px color-mix(in srgb, var(--accent) 18%, transparent); animation: okpulse 1.6s ease-in-out 3; }
 #okdock .ask pre { max-height: 22vh; }
 #okdock .more { color: var(--mute); font-size: 12px; }
-@keyframes okpulse { 50% { box-shadow: 0 0 0 4px rgba(217,72,15,.25); } }
+@keyframes okpulse { 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 25%, transparent); } }
 .ask .btns kbd { font: 11px var(--mono); opacity: .7; margin-left: 6px; }
 .ask .btns .hint { margin-left: auto; align-self: center; color: var(--mute); font-size: 12px; }
 .askslot { display: none; }
@@ -98,11 +101,11 @@ main:has(#okdock.on) #log { min-height: min(120px, 12vh); }
 main:has(#okdock.on) .board.on, main:has(#okdock.on) .plan.on { min-height: 0; }
 main:has(#okdock.on) .composer textarea { height: 40px; }
 .activity.asking { cursor: pointer; }
-.qcard { max-width: 860px; border: 2px solid #7048e8; border-radius: var(--radius); background: var(--panel); }
+.qcard { max-width: 860px; border: 2px solid var(--crew); border-radius: var(--radius); background: var(--panel); }
 .qcard .q { padding: 10px 12px 4px; font-weight: 600; }
 .qcard .q::before { content: "❓ "; }
 .qcard .choices { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 12px 0; }
-.qcard .choices button.guess { border-color: #7048e8; }
+.qcard .choices button.guess { border-color: var(--crew); }
 .qcard .choices button.guess::after { content: " · Maxx's guess"; color: var(--mute); font-size: 11px; }
 .qcard .own { display: flex; gap: 8px; padding: 8px 12px 10px; }
 .qcard .own input { flex: 1; min-width: 0; }
@@ -117,9 +120,9 @@ main:has(#okdock.on) .composer textarea { height: 40px; }
 .composer textarea { flex: 1; resize: none; height: 64px; }
 #clipBtn { padding: 7px 10px; font-size: 16px; line-height: 1; }
 #autoBtn { align-self: flex-start; padding: 7px 10px; font-size: 13px; line-height: 1; white-space: nowrap; }
-#autoBtn.on { background: #f59f00; border-color: #f59f00; color: #1a1a1a; font-weight: 600; }
-#autoBtn.half { border-color: #f59f00; }
-.ask .btns .auto { margin-left: auto; border-color: #f59f00; }
+#autoBtn.on { background: var(--warn); border-color: var(--warn); color: var(--warn-ink); font-weight: 600; }
+#autoBtn.half { border-color: var(--warn); }
+.ask .btns .auto { margin-left: auto; border-color: var(--warn); }
 .files { display: flex; flex-wrap: wrap; gap: 6px; }
 .files:empty { display: none; }
 .file { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 8px; padding: 3px 4px 3px 6px; font-size: 12.5px; background: var(--bg); max-width: 100%; }
@@ -132,7 +135,7 @@ main:has(#okdock.on) .composer textarea { height: 40px; }
 .file.up { opacity: .6; } .file.bad { border-color: var(--bad); color: var(--bad); }
 .msg .att { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .msg .att span { font-size: 12px; border: 1px solid var(--line); border-radius: 6px; padding: 0 6px; background: var(--panel); }
-#drop { position: fixed; inset: 8px; border: 3px dashed var(--accent); border-radius: 16px; background: rgba(217,72,15,.08); display: none; align-items: center; justify-content: center; font-size: 20px; font-weight: 600; color: var(--accent); z-index: 8; pointer-events: none; }
+#drop { position: fixed; inset: 8px; border: 3px dashed var(--accent); border-radius: 16px; background: color-mix(in srgb, var(--accent) 8%, transparent); display: none; align-items: center; justify-content: center; font-size: 20px; font-weight: 600; color: var(--accent); z-index: 8; pointer-events: none; }
 #drop.on { display: flex; }
 .empty { margin: auto; text-align: center; color: var(--mute); max-width: 420px; }
 .empty h2 { color: var(--ink); margin: 0 0 6px; }
@@ -155,7 +158,7 @@ main:has(#okdock.on) .composer textarea { height: 40px; }
 .activity .tail { color: var(--mute); font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .tool.live { border-color: var(--accent); }
 .tool.live summary::after { content: ""; }
-.tool summary .meta { color: var(--mute); font-family: system-ui, "Segoe UI", sans-serif; font-size: 12px; margin-left: 6px; }
+.tool summary .meta { color: var(--mute); font-family: var(--font); font-size: 12px; margin-left: 6px; }
 .tool.live pre::after { content: "▍"; color: var(--accent); animation: blink 1s steps(1) infinite; }
 .tool.skipped { opacity: .6; }
 .think { max-width: 860px; color: var(--mute); }
@@ -188,13 +191,13 @@ main:has(#okdock.on) .composer textarea { height: 40px; }
 .plan .step.done .box { color: var(--ok); }
 .plan .step.next { font-weight: 600; }
 .plan .step.next .box { color: var(--accent); }
-.board { display: none; margin: 10px 16px 0; padding: 8px 12px; border: 1px solid var(--line); border-left: 3px solid #1971c2; border-radius: var(--radius); background: var(--panel); font-size: 13px; max-width: 860px; }
+.board { display: none; margin: 10px 16px 0; padding: 8px 12px; border: 1px solid var(--line); border-left: 3px solid var(--agent); border-radius: var(--radius); background: var(--panel); font-size: 13px; max-width: 860px; }
 .board.on { display: block; max-height: 34vh; overflow: auto; flex: 0 1 auto; min-height: 2.6em; }
 .board .head { display: flex; gap: 8px; align-items: baseline; font-weight: 600; }
 .board .head .goal { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .board .head .state { color: var(--mute); font-weight: 400; flex: none; }
 .board .bar { height: 3px; background: var(--line); border-radius: 2px; margin: 6px 0 4px; overflow: hidden; }
-.board .bar i { display: block; height: 100%; background: #1971c2; transition: width .3s; }
+.board .bar i { display: block; height: 100%; background: var(--agent); transition: width .3s; }
 .board.stuck { border-left-color: var(--bad); } .board.stuck .bar i { background: var(--bad); }
 .board.done { border-left-color: var(--ok); } .board.done .bar i { background: var(--ok); }
 .board .task { display: flex; gap: 8px; padding: 1px 0; }
@@ -202,14 +205,14 @@ main:has(#okdock.on) .composer textarea { height: 40px; }
 .board .task .n { flex: 1; min-width: 0; }
 .board .task .sub { display: block; color: var(--mute); font-size: 12px; }
 .board .task.done { color: var(--mute); } .board .task.done .box { color: var(--ok); }
-.board .task.doing, .board .task.checking { font-weight: 600; } .board .task.doing .box { color: #1971c2; }
+.board .task.doing, .board .task.checking { font-weight: 600; } .board .task.doing .box { color: var(--agent); }
 .board .task.failed .box, .board .task.failed .sub { color: var(--bad); }
 .board .task .tries { color: var(--mute); font-weight: 400; font-size: 12px; flex: none; }
 .board .note { color: var(--mute); margin-top: 4px; }
-.chip.agent.on { background: #1971c2; border-color: #1971c2; }
+.chip.agent.on { background: var(--agent); border-color: var(--agent); }
 .chip.gear { padding: 4px 8px; }
-.chip.crew.on { background: #7048e8; border-color: #7048e8; color: #fff; }
-body.crew .composer textarea { border-color: #7048e8; }
+.chip.crew.on { background: var(--crew); border-color: var(--crew); color: #fff; }
+body.crew .composer textarea { border-color: var(--crew); }
 #crewDlg { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); padding: 0; width: min(480px, calc(100vw - 32px)); }
 #crewDlg::backdrop { background: rgba(0,0,0,.35); }
 #crewDlg form { display: flex; flex-direction: column; gap: 10px; padding: 16px; }
@@ -221,23 +224,23 @@ body.crew .composer textarea { border-color: #7048e8; }
 #crewDlg .btns { display: flex; gap: 8px; justify-content: flex-end; } #crewDlg .btns .left { margin-right: auto; }
 #crewDlg .models { display: flex; flex-wrap: wrap; gap: 6px; max-height: 120px; overflow: auto; }
 #crewDlg .models label { flex-direction: row; align-items: center; gap: 6px; color: var(--ink); border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; font-size: 12px; }
-.board.crew { border-left-color: #7048e8; } .board.crew.on { max-height: 58vh; } .board.crew .bar i { background: #7048e8; }
+.board.crew { border-left-color: var(--crew); } .board.crew.on { max-height: 58vh; } .board.crew .bar i { background: var(--crew); }
 .board.crew.done { border-left-color: var(--ok); } .board.crew.done .bar i { background: var(--ok); }
 .board.crew.stuck { border-left-color: var(--bad); }
 .crew-workers { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
 .wk { display: flex; gap: 8px; align-items: center; border: 1px solid var(--line); border-radius: 10px; padding: 5px 9px; min-width: 170px; flex: 1; max-width: 260px; background: var(--bg); }
 .wk .av { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 12px; flex: none; position: relative; }
 .wk .av::after { content: ""; position: absolute; right: -2px; bottom: -2px; width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--bg); background: var(--mute); }
-.wk.thinking .av::after { background: #1971c2; animation: pulse 1s infinite; }
-.wk.queued .av::after { background: #f08c00; }
+.wk.thinking .av::after { background: var(--agent); animation: pulse 1s infinite; }
+.wk.queued .av::after { background: var(--warn); }
 .wk.working .av::after { background: var(--ok); }
-.wk.merging .av::after { background: #7048e8; animation: pulse 1s infinite; }
+.wk.merging .av::after { background: var(--crew); animation: pulse 1s infinite; }
 @keyframes pulse { 50% { opacity: .3; } }
 .wk .who { min-width: 0; flex: 1; line-height: 1.25; }
 .wk .who .l1 { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wk .who b { font-size: 13px; } .wk .who .m { color: var(--mute); font-size: 11px; margin-left: 4px; }
 .wk .who .st { display: block; font-size: 12px; color: var(--mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wk.queued .who .st { color: #e67700; }
+.wk.queued .who .st { color: var(--warn); }
 .crew-models { font-size: 12px; color: var(--mute); display: flex; gap: 14px; flex-wrap: wrap; margin: 2px 0 6px; }
 .crew-models .slots { letter-spacing: 2px; }
 .crew-lanes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
@@ -247,12 +250,12 @@ body.crew .composer textarea { border-color: #7048e8; }
 .card .t { font-weight: 600; } .card .sub { display: block; color: var(--mute); font-size: 11.5px; }
 .card.failed { border-left-color: var(--bad); } .card.failed .sub { color: var(--bad); }
 .card.done { border-left-color: var(--ok); color: var(--mute); } .card.done .t { font-weight: 500; }
-.card.fixing { border-left-color: #f08c00; } .card.merging { border-left-color: #7048e8; }
+.card.fixing { border-left-color: var(--warn); } .card.merging { border-left-color: var(--crew); }
 .crew-log { font-size: 12px; color: var(--mute); margin-top: 6px; border-top: 1px dashed var(--line); padding-top: 4px; }
 .crew-log div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 @media (max-width: 900px) { .crew-lanes { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
-body.agent .composer textarea { border-color: #1971c2; }
+body.agent .composer textarea { border-color: var(--agent); }
 #agentDlg { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); padding: 0; width: min(460px, calc(100vw - 32px)); }
 #agentDlg::backdrop { background: rgba(0,0,0,.35); }
 #agentDlg form { display: flex; flex-direction: column; gap: 10px; padding: 16px; }
@@ -267,10 +270,10 @@ body.agent .composer textarea { border-color: #1971c2; }
 .tool.check summary b { color: var(--ok); }
 .tool.check.bad summary b { color: var(--bad); }
 .mark { max-width: 860px; align-self: center; font-size: 12.5px; padding: 4px 12px; border-radius: 999px; border: 1px dashed var(--line); color: var(--mute); }
-.mark.up { border: 1px solid #7048e8; color: #7048e8; background: color-mix(in srgb, #7048e8 8%, transparent); }
-.chip.helper.on { background: #7048e8; border-color: #7048e8; }
+.mark.up { border: 1px solid var(--crew); color: var(--crew); background: color-mix(in srgb, var(--crew) 8%, transparent); }
+.chip.helper.on { background: var(--crew); border-color: var(--crew); }
 .activity.helper .what::before { content: "🧠 "; }
-.activity.helper { box-shadow: inset 3px 0 0 #7048e8; }
+.activity.helper { box-shadow: inset 3px 0 0 var(--crew); }
 #helperDlg { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); padding: 0; width: min(460px, calc(100vw - 32px)); }
 #helperDlg::backdrop { background: rgba(0,0,0,.35); }
 #helperDlg form { display: flex; flex-direction: column; gap: 10px; padding: 16px; }
@@ -301,8 +304,8 @@ body.agent .composer textarea { border-color: #1971c2; }
 #ruleList .rule .x.strong { color: var(--accent); font-weight: 700; }
 #ruleList .rule button { flex: none; padding: 2px 8px; }
 #ruleList .none { color: var(--mute); font-size: 13px; padding: 6px 0; }
-.chip.rules.on { background: #2b8a3e; border-color: #2b8a3e; color: #fff; }
-.msg.learned { border-left: 3px solid #2b8a3e; padding-left: 10px; color: var(--ink); }
+.chip.rules.on { background: var(--ok); border-color: var(--ok); color: #fff; }
+.msg.learned { border-left: 3px solid var(--ok); padding-left: 10px; color: var(--ink); }
 .ask .why { display: flex; gap: 8px; padding: 0 12px 10px; }
 .ask .why input { flex: 1; min-width: 0; }
 #palDlg { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); padding: 0; width: min(620px, calc(100vw - 32px)); }
@@ -350,7 +353,7 @@ header select#model { flex: 0 1 230px; min-width: 96px; text-overflow: ellipsis;
 .seg button:hover { color: var(--ink); }
 .seg button.on { background: var(--panel); color: var(--ink); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.14); }
 .seg.small button { padding: 3px 8px; font-size: 12px; }
-#agentBtn.on { color: #1971c2; } #crewBtn.on { color: #7048e8; }
+#agentBtn.on { color: var(--agent); } #crewBtn.on { color: var(--crew); }
 /* The two menus */
 .pop { margin: 0; inset: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); padding: 12px 14px; box-shadow: 0 12px 36px rgba(0,0,0,.2); width: min(440px, calc(100vw - 24px)); max-height: calc(100vh - 80px); overflow: auto; }
 .pop h4 { margin: 0 0 2px; font-size: 13px; }
@@ -386,7 +389,7 @@ body.noproj .projonly { display: none !important; }
 .cbox { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); display: flex; flex-direction: column; box-shadow: 0 1px 4px rgba(0,0,0,.05); }
 .cbox:focus-within { border-color: var(--mute); }
 .cbox textarea, main:has(#okdock.on) .composer .cbox textarea { border: 0; background: none; height: 56px; resize: none; padding: 10px 12px 4px; outline: none; }
-body.agent .cbox { border-color: #1971c2; } body.crew .cbox { border-color: #7048e8; }
+body.agent .cbox { border-color: var(--agent); } body.crew .cbox { border-color: var(--crew); }
 body.agent .composer textarea, body.crew .composer textarea { border-color: transparent; }
 .cbar { display: flex; align-items: center; gap: 2px; padding: 4px 6px 6px; }
 .cbar .sp { flex: 1; }
@@ -395,8 +398,8 @@ body.agent .composer textarea, body.crew .composer textarea { border-color: tran
 .cbar .tb:hover:not(:disabled), .cbar .micmore:hover { background: var(--bg); color: var(--ink); }
 .cbar #clipBtn { font-size: 15px; padding: 3px 8px; }
 .cbar #autoBtn { align-self: auto; }
-.cbar #autoBtn.on { background: #f59f00; border-color: #f59f00; color: #1a1a1a; }
-.cbar #autoBtn.half { border-color: #f59f00; color: var(--ink); }
+.cbar #autoBtn.on { background: var(--warn); border-color: var(--warn); color: var(--warn-ink); }
+.cbar #autoBtn.half { border-color: var(--warn); color: var(--ink); }
 .cbar .micwrap { flex-direction: row; align-items: center; gap: 0; }
 .cbar .mic { width: auto; height: auto; padding: 3px 8px; font-size: 15px; border: 1px solid transparent; background: none; }
 .cbar .mic:hover { background: var(--bg); }
@@ -417,6 +420,7 @@ aside.adding #addProj { background: var(--bg); }
 @container (max-width: 900px) { header .lbl, .cbar .kbd { display: none; } .seg.modes button { padding: 4px 8px; font-size: 15px; } .hbtn { padding: 6px 8px; } }
 @container (max-width: 640px) { header .where small { display: none; } .cbar .tb { padding: 4px 5px; } }
 @media (max-width: 860px) { header { flex-wrap: wrap; } }
+${SKIN_CSS}
 </style>
 </head>
 <body>
@@ -468,6 +472,7 @@ aside.adding #addProj { background: var(--bg); }
       <div class="seg small" id="briefSeg"></div></div>
     <div class="prow"><div class="pl"><b>💭 Thinking</b><span id="thinkSay">How much a reasoning model thinks before it acts</span></div>
       <div class="seg small" id="thinkSeg"></div></div>
+    ${SKIN_ROW}
     <div class="prow"><div class="pl"><b>🎨 Colors</b><span>The palette Maxx designs charts, pages, apps and games with</span></div>
       <button id="palBtn" title="The colors Maxx designs with. You can also say it in a message: “make it in synthwave colors”">Auto</button></div>
     <div class="prow"><div class="pl"><b>👽 Typing buddy</b><span>The alien that acts out what Maxx is doing while it works</span></div>
@@ -580,6 +585,7 @@ ${STAGE_HTML}
 </form></dialog>
 ${LAB_HTML}
 ${ALIEN_HTML}
+${SKIN_HTML}
 ${CONNECT_HTML}
 <div id="zoom"><img id="zoomImg" alt=""></div>
 <div id="drop">Drop files to attach them to your message</div>
@@ -1137,6 +1143,7 @@ ${VOICE_JS}
 ${VIS_JS}
 ${SOUND_JS}
 ${ALIEN_JS}
+${SKIN_JS}
 ${CONNECT_JS}
 
 function render(s) {
