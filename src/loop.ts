@@ -27,6 +27,7 @@ import { mentionedPalette, paletteNote, palettePrompt, type Palette } from "./pa
 import { brief, describeHelper, HELPER_DEFAULTS, helperLLM, type Helper } from "./escalate.ts";
 import { mapBudget, projectMap, projectMapTool } from "./projectmap.ts";
 import type { Board } from "./agentmode.ts";
+import { closeOpen, doubtful, parseWrap, reportLine, REPORT_LINE, wrapPrompt, ENDING_SAY, type Ending } from "./wrapup.ts";
 import { afterRun, builtAlready, doneRecord, noteDone, planNudge, STEP_LIMIT, summaryChars, type Done } from "./redo.ts";
 import { findBrowser, isUiFile, judgeLLM, pickSurface, webPage, type SurfaceOptions } from "./judge.ts";
 import { crimeList, findCrimes } from "./crimes.ts";
@@ -197,6 +198,9 @@ export class Agent {
   // What already worked this session, from Maxx's own records, so a compaction can't make the model forget it built the app.
   private done: Done[] = [];
   private turnNo = 0;
+  // The turn the Plan was last written or ticked in, and why the current turn ended.
+  private planTurn = -1;
+  private ending: Ending = "answered";
   // The current request in the user's words, kept for the compaction record.
   private turnAsk = "";
   // The model's commands since its last file change, while they all passed (see afterRun):
@@ -379,7 +383,7 @@ export class Agent {
   private baseTools(): Tool<any>[] {
     if (this.opts.chat) return this.online.tools;
     const extra: Tool<any>[] = [];
-    if (this.opts.plan !== false) extra.push(planTool(() => this.plan, (s) => this.setPlan(s)));
+    if (this.opts.plan !== false) extra.push(planTool(() => this.plan, (s) => ((this.planTurn = this.turnNo), this.setPlan(s))));
     if (this.opts.memory !== false) extra.push(rememberTool);
     if (this.io.question) extra.push(askTool((q) => this.askTurn(q)));
     if (this.mapTokens > 0) extra.push(projectMapTool(() => this.mapTokens));
@@ -447,7 +451,8 @@ export class Agent {
   // A turn with attached images comes as parts (see attach.ts).
   // Agent mode gives each task its own step budget.
   // Agent mode's own task prompts pass learn: false; they are not the user talking.
-  async send(userText: string | ContentPart[], signal?: AbortSignal, o: { maxSteps?: number; learn?: boolean } = {}): Promise<string> {
+  // report: false leaves out the wrap-up (Agent and Crew mode read the bare answer for DONE / STUCK).
+  async send(userText: string | ContentPart[], signal?: AbortSignal, o: { maxSteps?: number; learn?: boolean; report?: boolean } = {}): Promise<string> {
     const learning = this.learning && o.learn !== false;
     if (learning) await this.noticeCorrection(userText).catch(() => {});
     this.turnDid = [];
@@ -459,7 +464,10 @@ export class Agent {
     await this.beforeTurn(typeof userText === "string" ? userText : userText.map((p) => (p.type === "text" ? p.text : "")).join("\n")).catch(() => {});
     let answer = "";
     try {
-      return (answer = await this.turn(userText, signal, o));
+      answer = await this.turn(userText, signal, o);
+      // The report goes into the transcript and the stream; callers still get the answer itself.
+      if (o.report !== false) await this.wrapUp(answer, signal);
+      return answer;
     } finally {
       dropThinking(this.history);
       await this.endTurn(answer, learning, signal).catch(() => {});
@@ -495,6 +503,9 @@ export class Agent {
     dropThinking(this.history);
     this.history.push({ role: "user", content: withPalette(userText, this.palette) });
     this.lastCheck = null;
+    this.ending = "answered";
+    // Steps the last turn left not done are open again: this turn may be the one that finishes them.
+    if (this.plan.some((s) => s.missed)) this.setPlan(this.plan.map((s) => ({ text: s.text, done: s.done })));
     this.cleanRuns = [];
     this.asked = 0;
     this.alarmRounds = 0;
@@ -590,6 +601,7 @@ export class Agent {
           if (!res.content.trim()) {
             const msg = `Stopped: ${this.opts.llm.model} ended without writing an answer. Send "continue" to let it try again, or switch to another model.`;
             this.history.push({ role: "assistant", content: msg });
+            this.ending = "empty";
             return msg;
           }
         }
@@ -658,6 +670,7 @@ export class Agent {
         if (helping) handBack("a program it needs is not installed");
         const msg = `Stopped: this computer does not have ${blocked.what}, so I can't finish this here. ${blocked.install}`;
         this.history.push({ role: "assistant", content: msg });
+        this.ending = "blocked";
         return msg;
       }
       if (helping) {
@@ -685,15 +698,18 @@ export class Agent {
       if (stuck >= STOP_REPEATS) {
         const msg = "Stopped: the model kept repeating the same tool call without making progress. Try a more specific request, or a stronger model (run `maxx doctor` to check this one).";
         this.history.push({ role: "assistant", content: msg });
+        this.ending = "repeats";
         return msg;
       }
       if (badCalls >= MAX_BAD_CALLS) {
         const msg = "Stopped: the model kept producing invalid tool calls. Try rephrasing, or run `maxx doctor` to check this model.";
         this.history.push({ role: "assistant", content: msg });
+        this.ending = "badcalls";
         return msg;
       }
     }
     if (helping) handBack("the turn hit its step limit");
+    this.ending = "steps";
     return STEP_LIMIT;
   }
 
@@ -728,6 +744,7 @@ export class Agent {
       if (r && !r.ok) {
         if (fixes >= tries) {
           this.io.note(`(${r.what} still fails after ${tries} tries; over to you)`);
+          this.ending = "checkfail";
           return null;
         }
         const c = coach("bash", {}, r.output, process.platform, this.network);
@@ -749,12 +766,60 @@ export class Agent {
       }
     }
     const open = this.plan.map((s, i) => (s.done ? 0 : i + 1)).filter(Boolean);
-    if (!nudged && this.plan.length && open.length) {
+    if (!nudged && this.planTurn === this.turnNo && open.length) {
       const text = planNudge(open, formatPlan(this.plan));
       this.history.push({ role: "user", content: [{ type: "text", text }] });
       return "plan";
     }
     return null;
+  }
+
+  // The turn is over, however it ended: reconcile the Plan (each open step done
+  // or not done, with why) and end on one line that says whether the task is done.
+  // Returns the turn's last message as the transcript now shows it.
+  private async wrapUp(answer: string, signal?: AbortSignal): Promise<string> {
+    if (this.opts.chat || signal?.aborted) return answer;
+    const ending = this.ending;
+    const planned = this.planTurn === this.turnNo && this.plan.length > 0;
+    // A question answered without touching anything needs no report.
+    if (ending === "answered" && !planned && !this.turnDid.length) return answer;
+    let plan = planned ? this.plan : [];
+    let result, summary;
+    // Only ask the model when there is something to settle: open steps, a turn Maxx cut short, or a reply that sounds unsure.
+    if (plan.some((s) => !s.done) || ending !== "answered" || doubtful(answer)) {
+      try {
+        const w = parseWrap(await this.verdict(wrapPrompt(plan, ENDING_SAY[ending], ending !== "answered"), signal), plan);
+        (plan = w.steps), (result = w.result), (summary = w.summary);
+      } catch {
+        if (signal?.aborted) return answer;
+      }
+    }
+    if (planned) this.setPlan((plan = closeOpen(plan)));
+    const check = this.lastCheck ? { what: this.lastCheck.what, ok: this.lastCheck.ok } : undefined;
+    const line = reportLine({ ending, plan, result, check, files: this.turnFiles.size });
+    const extra = [ending !== "answered" && summary ? `What I did: ${summary}` : "", line].filter(Boolean).join("\n\n");
+    // The model's own reply was streamed already; Maxx's "Stopped: ..." never was.
+    const streamed = ending === "answered" || ending === "checkfail";
+    const last = this.history.at(-1);
+    let full: string;
+    if (last?.role === "assistant" && !last.tool_calls?.length && typeof last.content === "string" && !REPORT_LINE.test(last.content.trim().split("\n").pop() ?? "")) {
+      full = `${last.content.trim()}\n\n${extra}`;
+      last.content = full;
+    } else {
+      full = [answer.trim(), extra].filter(Boolean).join("\n\n");
+      this.history.push({ role: "assistant", content: full });
+    }
+    this.io.token(streamed ? `\n\n${extra}` : `${full}\n`);
+    return full;
+  }
+
+  // One request with no tools, on top of the conversation (so the server's cache has most of it), with almost no thinking.
+  private async verdict(prompt: string, signal?: AbortSignal): Promise<string> {
+    const llm = this.opts.llm.provider === "anthropic" ? this.opts.llm : { ...this.opts.llm, thinking: { tier: 0 as const, budget: 256, why: "the end-of-turn report" } };
+    const messages: Message[] = [...this.history, { role: "user", content: [{ type: "text", text: prompt }] }];
+    const promptTokens = estimateTokens(messages);
+    const res = await complete(llm, messages, [], () => {}, signal, (p) => this.io.progress?.({ ...p, promptTokens }));
+    return (res.content || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
   }
 
   // Quick syntax check of the changed files, then the project's build command.

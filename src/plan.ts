@@ -6,10 +6,11 @@ import type { Message } from "./llm.ts";
 // short checklist that it writes up front, sees again every time it ticks a
 // step, and that the UI pins above the chat keeps it on the task.
 
-export type Step = { text: string; done: boolean };
+// missed: the turn ended with this step not done (why: the model's reason). Cleared when work goes on.
+export type Step = { text: string; done: boolean; missed?: boolean; why?: string };
 
 export const PLAN_PROMPT =
-  "For a task with more than two steps, first call plan with 3 to 5 short steps (one per line). After finishing each step, call plan with done set to its number. Keep going until every step is done.";
+  "For a task with more than two steps, first call plan with 3 to 5 short steps (one per line). After finishing each step, call plan with done set to its number. Keep going until every step is done. Then reply with a short summary that says whether the task is done and works.";
 
 export function parseSteps(text: string): Step[] {
   return text
@@ -34,7 +35,7 @@ export function applyPlan(steps: Step[], args: { steps?: string; done?: number }
   }
   if (args.done !== undefined) {
     if (!next[args.done - 1]) return { steps: next, text: `error: there is no step ${args.done}; the plan has ${next.length} steps.\n${formatPlan(next)}` };
-    next = next.map((s, i) => (i === args.done! - 1 ? { ...s, done: true } : s));
+    next = next.map((s, i) => (i === args.done! - 1 ? { text: s.text, done: true } : s));
   }
   if (!next.length) return { steps: next, text: "error: give steps, one short step per line" };
   const left = next.findIndex((s) => !s.done);

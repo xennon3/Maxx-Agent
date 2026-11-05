@@ -190,6 +190,14 @@ main:has(#okdock.on) .composer textarea { height: 40px; }
 .plan .step.done span + span { text-decoration: line-through; }
 .plan .step.done .box { color: var(--ok); }
 .plan .step.next { font-weight: 600; }
+.plan .step.missed .box { color: var(--warn); }
+.plan .step .why { color: var(--mute); font-size: 12px; }
+.report { margin-top: 8px; padding: 5px 10px; border: 1px solid var(--line); border-left: 3px solid var(--ok); border-radius: var(--radius); background: var(--panel); font-size: 13px; font-weight: 600; }
+.report.no { border-left-color: var(--warn); }
+.errbar { display: none; margin: 10px 16px 0; padding: 6px 10px; border: 1px solid var(--bad); border-left: 3px solid var(--bad); border-radius: var(--radius); background: var(--panel); color: var(--bad); font-size: 13px; max-width: 860px; gap: 8px; align-items: flex-start; }
+.errbar.on { display: flex; }
+.errbar .txt { flex: 1; white-space: pre-wrap; word-break: break-word; max-height: 30vh; overflow: auto; font-family: var(--mono); font-size: 12px; }
+.errbar button { flex: none; font-size: 12px; padding: 2px 8px; }
 .plan .step.next .box { color: var(--accent); }
 .board { display: none; margin: 10px 16px 0; padding: 8px 12px; border: 1px solid var(--line); border-left: 3px solid var(--agent); border-radius: var(--radius); background: var(--panel); font-size: 13px; max-width: 860px; }
 .board.on { display: block; max-height: 34vh; overflow: auto; flex: 0 1 auto; min-height: 2.6em; }
@@ -486,6 +494,7 @@ ${SKIN_CSS}
   </div>
   <div class="board" id="board"></div>
   <div class="plan" id="plan"></div>
+  <div class="errbar" id="errbar" role="alert"><span class="txt" id="errText"></span><button id="errCopy" title="Copy the error">Copy</button><button id="errX" title="Dismiss">✕</button></div>
   ${LAB_VIEW}
   <div id="log"></div>
   <div id="okdock"></div>
@@ -630,6 +639,23 @@ function clearEmpty() { const e = document.querySelector("#log .empty"); if (e) 
 function add(el) { clearEmpty(); const log = $("log"); const stick = log.scrollHeight - log.scrollTop - log.clientHeight < 80; log.appendChild(el); if (stick) log.scrollTop = log.scrollHeight; return el; }
 function div(cls, text) { const d = document.createElement("div"); d.className = cls; if (text !== undefined) d.textContent = text; return d; }
 function note(text, cls = "note") { add(div("msg " + cls, text)); }
+// A reply whose last line is Maxx's report (✅ Done / ⚠ Not finished) shows that line as a status bar.
+function paintReply(el, text, chat) {
+  const lines = String(text || "").replace(/\\s+$/, "").split("\\n");
+  const last = lines[lines.length - 1] || "";
+  const isReport = /^(✅ Done|⚠ Not finished)/.test(last);
+  visuals.paint(el, isReport ? lines.slice(0, -1).join("\\n") : text, chat);
+  if (isReport) el.appendChild(div("report" + (last.startsWith("✅") ? "" : " no"), last));
+}
+// Errors stay on screen until dismissed: the transcript is redrawn when a turn ends, which used to wipe them.
+const errs = [];
+function showError(text) {
+  errs.push(new Date().toLocaleTimeString() + "  " + text);
+  $("errText").textContent = errs.slice(-5).join("\\n");
+  $("errbar").classList.add("on");
+}
+$("errX").onclick = () => { errs.length = 0; $("errbar").classList.remove("on"); };
+$("errCopy").onclick = () => { try { navigator.clipboard.writeText(errs.join("\\n")); } catch {} };
 // A reply that was not an answer, folded: the model's thinking, or one cut short. Maxx asked again.
 function retracted(why, text) {
   const d = document.createElement("details");
@@ -681,11 +707,12 @@ function drawPlan(steps) {
   steps = steps || [];
   box.classList.toggle("on", steps.length > 0);
   if (!steps.length) return box.innerHTML = "";
-  const done = steps.filter((x) => x.done).length, next = steps.findIndex((x) => !x.done);
-  const nextText = next >= 0 ? "▸ " + esc(steps[next].text) : "all done";
+  const done = steps.filter((x) => x.done).length, missed = steps.filter((x) => x.missed).length;
+  const next = missed ? -1 : steps.findIndex((x) => !x.done);
+  const nextText = missed ? "⚠ " + missed + " not done" : next >= 0 ? "▸ " + esc(steps[next].text) : "✓ all done";
   box.classList.toggle("min", fold.plan);
   box.innerHTML = '<div class="head" title="Click to fold or unfold the Plan"><b><span class="caret">▾</span>Plan</b><span class="now">' + nextText + "</span><span>" + done + " of " + steps.length + " done</span></div>" +
-    steps.map((x, i) => '<div class="step' + (x.done ? " done" : i === next ? " next" : "") + '"><span class="box">' + (x.done ? "✓" : i === next ? "▸" : "○") + "</span><span>" + esc(x.text) + "</span></div>").join("");
+    steps.map((x, i) => '<div class="step' + (x.done ? " done" : x.missed ? " missed" : i === next ? " next" : "") + '"><span class="box">' + (x.done ? "✓" : x.missed ? "✗" : i === next ? "▸" : "○") + "</span><span>" + esc(x.text) + (x.missed ? ' <span class="why">— not done' + (x.why ? ": " + esc(x.why) : "") + "</span>" : "") + "</span></div>").join("");
 }
 // Agent mode's task board: the goal, a progress bar, and each task's state.
 function drawBoard(b) {
@@ -825,7 +852,7 @@ function on(m) {
     case "token":
       if (!streaming) streaming = add(div("msg")), streaming.raw = "";
       streaming.raw += m.text;
-      visuals.paint(streaming, streaming.raw, chatMode());
+      paintReply(streaming, streaming.raw, chatMode());
       return;
     case "toolStart": {
       streaming = null;
@@ -899,7 +926,9 @@ function on(m) {
     case "done": streaming = null; return;
     case "templated": return templated(m);
     case "recipe": return note("📜 Saved recipe \u201c" + m.name + "\u201d (" + m.when + ") to " + m.path + ". Maxx will offer it for similar tasks; edit the file to tune it.", "learned");
-    case "error": return note(m.text, "msg err");
+    case "error":
+      if (m.text !== "(stopped)") showError(m.text);
+      return note(m.text, "msg err");
     case "deleted":
       return toast("Deleted “" + (m.title || "session") + "”", "Undo", () => send({ type: "undelete", cwd: m.cwd, session: m.session, reopen: m.wasOpen }));
   }
@@ -1242,7 +1271,7 @@ function render(s) {
       else if (h.role === "user") userMsg(h.text, h.files);
       else if (h.role === "note") note(h.text.split("\\n")[0]);
       else if (h.role === "assistant") {
-        if (h.text) visuals.paint(add(div("msg")), h.text, cur.chat);
+        if (h.text) paintReply(add(div("msg")), h.text, cur.chat);
         for (const t of h.tools || []) {
           const r = results[ri++] ?? "";
           if (t.name !== "ask_user") { toolCard(t.name, t.args, r); continue; }

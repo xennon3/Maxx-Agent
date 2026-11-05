@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { ServerWebSocket } from "bun";
@@ -9,6 +9,7 @@ import { pickVision } from "../vision.ts";
 import { recordTo } from "../devices/run.ts";
 import { textOf, typedText } from "../context.ts";
 import { fitContext } from "../modelctx.ts";
+import { maxxHome } from "../sessions.ts";
 import { deleteSession, listProjects, loadSession, newSessionId, restoreSession, saveSession, stripAttachments } from "../sessions.ts";
 import { buildTurn, imageLimits, type Upload } from "../attach.ts";
 import { PAGE } from "./page.ts";
@@ -683,6 +684,7 @@ export async function startUI(opts: UIOptions) {
           }
         } catch (e) {
           const err = e as Error;
+          if (err.name !== "AbortError") logError("turn", err);
           send({ type: "error", text: err.name === "AbortError" ? "(stopped)" : err.message });
         } finally {
           s.controller = null;
@@ -777,6 +779,7 @@ export async function startUI(opts: UIOptions) {
         try {
           await handle(JSON.parse(String(raw)));
         } catch (e) {
+          logError("message", e as Error);
           ws.send(JSON.stringify({ type: "error", text: (e as Error).message }));
         }
       },
@@ -857,4 +860,12 @@ export function progressMessage(p: StreamProgress): Out {
     tool: p.tool && { index: p.tool.index, name: p.tool.name },
     preview: (cut ? "…" : "") + a.preview.slice(-PREVIEW_TAIL),
   };
+}
+
+// Errors also go to ~/.maxx/errors.log, with the stack, so one that flashed past can be read later.
+export function logError(where: string, e: Error) {
+  try {
+    mkdirSync(maxxHome(), { recursive: true });
+    appendFileSync(join(maxxHome(), "errors.log"), `${new Date().toISOString()} [${where}] ${e.stack || e.message}\n\n`);
+  } catch {}
 }
