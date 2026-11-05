@@ -71,3 +71,27 @@ test("a stream piped into head is stopped by Stop, and by the timeout with a cle
   expect(out).toContain("does not stop it on Windows");
   expect(Date.now() - t0).toBeLessThan(10000);
 }, 15000);
+
+// Luther's second hang: `cd "weather-card" && python -m http.server 8765 >/dev/null 2>&1 &`.
+// The shell returns at once, but the server it left behind keeps the output pipes open.
+test("a server started with a trailing & does not hold the turn", async () => {
+  const t0 = Date.now();
+  const out = String(await bash.run({ command: "sleep 30 & echo started", background: true }, { cwd: process.cwd() }));
+  expect(out).toContain("started in the background");
+  expect(out).toContain("started");
+  expect(Date.now() - t0).toBeLessThan(5000);
+}, 15000);
+
+test("the http.server form is taken as a server and returns", async () => {
+  const t0 = Date.now();
+  const out = String(await bash.run({ command: 'mkdir -p "/tmp/wc test" && cd "/tmp/wc test" && python3 -m http.server 0 &' }, { cwd: process.cwd() }));
+  expect(out).toContain("background");
+  expect(Date.now() - t0).toBeLessThan(6000);
+}, 15000);
+
+test("Stop reaches a server while it starts", async () => {
+  const ctl = new AbortController();
+  const run = bash.run({ command: "sleep 30", background: true }, { cwd: process.cwd(), signal: ctl.signal });
+  setTimeout(() => ctl.abort(), 200);
+  await expect(run).rejects.toThrow("stopped");
+});

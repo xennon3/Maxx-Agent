@@ -107,9 +107,25 @@ export const bash = defineTool({
 
     if (background || LONG_RUNNING.test(cmd)) {
       const stdout = drain(proc.stdout), stderr = drain(proc.stderr);
-      const exited = await Promise.race([proc.exited.then(() => true), Bun.sleep(BACKGROUND_WAIT_MS).then(() => false)]);
-      if (exited) await Promise.all([stdout.done, stderr.done]);
+      const stopped = new Promise<"stopped">((r) => (ctx.signal?.aborted ? r("stopped") : ctx.signal?.addEventListener("abort", () => r("stopped"), { once: true })));
+      const first = await Promise.race([proc.exited.then(() => "exited" as const), Bun.sleep(BACKGROUND_WAIT_MS).then(() => "running" as const), stopped]);
+      if (first === "stopped") {
+        killTree(proc);
+        throw Object.assign(new Error("stopped"), { name: "AbortError" });
+      }
+      const exited = first === "exited";
+      // The shell is done, but a server it started with a trailing & can still hold the
+      // output pipes (on Windows every inheritable handle goes to the child, even with
+      // >/dev/null). Waiting for those pipes to close is what hung Maxx on
+      // `cd app && python -m http.server 8765 >/dev/null 2>&1 &`.
+      const drained = exited && (await Promise.race([Promise.all([stdout.done, stderr.done]).then(() => true), Bun.sleep(KILL_GRACE_MS).then(() => false)]));
       const out = stdout.text, err = stderr.text;
+      if (exited && !drained && proc.exitCode === 0) {
+        parts.push("started in the background and still running (the shell has returned); do not start it again");
+        if (out.trim()) parts.push(`stdout so far:\n${truncate(out)}`);
+        if (err.trim()) parts.push(`stderr so far:\n${truncate(err)}`);
+        return parts.join("\n");
+      }
       if (!exited) {
         running.add(proc);
         proc.exited.then(() => running.delete(proc));
