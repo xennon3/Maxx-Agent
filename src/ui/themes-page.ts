@@ -36,7 +36,7 @@ import F_OUTFIT from "./fonts/outfit-300-700.woff2" with { type: "file" };
 export type Skin = { id: string; name: string; say: string; glyph: string; dark: boolean | null };
 
 // The theme the window starts in until the user picks one.
-export const SKIN_DEFAULT = "classic";
+export const SKIN_DEFAULT = "abduction";
 
 export const SKINS: Skin[] = [
   { id: "classic", name: "Classic", say: "The original: warm paper and orange, follows Windows light/dark", glyph: "◆", dark: null },
