@@ -721,19 +721,73 @@ up anything version-, date- or price-sensitive it isn't sure of, then end with a
   and Cursor use, over stdio (a command) or Streamable HTTP (a URL). With no file, Maxx uses
   [Context7](https://context7.com) (current library docs, free, nothing to install).
 
+With network access off, web search and URL servers aren't offered and the model is told to say
+when its answer may be out of date.
+
+## MCP servers: any tool that speaks the Model Context Protocol
+
+Maxx is an MCP client. In the app, **🧰 Tools → 🔌 Manage MCP servers** lists every server with its
+status and tools, and adds new ones from a gallery of starters, from a URL or command, from a JSON
+block pasted out of a README, or by importing what you already set up in **Claude Desktop, Claude
+Code, LM Studio, Cursor, Windsurf or VS Code**. Each tool has a **Try** button that runs it by hand.
+
+| Starter | What the model gets | Needs |
+| --- | --- | --- |
+| 📚 context7, 🗺 deepwiki, 📖 gitmcp, 🪟 microsoft-learn, 🤗 huggingface | current docs, any GitHub repo explained, models and datasets | 🌐 network |
+| 🎭 playwright, 🩺 chrome-devtools | a real browser: click, type, console, network, performance traces | Node.js |
+| 🧠 memory, 🪜 sequential-thinking | a knowledge graph that lasts between sessions; step-by-step planning for small models | Node.js |
+| 📄 markitdown | PDF, Word, Excel, PowerPoint, audio → Markdown | uv |
+| 🧊 blender | build 3D scenes and game assets in Blender | uv + the blender-mcp add-on |
+| 🐙 github | search GitHub, read code, issues and PRs (uses Maxx's GitHub sign-in) | 🌐 network |
+| 🐳 docker | one door to every server in Docker Desktop's MCP Toolkit | Docker |
+| 🧪 everything | the reference server, to check MCP works | Node.js |
+
 ```sh
-maxx mcp                         # what is configured, and the free presets
-maxx mcp add deepwiki            # questions about any public GitHub repo
-maxx mcp add microsoft-learn     # Windows, PowerShell, .NET and Azure docs
+maxx mcp                         # servers, starters, and what your other apps have
+maxx mcp add playwright          # a starter
+maxx mcp add huggingface Authorization=hf_xxx   # a starter that takes a key
 maxx mcp add fetch -- uvx mcp-server-fetch      # any stdio server
-maxx doctor web                  # check search, page reading and every MCP server from here
+maxx mcp add docs https://example.com/mcp       # any URL
+maxx mcp import                  # copy servers from Claude Desktop, LM Studio, Cursor...
+maxx mcp test playwright         # connect now and list its tools
+maxx mcp approval playwright ask # smart | ask | auto
+maxx mcp off playwright          # keep it, but don't start it
 ```
 
-MCP calls ask first in ask mode unless the server has `"trust": true` (the presets do), outputs are
-cut at 4,000 characters, schema descriptions are trimmed, and at most 12 MCP tools are offered
-(pick them with `"tools": [...]` per server). A server that is down is skipped with a note and
-tried again two minutes later. With network access off, none of this is offered and the model is
-told to say when its answer may be out of date.
+- **Approval.** *Smart* (the default) lets tools the server marks read-only run without asking; the
+  rest follow ⚡ Permissions, and ones the server marks destructive (or named like `delete_…`,
+  `push_…`, `send_…`) still ask under ⚡ auto-run. *Ask* asks before every call, auto-run too.
+  *Auto* never asks (docs servers).
+- **Network.** Servers at a URL are offered while 🌐 network is on. Programs (npx, uvx, docker) run on
+  this computer either way, unless the server says `"network": true`.
+- **A project's own servers.** A repository can bring servers in `.mcp.json`, `.vscode/mcp.json` or
+  `.cursor/mcp.json`. They don't start until you approve them (in the dialog, or `maxx mcp approve
+  <name>`), and an edit to their config asks again.
+- **Small models.** The first 12 MCP tools are offered by name; the rest wait behind one
+  `mcp_more` tool (list, then call). Pick fewer per server with the Tools ▾ checkboxes.
+- Servers that ask for *roots* (filesystem, git) get the open project folder; pictures a tool
+  returns (Playwright screenshots) go to the vision model; outputs are cut at 4,000 characters;
+  `${VAR}` in a config comes from the environment. Keys are never sent back to the page.
+
+## Repositories: clone, branch, push, pull request
+
+**⤓ Clone** in the sidebar (or `maxx clone owner/name`) gets a GitHub repository, or any git URL,
+into `~/maxx-repos/<name>` and opens it as a project with the **🐙 repo** toolset on. Mentioning a
+GitHub link, “clone”, “fork” or “pull request” in a message switches the toolset on by itself.
+
+- `repo_clone` clones (or updates) a repository and sizes it up: the stack and its scripts, the
+  agent instructions it carries (MAXX.md, CLAUDE.md, AGENTS.md), the README's first paragraph,
+  and any MCP servers it brings.
+- `repo` shows where you are (ahead/behind, the open PR), makes a branch from the remote's main
+  branch, switches, pulls (fast-forward only), pushes, and forks on GitHub when you can't push.
+- `github` opens a pull request from the current branch (pushing it first), lists and reads PRs
+  with their changed files, CI checks and review comments, checks a PR out to test it, and reads,
+  opens and comments on issues.
+
+Pushes, pull requests, forks and comments ask first even under ⚡ auto-run; reading never asks;
+force-pushing is never offered. GitHub sign-in is a token you paste in the Clone dialog (or
+`maxx github login <token>`), `$GH_TOKEN`, or the GitHub CLI's (`gh auth login`). The token goes
+only to GitHub, as the API's header and a one-off git header, never into a remote URL or the chat.
 
 ## A simulated EVO-X2
 

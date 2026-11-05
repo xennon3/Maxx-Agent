@@ -15,7 +15,9 @@ import { recordTo } from "./devices/run.ts";
 import { replay } from "./replay.ts";
 import { startUI } from "./ui/server.ts";
 import { doctorVoice } from "./ui/voice.ts";
-import { doctorWeb, mcpCommand } from "./lookup-cli.ts";
+import { doctorWeb, githubCommand, mcpCommand } from "./lookup-cli.ts";
+import { mcpHub } from "./mcp.ts";
+import { repoClone } from "./tools/repo.ts";
 import { doctorMedia } from "./tools/media-doctor.ts";
 import { describe, SPINNER, statusLine, type StreamProgress } from "./progress.ts";
 import { launchedFromExplorer } from "./ui/launch.ts";
@@ -58,7 +60,9 @@ usage:
   maxx doctor desktop         check screenshots and UI Automation on Windows
   maxx doctor vision          check that the model (or --vision-model) can read an image
   maxx doctor web             check that web search, page reading and the MCP servers work from here
-  maxx mcp [add|rm] [name]    list, add or remove MCP servers (context7 library docs is on by default)
+  maxx mcp [add|rm|test|import|approve] [name]   MCP servers: list, add (starters: playwright, memory, blender, github...), test, import from Claude/Cursor/LM Studio
+  maxx clone <owner/name|url> [folder]  get a repository and start Maxx in it, with the 🐙 repo tools
+  maxx github [login <token>|logout]    GitHub sign-in for pushes and pull requests (or use the GitHub CLI's)
   maxx doctor voice           check the local Whisper used by the mic button in maxx ui
   maxx doctor media           check the browser, image model, voices and ffmpeg the design and media tools use
   maxx replay <file.jsonl>    re-run the phone/desktop actions of an earlier session
@@ -287,6 +291,7 @@ const voice = { whisper: values.whisper ?? process.env.MAXX_WHISPER, whisperMode
 
 if (positionals[0] === "doctor" && positionals[1] === "web") process.exit((await doctorWeb()) ? 0 : 1);
 if (positionals[0] === "doctor" && positionals[1] === "media") process.exit((await doctorMedia()) ? 0 : 1);
+if (positionals[0] === "github") process.exit(await githubCommand(positionals.slice(1)).catch((e) => (console.error(String((e as Error).message)), 1)));
 if (positionals[0] === "mcp") process.exit(await mcpCommand(positionals.slice(1)).catch((e) => (console.error(String((e as Error).message)), 1)));
 if (positionals[0] === "lab") process.exit(await labCommand(positionals.slice(1), await resolveNetwork(values.network).catch(() => false)));
 if (positionals[0] === "doctor" && positionals[1] === "voice") process.exit((await doctorVoice({ whisper: voice.whisper, model: voice.whisperModel })) ? 0 : 1);
@@ -316,6 +321,18 @@ if (positionals[0] === "replay") {
 }
 
 const mode: Mode = await resolveMode(values["auto-run"] ? "yolo" : values.mode).catch((e) => die((e as Error).message));
+// `maxx clone owner/name`: get it, then carry on as `maxx` inside it.
+if (positionals[0] === "clone") {
+  if (!positionals[1]) die("usage: maxx clone <owner/name | git URL> [folder]");
+  console.log(`${C.dim}cloning ${positionals[1]}...${C.reset}`);
+  const out = String(await repoClone.run({ url: positionals[1]!, folder: positionals[2] }, { cwd: process.cwd(), network: true }));
+  console.log(out);
+  const dir = out.match(/(?:into|cloned at) (.+?)(?:;|$)/m)?.[1];
+  if (out.startsWith("error") || !dir) process.exit(1);
+  process.chdir(dir);
+  values.with = [...new Set([...(values.with ?? "").split(",").filter(Boolean), "repo"])].join(",");
+  positionals.length = 0;
+}
 const cwd = process.cwd();
 const permissions = await new Permissions(cwd, mode).load();
 const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -749,8 +766,16 @@ async function command(line: string) {
     case "/tools": {
       const names = agent.toolNames;
       const off = Object.keys(TOOLSETS).filter((n) => !agent.toolsets.includes(n));
-      console.log(`tools (${names.length}): ${names.join(", ") || "none"}`);
-      if (!agent.network) console.log("  /network on adds web_search, web_fetch and your MCP servers (maxx mcp list)");
+      const mcp = await mcpHub.status({ network: agent.network, cwd });
+      const own = new Set(mcp.flatMap((m) => m.tools.map((t) => `${m.label}_${t.name}`.replace(/[^\w-]/g, "_").slice(0, 64))));
+      console.log(`tools (${names.length}): ${names.filter((n) => !own.has(n)).join(", ") || "none"}`);
+      for (const m of mcp) {
+        const on = m.tools.filter((t) => t.on);
+        const say = m.state === "ready" ? `${on.length} tools: ${on.map((t) => t.name + (t.danger ? "⚠" : "")).join(", ")}` : m.state === "offline" ? "needs /network on" : m.state === "unapproved" ? `waiting for your OK (maxx mcp approve ${m.name})` : m.state === "failed" ? `failed: ${m.error}` : m.state;
+        console.log(`  🔌 ${m.label}${m.source === "project" ? " (this project)" : ""}: ${say}`);
+      }
+      if (names.includes("mcp_more")) console.log("  mcp_more holds the MCP tools past the first 12; pick fewer per server in ~/.maxx/mcp.json (\"tools\") to list them directly");
+      if (!agent.network) console.log("  /network on adds web_search, web_fetch and the MCP servers at a URL (maxx mcp list)");
       if (off.length) console.log(`  /with ${off.join(",")} adds: ${off.map((n) => `${n} (${TOOLSETS[n]!.about})`).join("; ")}`);
       return;
     }

@@ -26,6 +26,8 @@ import { forgetRule, loadRules, resolveLearn, saveLearn, saveRules, tidyRules } 
 import { checkPalette, parsePalette, presetList, resolvePalette, savePalette, withBackdrop } from "../palette.ts";
 import { CLAUDE_MODELS, HELPER_DEFAULTS, loadHelper, resolveHelper, saveHelper, type Helper } from "../escalate.ts";
 import { htmlFiles } from "./preview.ts";
+import { connectHandler } from "./connect.ts";
+import { mcpHub } from "../mcp.ts";
 import * as A from "../devices/adb.ts";
 import { agentDefaults, agentSettings, cleanSettings, loadAgentSettings, runGoal, saveAgentSettings } from "../agentmode.ts";
 import { cleanCrew, CREW_DEFAULTS, crewSettings, loadCrewSettings, runCrew, saveCrewSettings } from "../crew.ts";
@@ -144,6 +146,7 @@ export async function startUI(opts: UIOptions) {
     retract: (why) => send({ type: "retract", why }),
     escalation: (e) => send({ type: "escalation", ...e }),
     learned: (l) => send({ type: "learned", ...l }),
+    workspace: (dir, name) => send({ type: "offerOpen", cwd: dir, name }),
     image: (tool, images) => send({ type: "image", tool, images: images.map((i) => `data:${i.mime};base64,${i.base64}`) }),
     ask: (question, preview, stillNeeded) =>
       new Promise<Answer>((res) => {
@@ -255,6 +258,8 @@ export async function startUI(opts: UIOptions) {
         canUndo: s.agent.canUndo,
       },
       learn,
+      // The 🔌 row in 🧰 Tools: each MCP server and how many tools it gives.
+      mcp: (await mcpHub.status({ network, cwd: s && !s.agent.chat ? s.cwd : undefined }).catch(() => [])).map((x) => ({ label: x.label, state: x.state, source: x.source, n: x.tools.filter((t) => t.on).length })),
       helper: await helperInfo(),
       network,
       brevity,
@@ -332,14 +337,28 @@ export async function startUI(opts: UIOptions) {
     if (!state.agent.chat) recordTo(resolve(state.cwd, ".maxx", "replays", `${state.agent.session}.jsonl`));
   }
 
+  const connect = connectHandler({
+    send,
+    agent: () => state?.agent,
+    cwd: () => (state && !state.agent.chat ? state.cwd : undefined),
+    network: () => network,
+    open: async (cwd, toolsets) => {
+      await open(cwd, { toolsets });
+      send(await snapshot());
+      send(await stage!.info());
+    },
+    refresh: async () => send(await snapshot()),
+  });
+
   async function handle(m: any) {
     if (await stage!.handle(m)) return;
+    if (await connect(m)) return;
     switch (m.type) {
       case "hello":
         send(await snapshot());
         return send(await stage!.info());
       case "open":
-        await open(m.cwd, { session: m.session, model: m.model });
+        await open(m.cwd, { session: m.session, model: m.model, toolsets: Array.isArray(m.toolsets) ? m.toolsets : undefined });
         send(await snapshot());
         return send(await stage!.info());
       case "chat":

@@ -1,6 +1,6 @@
 import { join, dirname } from "node:path";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import type { Tool } from "./tools/types.ts";
+import { riskOf, type Tool } from "./tools/types.ts";
 import { maxxHome } from "./sessions.ts";
 
 // ask: every edit and command waits for an OK. auto-edit: edits run, commands
@@ -31,9 +31,10 @@ export class Permissions {
   }
 
   needsPrompt(tool: Tool<any>, args: unknown): boolean {
-    if (tool.risk === "read") return false;
+    const risk = riskOf(tool, args);
+    if (risk === "read") return false;
     if (this.mode === "yolo") return !!this.risky(tool, args) && !this.allows(tool, args);
-    if (tool.risk === "write" && this.mode === "auto-edit") return false;
+    if (risk === "write" && this.mode === "auto-edit") return false;
     const key = tool.ruleKey?.(args as never) ?? "";
     return !this.rules.some((r) => matches(r, tool.name, key));
   }
@@ -46,7 +47,7 @@ export class Permissions {
 
   // Why auto-run still stops this call, or null when it may just run.
   risky(tool: Tool<any>, args: unknown): string | null {
-    if (tool.name !== "bash") return null;
+    if (tool.name !== "bash") return tool.danger?.(args as never) ?? null;
     return riskyCommand(tool.ruleKey?.(args as never) ?? "");
   }
 

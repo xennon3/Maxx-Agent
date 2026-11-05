@@ -6,6 +6,7 @@ import { THINKING_LABEL, THINKING_SAY } from "../thinking.ts";
 import { VOICE_CSS, VOICE_HINT, VOICE_HTML, VOICE_JS } from "./voice-page.ts";
 import { LAB_CSS, LAB_HTML, LAB_JS, LAB_NAV, LAB_VIEW } from "./lab-page.ts";
 import { ALIEN_CSS, ALIEN_HTML, ALIEN_JS } from "./aliens-page.ts";
+import { CONNECT_CSS, CONNECT_HTML, CONNECT_JS, CONNECT_TOOLS_HTML } from "./connect-page.ts";
 
 // The whole web UI in one string, so the compiled maxx.exe carries it.
 export const PAGE = /* html */ `<!doctype html>
@@ -331,6 +332,7 @@ ${LAB_CSS}
 ${VIS_CSS}
 ${SOUND_CSS}
 ${ALIEN_CSS}
+${CONNECT_CSS}
 /* Layout (batch 4): one calm header row, grouped menus, a centered reading column and one message box with its tools inside. */
 main { --col: max(16px, calc((100% - 860px) / 2)); container-type: inline-size; }
 header { flex-wrap: nowrap; gap: 6px; padding: 8px 16px; min-height: 52px; }
@@ -423,7 +425,7 @@ aside.adding #addProj { background: var(--bg); }
   <div class="chathead">Chat</div>
   <div class="chatnav" id="chatnav"><button class="go" id="chatBtn" title="Everyday questions, with charts and diagrams drawn right in the chat. No project, no tools.">💬 New chat</button></div>
   ${LAB_NAV}
-  <div class="chathead projhead">Projects<button id="addProj" title="Open a project folder">＋ Open</button></div>
+  <div class="chathead projhead">Projects<span style="display:flex;gap:4px"><button id="cloneBtn" title="Get a repository from GitHub or any git URL, and open it as a project">⤓ Clone</button><button id="addProj" title="Open a project folder">＋ Open</button></span></div>
   <div class="openarea" id="openArea">
     <div class="openbox">
       <input id="folder" placeholder="Project folder, e.g. C:\\code\\app" style="flex:1">
@@ -451,7 +453,7 @@ aside.adding #addProj { background: var(--bg); }
     <h4>Toolsets</h4>
     <p class="hint">Extra tools for this project. Each one adds a few tools to what Maxx can use; fewer tools keep a small model focused.</p>
     <div id="sets"></div>
-    <div class="foot"><span id="toolCount"></span><button id="toolsList">List them</button></div>
+    <div class="foot"><span id="toolCount"></span><button id="toolsList">List them</button></div>${CONNECT_TOOLS_HTML}
   </div>
   <div class="pop" id="tunePop" popover>
     <div class="prow projonly"><div class="pl"><b>⚡ Permissions</b><span>What Maxx may do without asking</span></div>
@@ -578,6 +580,7 @@ ${STAGE_HTML}
 </form></dialog>
 ${LAB_HTML}
 ${ALIEN_HTML}
+${CONNECT_HTML}
 <div id="zoom"><img id="zoomImg" alt=""></div>
 <div id="drop">Drop files to attach them to your message</div>
 <div id="toast"><span id="toastText"></span><button id="toastBtn">Undo</button></div>
@@ -637,6 +640,7 @@ function retracted(why, text) {
 const VERBS = { read_file: "Read", write_file: "Write", edit_file: "Edit", list_files: "List", grep: "Search", bash: "Run",
   android_run: "Build & run on phone", android_screen: "Look at phone", android_tap: "Tap", android_type: "Type", android_swipe: "Swipe",
   android_key: "Press", android_logcat: "Read phone log", android_explore: "Explore the app", android_devices: "List devices", android_connect: "Connect phone",
+  repo_clone: "Clone", repo: "Repo", github: "GitHub", mcp_more: "MCP",
   desktop_screenshot: "Look at desktop", desktop_click: "Click", desktop_type: "Type", desktop_key: "Press", desktop_scroll: "Scroll", desktop_open: "Open",
   web_search: "Search the web", web_fetch: "Read page",
   preview: "Preview", start_server: "Start", use_template: "Start from template", make_sounds: "Make sounds", plan: "Plan", remember: "Remember", check: "Check" };
@@ -807,6 +811,7 @@ function abandonWriting() {
 function on(m) {
   stage.on(m);
   voice.on(m);
+  connectUI.on(m);
   soundLab.on(m);
   switch (m.type) {
     case "state": return render(m);
@@ -1132,6 +1137,7 @@ ${VOICE_JS}
 ${VIS_JS}
 ${SOUND_JS}
 ${ALIEN_JS}
+${CONNECT_JS}
 
 function render(s) {
   state = s;
@@ -1182,6 +1188,7 @@ function render(s) {
   $("toolCount").title = tl.join(", ");
   $("toolsBtn").innerHTML = '🧰<span class="lbl"> Tools</span>' + (onSets.length ? ' <span class="n">' + onSets.length + "</span>" : "");
   $("toolsBtn").title = "Toolsets: extra tools Maxx can use in this project. " + tl.length + " tools ready now" + (onSets.length ? " (" + onSets.join(", ") + ")" : "");
+  connectUI.render(s);
   drawPlan(cur && cur.plan);
   drawBoard(cur && cur.board);
   if (cur && cur.lab) { lastStudy = cur.lab; drawLab(lastStudy); drawPane(); }
@@ -1465,7 +1472,7 @@ $("agentForm").onsubmit = (e) => {
 };
 ${LAB_JS}
 // The two header menus are native popovers: a click outside or Esc closes them. They open under their button.
-const TOOLSET_NAME = { android: ["📱", "Android"], desktop: ["🖥", "Desktop"], browser: ["🧭", "Browser"], engineer: ["🛠", "Engineer"], studio: ["🎨", "Studio"], media: ["🎬", "Media"], director: ["✨", "Director"] };
+const TOOLSET_NAME = { android: ["📱", "Android"], desktop: ["🖥", "Desktop"], browser: ["🧭", "Browser"], engineer: ["🛠", "Engineer"], studio: ["🎨", "Studio"], media: ["🎬", "Media"], director: ["✨", "Director"], repo: ["🐙", "Repo"] };
 function segment(id, keys, cur, label, pick) {
   const box = $(id); box.innerHTML = "";
   for (const k of keys) { const b = document.createElement("button"); b.textContent = label(k); b.className = k === cur ? "on" : ""; b.onclick = () => pick(k); box.appendChild(b); }

@@ -21,6 +21,8 @@ export type ToolContext = {
   see?(images: Image[], question: string): Promise<string | null>;
   // A question card for the user. Null when nobody answered.
   ask?(q: { question: string; choices: string[]; guess?: string }): Promise<string | null>;
+  // Offer to open a folder as the project (after repo_clone). Unset outside the app.
+  offerWorkspace?(dir: string, name: string): void;
   // Show pictures in the chat now, before the tool returns.
   show?(images: Image[]): void;
   // Images the user attached to their latest message.
@@ -46,10 +48,17 @@ export type Tool<S extends z.ZodObject = z.ZodObject> = {
   preview?: (args: z.infer<S>, ctx: ToolContext) => Promise<string> | string;
   // A short key used for "always allow" rules, e.g. the command for bash.
   ruleKey?: (args: z.infer<S>) => string;
+  // When the risk depends on the call (github: reading a PR is free, opening one is not).
+  riskOf?: (args: z.infer<S>) => Risk;
+  // The safety net for tools other than bash: why ⚡ auto-run should still ask
+  // for this call ("publishes commits to a remote"), or null.
+  danger?: (args: z.infer<S>) => string | null;
   // A reason the call must not run at all (checked before the user is asked).
   refuse?: (args: z.infer<S>, ctx: ToolContext) => string | undefined;
   run: (args: z.infer<S>, ctx: ToolContext) => Promise<ToolResult>;
 };
+
+export const riskOf = (tool: Tool<any>, args: unknown): Risk => tool.riskOf?.(args as never) ?? tool.risk;
 
 export function defineTool<S extends z.ZodObject>(t: Tool<S>): Tool<S> {
   return t;

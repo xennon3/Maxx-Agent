@@ -1,5 +1,6 @@
 import { complete, toWire, type ContentPart, type LLMConfig, type Message, type ToolCall } from "./llm.ts";
-import { TOOLS, toolSpecs, findTool, withToolsets } from "./tools/index.ts";
+import { TOOLS, TOOLSETS, toolSpecs, findTool, withToolsets } from "./tools/index.ts";
+import { wantsRepo } from "./tools/repo.ts";
 import type { Tool } from "./tools/types.ts";
 import { Permissions, isNo, whyNo, type Answer } from "./permissions.ts";
 import { Checkpoints } from "./checkpoint.ts";
@@ -31,7 +32,7 @@ import { findBrowser, isUiFile, judgeLLM, pickSurface, webPage, type SurfaceOpti
 import { crimeList, findCrimes } from "./crimes.ts";
 import { saveFrame } from "./timelapse.ts";
 import { loadTaste, tasteSummary } from "./tools/director.ts";
-import type { ToolContext } from "./tools/types.ts";
+import { riskOf, type ToolContext } from "./tools/types.ts";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -65,6 +66,8 @@ export type AgentIO = {
   learned?(l: Learned): void;
   // The text just streamed was not an answer (the model's thinking, or cut off); Maxx asks again.
   retract?(why: Unfinished): void;
+  // A repository was cloned: offer to open it as the project (the app shows a button).
+  workspace?(dir: string, name: string): void;
 };
 
 export type Learned = { rule: Rule; isNew: boolean; replaced?: string; kind: Correction["kind"]; text: string };
@@ -113,9 +116,11 @@ export type AgentOptions = {
 
 export type Online = { tools: Tool<any>[]; notes: string[]; servers: string[] };
 
-async function defaultOnline(): Promise<Online> {
-  const m = await mcpHub.tools();
-  return { tools: [...WEB_TOOLS, ...m.tools], notes: m.notes, servers: [...new Set(m.tools.map((t) => t.description.match(/^\((.+?)\)/)?.[1]).filter((s): s is string => !!s))] };
+// Network on: web search, web fetch and every MCP server. Off: only the MCP
+// servers that run on this machine and don't need the internet.
+async function defaultOnline(network: boolean, cwd: string): Promise<Online> {
+  const m = await mcpHub.tools({ network, cwd });
+  return { tools: [...(network ? WEB_TOOLS : []), ...m.tools], notes: m.notes, servers: m.servers };
 }
 
 const MAX_BAD_CALLS = 3;
@@ -158,6 +163,8 @@ export class Agent {
   }
   private setTools: Tool<any>[] = [];
   private online: Online = { tools: [], notes: [], servers: [] };
+  // The MCP hub's version when the tools were last picked up (a server added or reconnected bumps it).
+  private mcpSeen = -1;
   private prompts: string[] = [];
   toolsets: string[] = [];
   plan: Step[] = [];
@@ -382,7 +389,8 @@ export class Agent {
   // Network on: web search, web fetch and the MCP servers' tools join in. Off: gone again.
   private async goOnline() {
     const before = this.online.notes;
-    this.online = this.network ? await (this.opts.online ?? defaultOnline)() : { tools: [], notes: [], servers: [] };
+    this.mcpSeen = mcpHub.version;
+    this.online = this.opts.online ? (this.network ? await this.opts.online() : { tools: [], notes: [], servers: [] }) : this.opts.chat && !this.network ? { tools: [], notes: [], servers: [] } : await defaultOnline(this.network, this.opts.cwd);
     for (const n of this.online.notes) if (!before.includes(n)) this.io.note(`(${n})`);
     this.tools = [...this.baseTools(), ...this.setTools];
   }
@@ -390,6 +398,7 @@ export class Agent {
   // What the system prompt says about looking things up.
   private lookupNote(): string {
     if (!this.online.tools.length) return "";
+    if (!this.network) return this.online.servers.length ? `You also have tools from these MCP servers: ${this.online.servers.join(", ")}. Use them when they fit the task.` : "";
     return lookupPrompt(new Date(), this.online.servers.map((s) => `the ${s} tools`));
   }
 
@@ -447,6 +456,7 @@ export class Agent {
     // Agent mode's task prompts are reports from Maxx, not the user's words; the goal stays the ask.
     if (learning || !this.turnAsk) this.turnAsk = (typeof userText === "string" ? userText : userText.map((p) => (p.type === "text" ? p.text : "")).join("\n")).trim();
     this.turnFrom = this.checkpoints.count;
+    await this.beforeTurn(typeof userText === "string" ? userText : userText.map((p) => (p.type === "text" ? p.text : "")).join("\n")).catch(() => {});
     let answer = "";
     try {
       return (answer = await this.turn(userText, signal, o));
@@ -454,6 +464,31 @@ export class Agent {
       dropThinking(this.history);
       await this.endTurn(answer, learning, signal).catch(() => {});
     }
+  }
+
+  // A server added in the app, or one that finished starting, joins now; and a
+  // message about a repository brings the repo tools along.
+  private async beforeTurn(ask: string) {
+    let prompt = mcpHub.version !== this.mcpSeen && (await this.pickUpTools());
+    if (!this.opts.chat && TOOLSETS.repo && !this.toolsets.includes("repo") && wantsRepo(ask)) {
+      this.useToolsets([...this.toolsets, "repo"]);
+      this.io.note("(added the 🐙 repo tools for this: clone, branch, push, pull requests)");
+      prompt = true;
+    }
+    if (prompt) await this.refreshSystemPrompt();
+  }
+
+  // Take in MCP servers that were added, changed or finished starting. True when the tools changed.
+  private async pickUpTools(): Promise<boolean> {
+    if (this.opts.online) return false;
+    const before = this.toolNames.join();
+    await this.goOnline();
+    return this.toolNames.join() !== before;
+  }
+
+  // The app's MCP dialog changed something: show it in /tools and the prompt now, not on the next message.
+  async refreshTools() {
+    if (await this.pickUpTools()) await this.refreshSystemPrompt();
   }
 
   private async turn(userText: string | ContentPart[], signal: AbortSignal | undefined, o: { maxSteps?: number }): Promise<string> {
@@ -667,9 +702,10 @@ export class Agent {
     const tool = findTool(name, this.tools);
     const denied = result.startsWith("user denied this tool call");
     const bad = failed(result) || denied;
-    if (tool && tool.risk !== "read") this.turnDid.push(`${denied ? "(denied) " : ""}${name} ${tool.ruleKey?.(args as never) ?? ""}`.trim().slice(0, 160));
+    const risk = tool && riskOf(tool, args);
+    if (tool && risk !== "read") this.turnDid.push(`${denied ? "(denied) " : ""}${name} ${tool.ruleKey?.(args as never) ?? ""}`.trim().slice(0, 160));
     if (tool?.risk === "write" && typeof args.path === "string" && !bad) changed.add(args.path), this.turnFiles.add(args.path), this.captureFrame(args.path);
-    if (tool && tool.risk !== "read" && !bad) this.done = noteDone(this.done, this.turnNo, `${name} ${tool.ruleKey?.(args as never) ?? ""}`);
+    if (tool && risk !== "read" && !bad) this.done = noteDone(this.done, this.turnNo, `${name} ${tool.ruleKey?.(args as never) ?? ""}`);
     if (tool?.risk === "write") this.cleanRuns = [];
     if (name !== "bash") return lastFail;
     const command = String(args.command ?? "");
@@ -840,6 +876,7 @@ export class Agent {
       ask: this.io.question ? async (q) => (await this.ask(q, signal)).answer : undefined,
       show: (images) => this.io.image?.("maxx", images),
       attached: () => this.attachedNow,
+      offerWorkspace: this.io.workspace ? (dir, name) => this.io.workspace!(dir, name) : undefined,
     };
   }
 

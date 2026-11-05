@@ -1,29 +1,51 @@
 // `maxx mcp ...` to manage MCP servers, and `maxx doctor web` to check that
 // looking things up works from this machine.
 
-import { loadMcpConfig, mcpFile, McpClient, PRESETS, presetConfig, saveMcpConfig, type ServerConfig } from "./mcp.ts";
+import { approveProjectServer, loadMcpConfig, mcpFile, McpClient, mcpHub, PRESETS, presetConfig, saveMcpConfig, type ServerConfig } from "./mcp.ts";
+import { approvalOf, cleanName, findInOtherApps, INSTALL, missing, projectServers } from "./mcp-presets.ts";
+import { githubAuth, githubFile, loadGitHub, NO_AUTH, reposRoot, saveGitHub, whoami } from "./github.ts";
 import { readPage, search } from "./web.ts";
 
-export async function mcpCommand(args: string[], log = console.log): Promise<number> {
+export async function mcpCommand(args: string[], log = console.log, cwd = process.cwd()): Promise<number> {
   const [sub, name, ...rest] = args;
   const { servers, saved } = await loadMcpConfig();
   if (!sub || sub === "list" || sub === "ls") {
     const names = Object.keys(servers);
     log(names.length ? `MCP servers (${saved ? mcpFile() : "defaults; no " + mcpFile() + " yet"}):` : `No MCP servers in ${mcpFile()}.`);
-    for (const n of names) log(`  ${n.padEnd(16)} ${describe(servers[n]!)}`);
-    log(`\nFree ones you can add with \`maxx mcp add <name>\` (no key, nothing to install):`);
-    for (const [n, p] of Object.entries(PRESETS)) log(`  ${n.padEnd(16)} ${p.about}${servers[n] ? "  (added)" : ""}`);
+    for (const n of names) log(`  ${n.padEnd(18)} ${describe(servers[n]!)}`);
+    const project = projectServers(cwd);
+    if (project.length) {
+      const status = await mcpHub.status({ cwd });
+      log(`\nThis project brings (${project[0]!.file}):`);
+      for (const p of project) {
+        const st = status.find((x) => x.source === "project" && x.name === p.name)?.state;
+        log(`  ${p.name.padEnd(18)} ${describe(p.cfg)} · ${st === "unapproved" ? "waiting for your OK: maxx mcp approve " + p.name : st === "denied" ? "you said no" : "approved"}`);
+      }
+    }
+    log(`\nStarters you can add with \`maxx mcp add <name>\`:`);
+    for (const [n, p] of Object.entries(PRESETS)) {
+      const miss = missing(p);
+      log(`  ${p.icon} ${n.padEnd(18)} ${p.about}${servers[n] ? "  (added)" : ""}${p.needs?.some((x) => !x.optional) ? "  (needs a key)" : ""}${miss.length ? `  (needs ${miss.join(", ")})` : ""}`);
+    }
+    const found = findInOtherApps().filter((f) => !servers[f.name]);
+    if (found.length) log(`\nIn your other apps (\`maxx mcp import\` copies them): ${found.map((f) => `${f.name} (${f.app})`).join(", ")}`);
     log(`\nOr any other server:  maxx mcp add <name> <url>   or   maxx mcp add <name> -- <command> [args...]`);
-    log(`MCP tools are offered only while network access is on (🌐 in the app, /network on in the terminal).`);
+    log(`Also: maxx mcp test <name> · on|off <name> · approval <name> smart|ask|auto · approve|deny <name> (a project's server) · import`);
+    log(`Servers at a URL are offered while network access is on (🌐 in the app, /network on); programs run either way.`);
     return 0;
   }
   if (sub === "add") {
-    if (!name) return log("usage: maxx mcp add <preset> | <name> <url> | <name> -- <command> [args...]"), 1;
+    if (!name) return log("usage: maxx mcp add <preset> [KEY=value...] | <name> <url> | <name> -- <command> [args...]"), 1;
     const cmd = rest[0] === "--" ? rest.slice(1) : rest;
-    const cfg: ServerConfig | undefined = !cmd.length ? presetConfig(name) : /^https?:\/\//.test(cmd[0]!) ? { url: cmd[0] } : { command: cmd[0], args: cmd.slice(1) };
+    const keys = Object.fromEntries(cmd.filter((x) => /^[\w-]+=/.test(x)).map((x) => [x.slice(0, x.indexOf("=")), x.slice(x.indexOf("=") + 1)]));
+    const isPreset = PRESETS[name] && (!cmd.length || Object.keys(keys).length === cmd.length);
+    const cfg: ServerConfig | undefined = isPreset ? presetConfig(name, keys) : !cmd.length ? undefined : /^https?:\/\//.test(cmd[0]!) ? { url: cmd[0] } : { command: cmd[0], args: cmd.slice(1) };
     if (!cfg) return log(`${name} is not a preset (${Object.keys(PRESETS).join(", ")}); give its URL or command too`), 1;
-    await saveMcpConfig({ ...servers, [name]: cfg });
-    log(`added ${name}: ${describe(cfg)}\nCheck it with \`maxx doctor web\`. Mark read-only servers "trust": true in ${mcpFile()} to skip the approval prompt.`);
+    const miss = PRESETS[name] && isPreset ? missing(PRESETS[name]) : [];
+    await saveMcpConfig({ ...servers, [cleanName(name)]: cfg });
+    log(`added ${cleanName(name)}: ${describe(cfg)}`);
+    for (const m of miss) log(`  it needs ${INSTALL[m]}`);
+    log(`Check it with \`maxx mcp test ${cleanName(name)}\`.`);
     return 0;
   }
   if (sub === "rm" || sub === "remove") {
@@ -33,11 +55,78 @@ export async function mcpCommand(args: string[], log = console.log): Promise<num
     log(`removed ${name}`);
     return 0;
   }
-  log("usage: maxx mcp [list] | add <name> [url | -- command args...] | rm <name>");
+  if (sub === "on" || sub === "off" || sub === "approval") {
+    if (!name || !servers[name]) return log(`no MCP server named ${name ?? "(none)"}`), 1;
+    const c = { ...servers[name]! };
+    if (sub === "approval") {
+      if (!["smart", "ask", "auto"].includes(rest[0] ?? "")) return log("usage: maxx mcp approval <name> smart|ask|auto"), 1;
+      c.approval = rest[0] as ServerConfig["approval"];
+      delete c.trust;
+    } else if (sub === "on") delete c.disabled;
+    else c.disabled = true;
+    await saveMcpConfig({ ...servers, [name]: c });
+    log(`${name}: ${describe(c)}`);
+    return 0;
+  }
+  if (sub === "approve" || sub === "deny") {
+    if (!name) return log(`usage: maxx mcp ${sub} <name>`), 1;
+    await approveProjectServer(cwd, name, sub === "approve");
+    log(sub === "approve" ? `approved ${name} for ${cwd}; it starts with the next message (again after any change to its config)` : `${name} stays off in ${cwd}`);
+    return 0;
+  }
+  if (sub === "import") {
+    const found = findInOtherApps().filter((f) => !servers[f.name]);
+    if (!found.length) return log("Nothing new to import from Claude Desktop, Claude Code, LM Studio, Cursor, Windsurf or VS Code."), 0;
+    const add = Object.fromEntries(found.filter((f) => !name || f.name === name).map((f) => [f.name, { ...f.cfg, about: `from ${f.app}` }]));
+    await saveMcpConfig({ ...servers, ...add });
+    for (const f of found) if (add[f.name]) log(`  imported ${f.name} from ${f.app}: ${describe(f.cfg)}`);
+    return 0;
+  }
+  if (sub === "test") {
+    if (!name) return log("usage: maxx mcp test <name>"), 1;
+    try {
+      const c = await mcpHub.client(name, cwd);
+      const st = (await mcpHub.status({ cwd })).find((x) => x.label === name || x.name === name);
+      log(`ok  ${name}${c.server?.name ? ` (${c.server.name})` : ""}: ${st?.tools.length ?? 0} tools`);
+      for (const t of st?.tools ?? []) log(`  ${t.on ? "•" : " "} ${t.name.padEnd(28)} ${t.readOnly ? "read-only " : ""}${t.danger ? "⚠ " : ""}${t.description.slice(0, 90)}`);
+      return 0;
+    } catch (e) {
+      log(`FAIL  ${name}: ${(e as Error).message}`);
+      return 1;
+    } finally {
+      mcpHub.reset();
+    }
+  }
+  log("usage: maxx mcp [list] | add <name> [url | -- command args...] | rm <name> | test <name> | on|off <name> | approval <name> smart|ask|auto | approve|deny <name> | import");
   return 1;
 }
 
-const describe = (c: ServerConfig) => `${c.url ?? [c.command, ...(c.args ?? [])].join(" ")}${c.trust ? " · trusted" : ""}${c.disabled ? " · disabled" : ""}`;
+// `maxx github login <token> | logout | status`
+export async function githubCommand(args: string[], log = console.log): Promise<number> {
+  const [sub, value] = args;
+  if (sub === "login") {
+    if (!value) return log("usage: maxx github login <token>   (make one at github.com/settings/tokens)"), 1;
+    const who = await whoami({ token: value, source: "maxx" }).catch((e) => (log(`that token did not work: ${(e as Error).message}`), null));
+    if (!who) return 1;
+    await saveGitHub({ ...(await loadGitHub()), token: value, user: who.login });
+    log(`signed in to GitHub as ${who.login}. The token is in ${githubFile()} and only goes to GitHub.`);
+    return 0;
+  }
+  if (sub === "logout") {
+    const { token: _, user: __, ...rest } = await loadGitHub();
+    await saveGitHub(rest);
+    log("forgot the saved GitHub token");
+    return 0;
+  }
+  const auth = await githubAuth();
+  if (!auth) return log(NO_AUTH), 1;
+  const who = await whoami(auth).catch((e) => (log(`GitHub sign-in (${auth.source}) did not work: ${(e as Error).message}`), null));
+  if (!who) return 1;
+  log(`GitHub: ${who.login}${who.name ? ` (${who.name})` : ""}, from ${auth.source === "gh" ? "the GitHub CLI" : auth.source === "env" ? "$GH_TOKEN / $GITHUB_TOKEN" : githubFile()}. Repositories clone into ${reposRoot(await loadGitHub())}.`);
+  return 0;
+}
+
+const describe = (c: ServerConfig) => `${c.url ?? [c.command, ...(c.args ?? [])].join(" ")} · ${approvalOf(c) === "auto" ? "never asks" : approvalOf(c) === "ask" ? "asks every call" : "smart approval"}${c.disabled ? " · off" : ""}${c.tools ? ` · ${c.tools.length} tools picked` : ""}`;
 
 export async function doctorWeb(log = console.log): Promise<boolean> {
   let ok = true;
