@@ -405,8 +405,8 @@ const io: AgentIO = {
   note: (text) => status.say(`${C.yellow}${text}${C.reset}`),
   plan: (steps) => {
     if (!steps.length) return;
-    const next = steps.findIndex((s) => !s.done);
-    status.say(steps.map((s, i) => (s.done ? `${C.dim}  ✓ ${s.text}${C.reset}` : i === next ? `${C.bold}  ▸ ${s.text}${C.reset}` : `  ○ ${s.text}`)).join("\n"));
+    const next = steps.some((s) => s.missed) ? -1 : steps.findIndex((s) => !s.done);
+    status.say(steps.map((s, i) => (s.done ? `${C.dim}  ✓ ${s.text}${C.reset}` : s.missed ? `${C.yellow}  ✗ ${s.text}${s.why ? ` (not done: ${s.why})` : " (not done)"}${C.reset}` : i === next ? `${C.bold}  ▸ ${s.text}${C.reset}` : `  ○ ${s.text}`)).join("\n"));
   },
   async ask(question, preview) {
     status.stop();

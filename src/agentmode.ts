@@ -247,12 +247,12 @@ export async function workTask(agent: Agent, board: Board, events: GoalEvents, o
     const turnsBefore = agent.turns;
     // The map costs context, so it goes with the first task and with retries only.
     const fresh = s.mapTokens > 0 && (board.current === 0 || retry) ? await projectMap(agent.cwd, s.mapTokens).catch(() => "") : "";
-    let answer = await agent.send(asReport(taskPrompt(board, fresh, retry)), o.signal, { maxSteps: s.stepsPerTask, learn: false });
+    let answer = await agent.send(asReport(taskPrompt(board, fresh, retry)), o.signal, { maxSteps: s.stepsPerTask, learn: false, report: false });
     // Out of steps is not a failed try: the work is often done, or nearly. Rewinding it
     // here is what made Maxx build the whole app a second time. Keep it and let the model finish.
     if (outOfSteps(answer)) {
       agent.note(`(Agent mode: task ${board.current + 1} used its ${s.stepsPerTask} steps; the work is kept and the model gets a few more to finish)`);
-      answer = await agent.send(asReport(finishUpPrompt(board.current + 1, s.stepsPerTask)), o.signal, { maxSteps: Math.max(3, Math.ceil(s.stepsPerTask / 3)), learn: false });
+      answer = await agent.send(asReport(finishUpPrompt(board.current + 1, s.stepsPerTask)), o.signal, { maxSteps: Math.max(3, Math.ceil(s.stepsPerTask / 3)), learn: false, report: false });
       // Its last check ran in the try that ran out, if at all; check what the task changed now.
       if (!outOfSteps(answer) && !agent.lastCheck && before) await agent.verify(await agent.checkpoints.changed(before), o.signal);
     }
@@ -263,7 +263,7 @@ export async function workTask(agent: Agent, board: Board, events: GoalEvents, o
       for (let fix = 0; j && !j.pass && fix < s.judgeFixes && r.ok; fix++) {
         task.status = "doing";
         emit();
-        answer = await agent.send(asReport(`Maxx checked a screenshot of the result. The vision model says: FAIL: ${j.why}\nFix this, then reply with one line starting with DONE.`), o.signal, { maxSteps: s.stepsPerTask, learn: false });
+        answer = await agent.send(asReport(`Maxx checked a screenshot of the result. The vision model says: FAIL: ${j.why}\nFix this, then reply with one line starting with DONE.`), o.signal, { maxSteps: s.stepsPerTask, learn: false, report: false });
         r = outcome(answer, agent.lastCheck);
         if (!r.ok) break;
         const again = await judgeTask(agent, board, task, before, events, o, emit);

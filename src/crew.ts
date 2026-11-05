@@ -501,7 +501,7 @@ export async function runCrew(agent: Agent, goal: string, events: CrewEvents, o:
         if (!pull.ok) {
           const files = (await git(tree, ["diff", "--name-only", "--diff-filter=U"], hooks)).out.split("\n").filter(Boolean);
           const rel = files.map((f) => (prefix ? relative(prefix, f) : f));
-          const answer = await a.send([{ type: "text", text: resolvePrompt(t, rel) }], signal, { maxSteps: s.stepsPerTask });
+          const answer = await a.send([{ type: "text", text: resolvePrompt(t, rel) }], signal, { maxSteps: s.stepsPerTask, report: false });
           const left = [];
           for (const f of files) if (hasMarkers(await readFile(join(tree, f), "utf8").catch(() => ""))) left.push(f);
           const r2 = outcome(answer, a.lastCheck);
@@ -567,7 +567,7 @@ export async function runCrew(agent: Agent, goal: string, events: CrewEvents, o:
     emit();
     agent.note(`(👥 ${w.name} is checking that the pieces fit together)`);
     const a = await hire(w, prefix ? join(mainWt, prefix) : mainWt).init();
-    const answer = await a.send([{ type: "text", text: finalPrompt(board) }], signal, { maxSteps: s.stepsPerTask });
+    const answer = await a.send([{ type: "text", text: finalPrompt(board) }], signal, { maxSteps: s.stepsPerTask, report: false });
     const r = outcome(answer, a.lastCheck);
     board.log.push(r.ok ? `final check ${w.name}: ${answer.trim().replace(/^\W*DONE\b[\s:.,-]*/i, "").split("\n")[0]!.slice(0, 160) || "the pieces fit"}` : `final check ${w.name}: ${r.why}`);
     if ((await git(mainWt, ["status", "--porcelain"], hooks)).out) {
