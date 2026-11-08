@@ -6,6 +6,7 @@
 
 import { VIS_PANE, VIS_RAIL } from "./visuals-page.ts";
 import { SOUND_PANE, SOUND_RAIL } from "./sound-page.ts";
+import { MUSIC_PANE, MUSIC_RAIL } from "./music-page.ts";
 
 export const STAGE_CSS = `
 #stage { display: flex; border-left: 1px solid var(--line); background: var(--panel); min-height: 0; }
@@ -129,7 +130,7 @@ export const STAGE_HTML = `
       </div>
       <div class="phwrap"><img id="shot" alt="Latest screenshot" draggable="false"><canvas id="phCanvas" class="hide"></canvas><div class="blank" id="scBlank">Screenshots from the phone or desktop show here while Maxx tests.<br><br>Turn on <b>Live phone</b> to mirror a connected Android phone and tap it yourself. When Maxx taps, you see its finger in purple.</div></div>
       <div class="sbar phkeys" id="phKeys" style="display:none"><button data-key="back" title="Back">◀</button><button data-key="home" title="Home">●</button><button data-key="recents" title="Recent apps">■</button></div>
-    </div>${VIS_PANE}${SOUND_PANE}
+    </div>${VIS_PANE}${SOUND_PANE}${MUSIC_PANE}
   </div>
   <nav id="rail">
     <button data-tab="preview" title="Preview">◧<span class="dot" id="dotPreview"></span></button>
@@ -137,6 +138,7 @@ export const STAGE_HTML = `
     <button data-tab="screen" title="Phone / desktop screen">📱<span class="dot" id="dotScreen"></span></button>
     ${VIS_RAIL}
     ${SOUND_RAIL}
+    ${MUSIC_RAIL}
   </nav>
 </section>
 `;
@@ -163,6 +165,7 @@ const stage = (() => {
     $("dot" + tab[0].toUpperCase() + tab.slice(1)).classList.remove("on");
     save("tab", tab);
     if (tab === "sound") setTimeout(() => soundLab.shown(), 0);
+    if (tab === "music") setTimeout(() => musicTab.shown(), 0);
   }
   function hide() { shown = false; $("stage").classList.remove("on"); for (const b of document.querySelectorAll("#rail button")) b.classList.remove("on"); save("tab", ""); }
   function badge(t, bad) { if (shown && tab === t) return; const d = $("dot" + t[0].toUpperCase() + t.slice(1)); d.classList.add("on"); d.classList.toggle("bad", !!bad); }
@@ -396,7 +399,7 @@ const stage = (() => {
 
   // ---- Panel ----
   for (const b of document.querySelectorAll("#rail button")) b.onclick = () => shown && tab === b.dataset.tab ? hide() : show(b.dataset.tab);
-  for (const id of ["stageHide", "stageHide2", "stageHide3", "stageHide4", "stageHide5"]) $(id).onclick = hide;
+  for (const id of ["stageHide", "stageHide2", "stageHide3", "stageHide4", "stageHide5", "stageHide6"]) $(id).onclick = hide;
   const w = Number(load("width")); if (w > 280) document.documentElement.style.setProperty("--stage-w", w + "px");
   if (load("mobile")) $("pvSize").onclick();
   const grip = $("stageGrip");

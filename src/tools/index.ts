@@ -24,6 +24,7 @@ import { profilePage } from "./profile.ts";
 import { ENGINEER_TOOLS, ENGINEER_PROMPT } from "./engineer.ts";
 import { DIRECTOR_TOOLS, DIRECTOR_PROMPT } from "./director.ts";
 import { REPO_TOOLS, REPO_PROMPT } from "./repo.ts";
+import { MUSIC_TOOLS, MUSIC_PROMPT } from "./music.ts";
 
 export const TOOLS: Tool<any>[] = [readFile, listFiles, grep, editFile, writeFile, bash, runTests, gitTool, gitCommit, snapPage, recipeTool, useTemplate, makeSounds];
 
@@ -52,6 +53,7 @@ export const TOOLSETS: Record<string, Toolset> = {
     about: "make assets: pictures from the local image model, spoken voice lines, video and GIFs",
   },
   repo: { tools: REPO_TOOLS, prompt: REPO_PROMPT, about: "get repositories from GitHub or any git URL, branch, push, open pull requests, read issues and review comments" },
+  music: { tools: MUSIC_TOOLS, prompt: MUSIC_PROMPT, about: "songs: compose multi-track music as text (WAV + MIDI), real songs with vocals from the local ACE-Step model, mixing" },
   director: { tools: DIRECTOR_TOOLS, prompt: DIRECTOR_PROMPT, about: "creative director: rival designs you pick from, sketch to app, one-line asset kits, persona testers, design-crime checks, build time-lapses" },
 };
 

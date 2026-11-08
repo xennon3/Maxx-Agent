@@ -10,6 +10,10 @@ import { PreviewServer, htmlFiles } from "./preview.ts";
 import { Runner, detectCommands, saveCommand, savedCommands, type Proc } from "./runner.ts";
 import { cleanName, emptyBank, engine, findSoundFiles, starterBank, type Bank } from "../sound/index.ts";
 import { defaultSoundPath, linkPage, loadBank, saveBank } from "../tools/sound.ts";
+import { EXAMPLE_SCORE, findMusicFiles } from "../music/index.ts";
+import { compose, makeSongTool } from "../tools/music.ts";
+import { findSongServer, loadSongConfig } from "../music/acestep.ts";
+import { readFile } from "node:fs/promises";
 
 // The app window's right-hand "stage": Preview (the project's web pages, or a
 // dev server), Run (project commands with live output) and Phone (a live
@@ -104,7 +108,10 @@ export class Stage {
       case "soundList":
       case "soundNew":
       case "soundSave": {
-        if (!r) throw new Error("open a project folder first");
+        if (!r) {
+          if (m.type === "soundList") return true; // nothing to show before a project is open
+          throw new Error("open a project folder first");
+        }
         const files = await findSoundFiles(r.cwd);
         let file = typeof m.file === "string" && files.includes(m.file) ? m.file : files[0];
         let saved = false;
@@ -121,6 +128,49 @@ export class Stage {
         const now = m.type === "soundList" ? files : await findSoundFiles(r.cwd);
         const bank = file ? await loadBank(inside(r.cwd, file)).catch(() => null) : null;
         this.send({ type: "sounds", files: now, file: file ?? "", bank, saved });
+        return true;
+      }
+      case "musicList":
+      case "musicNew":
+      case "musicSave": {
+        if (!r) {
+          if (m.type === "musicList") return true; // the tab looks before a project is open; nothing to show yet
+          throw new Error("open a project folder first");
+        }
+        let file = typeof m.file === "string" ? m.file.replace(/\\/g, "/") : "";
+        let saved = false, note = "";
+        if (m.type === "musicNew") {
+          let n = 1;
+          file = "music/first-light.score";
+          while (existsSync(inside(r.cwd, file))) file = `music/song-${++n}.score`;
+          note = String(await compose.run({ file, score: EXAMPLE_SCORE }, { cwd: r.cwd }));
+        } else if (m.type === "musicSave") {
+          if (!/\.score$/i.test(file)) throw new Error("only .score files can be saved here");
+          // write the score and render the files that sit next to it again
+          const stem = inside(r.cwd, file).replace(/\.score$/i, "");
+          const formats = (["wav", "mid", "mp3", "ogg"] as const).filter((f) => existsSync(`${stem}.${f}`));
+          note = String(await compose.run({ file, score: String(m.text ?? ""), formats: formats.length ? [...formats] : ["wav", "mid"] }, { cwd: r.cwd }));
+          saved = !/^error/i.test(note);
+        }
+        const found = await findMusicFiles(r.cwd);
+        if (!file || ![...found.scores, ...found.audio].includes(file)) file = found.scores[0] ?? found.audio[0] ?? "";
+        const text = /\.score$/i.test(file) ? await readFile(inside(r.cwd, file), "utf8").catch(() => "") : undefined;
+        const ace = await findSongServer(await loadSongConfig()).catch(() => null);
+        this.send({ type: "music", ...found, file, text, saved, fresh: !!m.fresh || m.type === "musicNew", base: this.preview.base, ace: ace?.url ?? null, note });
+        return true;
+      }
+      case "musicSong": {
+        if (!r) throw new Error("open a project folder first");
+        const from = String(m.file ?? "");
+        const stem = from.replace(/\.score$/i, "");
+        let out = `${stem}-song.mp3`, k = 2;
+        while (existsSync(inside(r.cwd, out))) out = `${stem}-song-${k++}.mp3`;
+        this.send({ type: "musicBusy", text: "🎤 Producing with ACE-Step… (this can take a minute)" });
+        const res = String(await makeSongTool.run({ prompt: String(m.prompt ?? ""), mode: "cover", from, path: out }, { cwd: r.cwd }).catch((e: Error) => `error: ${e.message}`));
+        const bad = /^error/i.test(res);
+        this.send({ type: "musicBusy", text: bad ? res.replace(/^error:\s*/, "⚠ ").split("\n")[0] : "✓ " + out, done: true });
+        const found = await findMusicFiles(r.cwd);
+        this.send({ type: "music", ...found, file: bad ? from : out, base: this.preview.base, ace: "on" });
         return true;
       }
       case "previewReport":

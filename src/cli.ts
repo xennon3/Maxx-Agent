@@ -72,6 +72,8 @@ usage:
   maxx new [template] [dir]   start a project from a working template (no template: list them)
   maxx sound <words>          make a game sound effect as a .wav ("deep crunchy explosion")
   maxx sound music <mood> [seed]  make a chiptune loop as a .wav (happy, spooky, boss, chill...)
+  maxx music <file.score> [mp3|ogg]  render a score to .wav and .mid (no file: write an example score)
+  maxx music song "<style>" [lyrics.txt]  make a produced song with the local ACE-Step model
 
 options:
   --base-url <url>   OpenAI-compatible server (default $MAXX_BASE_URL or http://localhost:1234/v1)
@@ -285,6 +287,29 @@ if (positionals[0] === "sound") {
   await Bun.write(file, engine.toWav(samples, rate));
   console.log(`${about}\nwrote ${relative(process.cwd(), file)}`);
   process.exit(0);
+}
+
+if (positionals[0] === "music") {
+  const { compose, makeSongTool, SCORE_HELP } = await import("./tools/music.ts");
+  const { EXAMPLE_SCORE } = await import("./music/index.ts");
+  const [, a, b] = positionals;
+  let out: unknown;
+  if (a === "song") {
+    if (!b) die('usage: maxx music song "<style words>" [lyrics.txt]');
+    const lyricsFile = positionals[3];
+    const lyrics = lyricsFile ? await Bun.file(lyricsFile).text() : undefined;
+    console.log("making a song with ACE-Step…");
+    out = await makeSongTool.run({ prompt: b, lyrics }, { cwd: process.cwd() });
+  } else if (!a) {
+    out = await compose.run({ file: "first-light.score", score: EXAMPLE_SCORE }, { cwd: process.cwd() });
+    out = `${out}\n\n${SCORE_HELP}`;
+  } else {
+    const formats = ["wav", "mid", ...positionals.slice(2).filter((f) => f === "mp3" || f === "ogg")] as ("wav" | "mid" | "mp3" | "ogg")[];
+    out = await compose.run({ file: a, formats }, { cwd: process.cwd() });
+  }
+  const text = typeof out === "string" ? out : (out as { text: string }).text;
+  console.log(text);
+  process.exit(/^error/.test(text) ? 1 : 0);
 }
 
 const baseURL = values["base-url"] ?? process.env.MAXX_BASE_URL ?? "http://localhost:1234/v1";

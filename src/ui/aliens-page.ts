@@ -113,7 +113,7 @@ export const TOOL_ACT: [RegExp, string][] = [
   [/^(web_search|web_fetch|browser_\w+|lookup)$/, "web"],
   [/^(draw_svg|image_\w+|design_tokens|pick_fonts|sprite_sheet|mood_board|make_icons|asset_kit|rival_designs|sketch_to_app|theme|ugly_check|use_template)$/, "draw"],
   [/^(android_\w+|desktop_\w+|snap_page|persona_test|timelapse)$/, "phone"],
-  [/^(make_sounds|speak|video)$/, "sound"],
+  [/^(make_sounds|speak|video|compose|make_song|mix_audio)$/, "sound"],
 ];
 
 const ink = "#2b2f3a";

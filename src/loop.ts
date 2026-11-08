@@ -1,6 +1,7 @@
 import { complete, toWire, type ContentPart, type LLMConfig, type Message, type ToolCall } from "./llm.ts";
 import { TOOLS, TOOLSETS, toolSpecs, findTool, withToolsets } from "./tools/index.ts";
 import { wantsRepo } from "./tools/repo.ts";
+import { wantsMusic } from "./tools/music.ts";
 import type { Tool } from "./tools/types.ts";
 import { Permissions, isNo, whyNo, type Answer } from "./permissions.ts";
 import { Checkpoints } from "./checkpoint.ts";
@@ -489,6 +490,11 @@ export class Agent {
     if (!this.opts.chat && TOOLSETS.repo && !this.toolsets.includes("repo") && wantsRepo(ask)) {
       this.useToolsets([...this.toolsets, "repo"]);
       this.io.note("(added the 🐙 repo tools for this: clone, branch, push, pull requests)");
+      prompt = true;
+    }
+    if (!this.opts.chat && TOOLSETS.music && !this.toolsets.includes("music") && wantsMusic(ask)) {
+      this.useToolsets([...this.toolsets, "music"]);
+      this.io.note("(added the 🎼 music tools for this: compose, make_song, mix_audio)");
       prompt = true;
     }
     if (prompt) await this.refreshSystemPrompt();
