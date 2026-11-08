@@ -1,3 +1,5 @@
+import { cancelAllRequests, onRequestsChange, openRequests } from "../inflight.ts";
+import { chooseModel, lastModel, listModels, rememberModel, type ModelList } from "../modelpick.ts";
 import { appendFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -66,6 +68,16 @@ export async function startUI(opts: UIOptions) {
   let palette = await resolvePalette(opts.palette);
   const token = crypto.randomUUID().replace(/-/g, "");
   const clients = new Set<Client>();
+  let orphan: ReturnType<typeof setTimeout> | undefined;
+  // What Stop does, for when nobody is there to press it.
+  const stopAll = (why: string) => {
+    const busy = !!state?.controller;
+    state?.controller?.abort();
+    const n = cancelAllRequests();
+    for (const [id, p] of pending) (p.res("no", true), pending.delete(id));
+    for (const done of [...questions.values()]) done(null);
+    if (busy || n) logError("orphan", new Error(`stopped: ${why} (${n} model request${n === 1 ? "" : "s"} cancelled)`));
+  };
   const send = (m: Out) => {
     const s = JSON.stringify(m);
     for (const c of clients) c.send(s);
@@ -179,15 +191,18 @@ export async function startUI(opts: UIOptions) {
       }),
   };
 
-  async function models(): Promise<string[]> {
-    try {
-      const res = await fetch(`${opts.baseURL.replace(/\/$/, "")}/models`, { signal: AbortSignal.timeout(3000) });
-      const json = (await res.json()) as { data?: { id: string }[] };
-      return (json.data ?? []).map((m) => m.id).filter((id) => !/embed/i.test(id));
-    } catch {
-      return [];
-    }
+  // The server's model list, and which ones it has loaded. Asked again at most every few
+  // seconds (every snapshot would ask), or right away from the picker's ⟳ button.
+  let modelCache: { at: number; list: ModelList } | null = null;
+  async function modelList(fresh = false): Promise<ModelList> {
+    if (!fresh && modelCache && Date.now() - modelCache.at < 5000) return modelCache.list;
+    const list = await listModels(opts.baseURL);
+    modelCache = { at: Date.now(), list };
+    return list;
   }
+  const models = async () => (await modelList()).ids;
+  // What a new session starts on: the loaded model, else the last pick, else $MAXX_MODEL, else the first listed.
+  const startModel = async (fresh = false) => chooseModel(await modelList(fresh), await lastModel(), opts.model);
 
   // What the settings form shows. The key itself never goes back to the page.
   async function helperInfo() {
@@ -229,9 +244,13 @@ export async function startUI(opts: UIOptions) {
     return {
       type: "state",
       platform: process.platform,
-      models: await models(),
-      // What a new session starts on ($MAXX_MODEL / --model), so the picker shows it before one is open.
-      defaultModel: opts.model ?? null,
+      models: (await modelList()).ids,
+      // Which of them the server has in memory, marked in the picker.
+      loadedModels: (await modelList()).loaded,
+      modelsOk: (await modelList()).ok,
+      modelRequests: openRequests().length,
+      // What a new session starts on, so the picker shows it before one is open.
+      defaultModel: (await startModel()) ?? null,
       baseURL: opts.baseURL,
       maxUpload: MAX_UPLOAD,
       imageSide: imageLimits(contextWindow).maxSide,
@@ -299,10 +318,15 @@ export async function startUI(opts: UIOptions) {
     if (state?.controller) throw new Error("stop the current turn first");
     await save();
     const saved = o.session ? await loadSession(dir, o.session) : null;
-    // A resumed session keeps its model; otherwise --model / $MAXX_MODEL, like the terminal.
-    const model = o.model || saved?.model || opts.model || (await models())[0];
+    // A resumed session keeps its model while the server still has it; otherwise the
+    // loaded model, the last one picked, --model / $MAXX_MODEL, then the first listed.
+    const list = await modelList(true);
+    const kept = saved?.model && (!list.ids.length || list.ids.includes(saved.model)) ? saved.model : undefined;
+    const model = o.model || kept || (await startModel());
+    const moved = saved?.model && !o.model && !kept && model ? `This session used ${saved.model}, which the server no longer lists, so it is on ${model} now` : "";
     if (!model) throw new Error(`no model at ${opts.baseURL}. Start LM Studio's server and load a model.`);
     const llm: LLMConfig = { baseURL: opts.baseURL, model };
+    if (o.model) await rememberModel(model);
     const permissions = await new Permissions(dir, o.mode ?? mode).load();
     const { vision, note } = await pickVision(llm, { visionModel: opts.visionModel });
     // The context this model was really loaded with, when the server says (never more than --context).
@@ -321,6 +345,7 @@ export async function startUI(opts: UIOptions) {
     if (saved) await agent.restore(saved.id, saved.history);
     state = { cwd: dir, agent, permissions, llm, created: saved?.created ?? new Date().toISOString(), title: saved?.title ?? "", controller: null };
     // A banner at the top, so it outlasts the redraw after each turn.
+    if (moved) agent.marks.push({ at: agent.history.length, text: moved, active: false });
     if (fit.note) agent.marks.push({ at: agent.history.length, text: fit.note.replace(/^\(|\)$/g, ""), active: false });
     if (chat) return; // nothing to replay, and the stage keeps showing the last project
     recordTo(resolve(dir, ".maxx", "replays", `${agent.session}.jsonl`));
@@ -412,7 +437,18 @@ export async function startUI(opts: UIOptions) {
         send(await stage!.info());
         return send({ type: "templated", id: t.id, name: t.name, cwd: dir, files, try: t.try });
       }
+      case "models": {
+        // The picker's ⟳: ask the server again for what it lists and has loaded.
+        const l = await modelList(true);
+        send(await snapshot());
+        return send({ type: "modelsRefreshed", ok: l.ok, count: l.ids.length, loaded: l.loaded, baseURL: opts.baseURL });
+      }
       case "settings": {
+        // Picked before a session is open: the next one starts on it.
+        if (!state && m.model) {
+          await rememberModel(String(m.model));
+          return send(await snapshot());
+        }
         if (!state) return;
         if (m.mode) {
           const want = parseMode(String(m.mode));
@@ -618,8 +654,11 @@ export async function startUI(opts: UIOptions) {
         // An empty reply skips the question; the model then goes with its guess.
         questions.get(String(m.id))?.(typeof m.answer === "string" && m.answer.trim() ? m.answer.trim().slice(0, 2000) : null);
         return;
+      case "cancelRequests":
       case "stop":
         state?.controller?.abort();
+        // Anything else still open on the model server (a request outside the turn) goes too.
+        cancelAllRequests();
         for (const [id, p] of pending) (p.res("no", true), pending.delete(id));
         for (const done of [...questions.values()]) done(null);
         for (const c of [...captures.values()]) c.rej(Object.assign(new Error("stopped"), { name: "AbortError" }));
@@ -773,8 +812,13 @@ export async function startUI(opts: UIOptions) {
     websocket: {
       // Camera frames and recordings come back from the page for the lab.
       maxPayloadLength: 16 << 20,
-      open: (ws) => void clients.add(ws),
-      close: (ws) => void clients.delete(ws),
+      open: (ws) => (clients.add(ws), clearTimeout(orphan)),
+      close: (ws) => {
+        clients.delete(ws);
+        // The last window closed with Maxx still working: nobody can see or stop it, and it
+        // keeps the model busy (Strata won't unload it). Stop after a grace for a reload.
+        if (!clients.size) orphan = setTimeout(() => !clients.size && stopAll("the Maxx window closed"), orphanMs());
+      },
       async message(ws, raw) {
         try {
           await handle(JSON.parse(String(raw)));
@@ -816,8 +860,10 @@ export async function startUI(opts: UIOptions) {
 
   // Started after the UI's own port is taken, so a failed start leaves nothing behind.
   stage = new Stage(send, () => clients.size, opts.previewPort ?? 0);
-  const quit = () => (watch?.ctl.abort(), stage?.runner?.stopAll());
+  const quit = () => (cancelAllRequests(), watch?.ctl.abort(), stage?.runner?.stopAll());
   process.once("exit", quit);
+  // The header shows requests still open when Maxx is not working on anything.
+  onRequestsChange(() => send({ type: "requests", open: openRequests().length }));
 
   const link = `http://127.0.0.1:${server.port}/?t=${token}`;
   if (opts.open !== false) openWindow(link);
@@ -828,6 +874,11 @@ export async function startUI(opts: UIOptions) {
     stage,
     stop: () => {
       process.off("exit", quit);
+      // Ctrl+C or closing the terminal ends here: the model server must not keep working for nobody.
+      cancelAllRequests();
+      watch?.ctl.abort();
+      onRequestsChange(null);
+      clearTimeout(orphan);
       stage!.stop();
       server.stop(true);
     },
@@ -835,6 +886,7 @@ export async function startUI(opts: UIOptions) {
 }
 
 const MAX_UPLOAD = 50 << 20;
+const orphanMs = () => Number(process.env.MAXX_ORPHAN_MS) || 20_000;
 const isReport = (parts: { type: string; text?: string }[]) => parts.every((p) => p.type === "text") && /^Maxx( checked|:)/.test(parts[0]?.text ?? "");
 const clamp = (v: unknown, lo: number, hi: number, d: number) => {
   const n = Math.round(Number(v));

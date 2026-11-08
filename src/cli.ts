@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { chooseModel, lastModel, listModels } from "./modelpick.ts";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { Agent, type AgentIO } from "./loop.ts";
@@ -334,7 +335,8 @@ if (positionals[0] === "ui" || (fromExplorer && !positionals.length && !values.p
     ui = await startUI({ baseURL, model: values.model ?? process.env.MAXX_MODEL, port: 0, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL, context: Number(values.context), network: values.network, brevity: values.brevity, thinking: values.thinking, learn: values.learn, palette: values.palette, mode: values["auto-run"] ? "yolo" : values.mode, ...voice });
   }
   // Dev servers started from the Run panel go down with Maxx.
-  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(sig, () => (ui.stop(), process.exit(0)));
+  // SIGBREAK: the console window closing on Windows.
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP", ...(process.platform === "win32" ? ["SIGBREAK"] : [])] as NodeJS.Signals[]) process.on(sig, () => (ui.stop(), process.exit(0)));
   console.log(`${C.bold}maxx${C.reset} is running at ${ui.link}\n${C.dim}The window opened on its own; if not, open that link. Close this window (or Ctrl-C) to quit.${C.reset}`);
   await new Promise(() => {});
 }
@@ -888,12 +890,9 @@ async function command(line: string) {
 }
 
 async function firstModel(url: string): Promise<string> {
-  try {
-    const res = await fetch(`${url.replace(/\/$/, "")}/models`);
-    const json = (await res.json()) as { data?: { id: string }[] };
-    const id = json.data?.find((m) => !/embed/i.test(m.id))?.id;
-    if (id) return id;
-  } catch {}
+  // The loaded model, else the last one picked, else the first listed (see modelpick.ts).
+  const id = chooseModel(await listModels(url), await lastModel());
+  if (id) return id;
   die(`no model found at ${url}. Start LM Studio's server (Developer tab) and load a model, or pass --model.`);
 }
 

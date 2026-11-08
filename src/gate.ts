@@ -5,6 +5,7 @@
 // instead, so the board can say which worker is waiting for the model, and
 // workers that are busy running a build or reading files don't hold a slot.
 
+import { trackRequest } from "./inflight.ts";
 import type { LLMConfig } from "./llm.ts";
 
 export type GateState = { model: string; slots: number; busy: number; waiting: number };
@@ -85,15 +86,21 @@ export class Gates {
 export async function probeParallel(llm: LLMConfig, n: number, signal?: AbortSignal): Promise<{ slots: number; aloneMs: number; togetherMs: number }> {
   const one = async () => {
     const t = performance.now();
+    const ctl = new AbortController();
+    const release = trackRequest(ctl, llm.model);
+    try {
     const res = await fetch(`${llm.baseURL.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
-      signal: signal ?? AbortSignal.timeout(120_000),
+      signal: AbortSignal.any([ctl.signal, signal ?? AbortSignal.timeout(120_000)]),
       headers: { "content-type": "application/json", authorization: `Bearer ${llm.apiKey ?? "lm-studio"}` },
       body: JSON.stringify({ model: llm.model, messages: [{ role: "user", content: "Count from 1 to 30, numbers only." }], max_tokens: 48, temperature: 0, stream: false }),
     });
     await res.text();
     if (!res.ok) throw new Error(`model server returned ${res.status}`);
     return performance.now() - t;
+    } finally {
+      release();
+    }
   };
   // The first request may load the model or warm the cache; it doesn't count.
   await one();

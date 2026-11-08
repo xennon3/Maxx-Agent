@@ -3,6 +3,7 @@
 // local models sometimes write into plain text instead of `tool_calls`.
 
 import { completeAnthropic } from "./anthropic.ts";
+import { trackRequest } from "./inflight.ts";
 import { cutNote, markPlain, ruminating, sendsFields, thinkingFields, type ThinkPlan } from "./thinking.ts";
 import { parsePartialJSON, TEXT_CALL_CLOSE, TEXT_CALL_OPEN, type Phase, type StreamProgress } from "./progress.ts";
 
@@ -138,6 +139,7 @@ async function streamOnce(
   if (outer?.aborted) ctl.abort();
   outer?.addEventListener("abort", stop, { once: true });
   const signal = ctl.signal;
+  const release = trackRequest(ctl, cfg.model);
   // A server that stops sending (a crashed model, a full GPU, a dropped
   // connection) would hold the turn forever: give up on it after a while.
   let stalled = 0;
@@ -159,6 +161,7 @@ async function streamOnce(
   } finally {
     clearTimeout(dog);
     outer?.removeEventListener("abort", stop);
+    release();
   }
 }
 
