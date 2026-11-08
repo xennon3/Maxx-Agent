@@ -1,6 +1,7 @@
 import { STAGE_CSS, STAGE_HTML, STAGE_JS } from "./stage-page.ts";
 import { VIS_CSS, VIS_JS } from "./visuals-page.ts";
 import { SOUND_CSS, SOUND_JS } from "./sound-page.ts";
+import { MUSIC_CSS, MUSIC_JS } from "./music-page.ts";
 import { BREVITY_LABEL } from "../brevity.ts";
 import { THINKING_LABEL, THINKING_SAY } from "../thinking.ts";
 import { VOICE_CSS, VOICE_HINT, VOICE_HTML, VOICE_JS } from "./voice-page.ts";
@@ -344,6 +345,7 @@ ${VOICE_CSS}
 ${LAB_CSS}
 ${VIS_CSS}
 ${SOUND_CSS}
+${MUSIC_CSS}
 ${ALIEN_CSS}
 ${CONNECT_CSS}
 /* Layout (batch 4): one calm header row, grouped menus, a centered reading column and one message box with its tools inside. */
@@ -687,13 +689,16 @@ const VERBS = { read_file: "Read", write_file: "Write", edit_file: "Edit", list_
   repo_clone: "Clone", repo: "Repo", github: "GitHub", mcp_more: "MCP",
   desktop_screenshot: "Look at desktop", desktop_click: "Click", desktop_type: "Type", desktop_key: "Press", desktop_scroll: "Scroll", desktop_open: "Open",
   web_search: "Search the web", web_fetch: "Read page",
-  preview: "Preview", start_server: "Start", use_template: "Start from template", make_sounds: "Make sounds", plan: "Plan", remember: "Remember", check: "Check" };
+  preview: "Preview", start_server: "Start", use_template: "Start from template", make_sounds: "Make sounds", compose: "Compose", make_song: "Make song", mix_audio: "Mix", plan: "Plan", remember: "Remember", check: "Check" };
 function label(name, args) {
   let a = {}; try { a = JSON.parse(args || "{}"); } catch {}
   if (name === "plan") return ["Plan", a.done ? "step " + a.done + " done" : "write the steps"];
   if (name === "remember") return ["Remember", String(a.note ?? "")];
   if (name === "ask_user") return ["Ask", String(a.question ?? "")];
   if (name === "make_sounds") return ["Make sounds", [...(a.effects || []).map((e) => e.name), ...(a.music || []).map((m) => "♪ " + m.name + (m.mood ? " (" + m.mood + ")" : ""))].join(", ")];
+  if (name === "compose") return ["Compose", String(a.file ?? ((/^\\s*title:\\s*(.+)$/im.exec(a.score || "") || [])[1] ?? "song"))];
+  if (name === "make_song") return ["Make song", String(a.prompt ?? "")];
+  if (name === "mix_audio") return ["Mix", String(a.action ?? "") + " " + String(a.output ?? a.input ?? "")];
   const main = a.template ?? a.path ?? a.query ?? a.url ?? a.libraryName ?? a.question ?? a.command ?? a.pattern ?? a.keys ?? a.key ?? a.target ?? a.direction ?? (a.text !== undefined ? JSON.stringify(a.text) : undefined) ??
     (a.element !== undefined ? "element " + a.element : a.x !== undefined ? a.x + "," + a.y : a.crashes ? "crashes" : a.project_dir ?? a.apk ?? "");
   return [VERBS[name] || name, String(main)];
@@ -858,6 +863,7 @@ function on(m) {
   voice.on(m);
   connectUI.on(m);
   soundLab.on(m);
+  musicTab.on(m);
   switch (m.type) {
     case "state": return render(m);
     case "progress": return progress(m);
@@ -1183,6 +1189,7 @@ ${STAGE_JS}
 ${VOICE_JS}
 ${VIS_JS}
 ${SOUND_JS}
+${MUSIC_JS}
 ${ALIEN_JS}
 ${SKIN_JS}
 ${CONNECT_JS}
@@ -1520,7 +1527,7 @@ $("agentForm").onsubmit = (e) => {
 };
 ${LAB_JS}
 // The two header menus are native popovers: a click outside or Esc closes them. They open under their button.
-const TOOLSET_NAME = { android: ["📱", "Android"], desktop: ["🖥", "Desktop"], browser: ["🧭", "Browser"], engineer: ["🛠", "Engineer"], studio: ["🎨", "Studio"], media: ["🎬", "Media"], director: ["✨", "Director"], repo: ["🐙", "Repo"] };
+const TOOLSET_NAME = { android: ["📱", "Android"], desktop: ["🖥", "Desktop"], browser: ["🧭", "Browser"], engineer: ["🛠", "Engineer"], studio: ["🎨", "Studio"], media: ["🎬", "Media"], director: ["✨", "Director"], repo: ["🐙", "Repo"], music: ["🎼", "Music"] };
 function segment(id, keys, cur, label, pick) {
   const box = $(id); box.innerHTML = "";
   for (const k of keys) { const b = document.createElement("button"); b.textContent = label(k); b.className = k === cur ? "on" : ""; b.onclick = () => pick(k); box.appendChild(b); }
