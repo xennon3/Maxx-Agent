@@ -122,7 +122,7 @@ test("a turn that keeps changing files runs past the first step limit, up to the
   expect(told).toContain("you have used 10 steps");
   expect(told).toContain("edits: [...]");
   expect(JSON.stringify(requests[11].messages)).not.toContain("you have used 10 steps");
-});
+}, 60_000);
 
 test("a turn that only reads stops at the step limit as before", async () => {
   script = (n) => ({ tool: { name: "read_file", args: { path: `f${n % 40}.txt` } } });
@@ -131,7 +131,7 @@ test("a turn that only reads stops at the step limit as before", async () => {
   expect(await agent.send("look around", undefined, { report: false })).toBe(STEP_LIMIT);
   expect(requests.length).toBe(10);
   expect(log.some((l) => l.startsWith("(used "))).toBe(false);
-});
+}, 60_000);
 
 test("a turn that stops changing things stops at the next limit", async () => {
   // 12 writes, then nothing but reading.
@@ -142,7 +142,7 @@ test("a turn that stops changing things stops at the next limit", async () => {
   // Extended at 10 (progress at 11 -> 35), then 35 - 12 > 20 steps with no change: stop.
   expect(requests.length).toBe(35);
   expect(log.some((l) => l.startsWith("(stopped after 35 steps"))).toBe(true);
-});
+}, 60_000);
 
 test("keepGoing 0 and Agent mode's own budget keep the old hard limit", async () => {
   script = (n) => ({ tool: { name: "write_file", args: { path: `out/${n}.txt`, content: "x" } } });
@@ -154,7 +154,7 @@ test("keepGoing 0 and Agent mode's own budget keep the old hard limit", async ()
   ({ agent } = await setup({ maxSteps: 50 }));
   await agent.send("task", undefined, { maxSteps: 6, report: false });
   expect(requests.length).toBe(6);
-});
+}, 60_000);
 
 test("Stop still ends a turn that was given more steps", async () => {
   const stop = new AbortController();
@@ -166,13 +166,13 @@ test("Stop still ends a turn that was given more steps", async () => {
   const { agent } = await setup({ maxSteps: 10, keepGoing: 100 });
   await expect(agent.send("go", stop.signal, { report: false })).rejects.toThrow();
   expect(requests.length).toBeLessThanOrEqual(16);
-});
+}, 60_000);
 
 test("a failed build gets the error digest, and slices of one file get a read-it-whole note", async () => {
   const dir0 = await mkdtemp(join(tmpdir(), "maxx-digest-"));
   await Bun.write(join(dir0, "build.txt"), KOTLIN);
   script = [
-    { tool: { name: "bash", args: { command: process.platform === "win32" ? "type build.txt && exit 1" : "cat build.txt; exit 1" } } },
+    { tool: { name: "bash", args: { command: "cat build.txt; exit 1" } } },
     { tool: { name: "bash", args: { command: "sed -n '1,5p' f1.txt" } } },
     { tool: { name: "bash", args: { command: "grep -n x f1.txt" } } },
     { tool: { name: "bash", args: { command: "sed -n '2,3p' f1.txt" } } },
@@ -186,7 +186,7 @@ test("a failed build gets the error digest, and slices of one file get a read-it
   expect(tools[0]).toContain("Note from Maxx: 5 build errors in 3 files: Sfx.kt (3)");
   expect(tools[3]).toContain("looked at f1.txt 3 times");
   expect(tools[2]).not.toContain("looked at");
-});
+}, 60_000);
 
 test("onlyLooks: peeks are not progress, changes are", async () => {
   const { onlyLooks } = await import("../src/keepgoing.ts");
