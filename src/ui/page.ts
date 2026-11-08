@@ -194,6 +194,8 @@ main:has(#okdock.on) .composer textarea { height: 40px; }
 .plan .step .why { color: var(--mute); font-size: 12px; }
 .report { margin-top: 8px; padding: 5px 10px; border: 1px solid var(--line); border-left: 3px solid var(--ok); border-radius: var(--radius); background: var(--panel); font-size: 13px; font-weight: 600; }
 .report.no { border-left-color: var(--warn); }
+.report .go { margin-left: 10px; padding: 2px 10px; border: 1px solid var(--warn); border-radius: var(--radius); background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer; }
+.report .go:hover { background: var(--warn); color: var(--bg); }
 .errbar { display: none; margin: 10px 16px 0; padding: 6px 10px; border: 1px solid var(--bad); border-left: 3px solid var(--bad); border-radius: var(--radius); background: var(--panel); color: var(--bad); font-size: 13px; max-width: 860px; gap: 8px; align-items: flex-start; }
 .errbar.on { display: flex; }
 .errbar .txt { flex: 1; white-space: pre-wrap; word-break: break-word; max-height: 30vh; overflow: auto; font-family: var(--mono); font-size: 12px; }
@@ -645,7 +647,17 @@ function paintReply(el, text, chat) {
   const last = lines[lines.length - 1] || "";
   const isReport = /^(✅ Done|⚠ Not finished)/.test(last);
   visuals.paint(el, isReport ? lines.slice(0, -1).join("\\n") : text, chat);
-  if (isReport) el.appendChild(div("report" + (last.startsWith("✅") ? "" : " no"), last));
+  if (!isReport) return;
+  const r = el.appendChild(div("report" + (last.startsWith("✅") ? "" : " no"), last));
+  // Only the newest report keeps the button (the transcript paints oldest first).
+  document.querySelectorAll("#log .report .go").forEach((b) => b.remove());
+  // Not finished: one click picks the work up where it stopped.
+  if (!last.startsWith("✅") && !chat) {
+    const go = document.createElement("button");
+    go.className = "go"; go.textContent = "▶ Keep going"; go.title = "Carry on with what is left";
+    go.onclick = () => { if (busy) return; $("input").value = "Keep going: finish what is left. Don't redo what is already done."; submit(); };
+    r.appendChild(go);
+  }
 }
 // Errors stay on screen until dismissed: the transcript is redrawn when a turn ends, which used to wipe them.
 const errs = [];

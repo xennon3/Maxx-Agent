@@ -93,24 +93,56 @@ function similarity(a: string, b: string): number {
   return (2 * common) / (A.size + B.size);
 }
 
-const schema = z.object({
-  path: z.string().describe("File to edit"),
+const change = z.object({
   old_string: z.string().describe("Exact text to replace, including a few lines of context"),
   new_string: z.string().describe("Replacement text"),
   replace_all: z.boolean().optional().describe("Replace every occurrence"),
 });
+const schema = z.object({
+  path: z.string().describe("File to edit"),
+  old_string: z.string().optional().describe("Exact text to replace, including a few lines of context"),
+  new_string: z.string().optional().describe("Replacement text"),
+  replace_all: z.boolean().optional().describe("Replace every occurrence"),
+  edits: z.array(change).optional().describe("Several changes to this one file, applied in order in one call (instead of old_string/new_string). Use it to fix every error in a file at once."),
+});
+
+// One edit_file call may carry one change or a list of them. A list is applied
+// in order, all or nothing: one change that fails leaves the file as it was.
+// Fixing 42 compile errors one call (one step) at a time used up the turn.
+export type Change = { old_string: string; new_string: string; replace_all?: boolean };
+export function changesOf(args: { old_string?: string; new_string?: string; replace_all?: boolean; edits?: Change[] }): Change[] {
+  const list = [...(args.edits ?? [])];
+  if (args.old_string !== undefined || args.new_string !== undefined) list.unshift({ old_string: args.old_string ?? "", new_string: args.new_string ?? "", replace_all: args.replace_all });
+  return list;
+}
+
+export type BatchResult = { ok: true; text: string; applied: number; already: number; loose: number } | { ok: false; error: string };
+export function applyEdits(source: string, changes: Change[]): BatchResult {
+  if (!changes.length) return { ok: false, error: "no change given: pass old_string and new_string, or edits: [{old_string, new_string}, ...]" };
+  let text = source, applied = 0, already = 0, loose = 0;
+  for (const [i, c] of changes.entries()) {
+    const r = applyEdit(text, c.old_string, c.new_string, c.replace_all);
+    if (!r.ok) return { ok: false, error: changes.length > 1 ? `change ${i + 1} of ${changes.length}: ${r.error} Nothing was changed; fix that change and send them all again.` : r.error };
+    if (r.how === "already") already++;
+    else if (r.text !== text) applied++;
+    if (r.how === "whitespace") loose++;
+    text = r.text;
+  }
+  return { ok: true, text, applied, already, loose };
+}
 
 async function plan(args: z.infer<typeof schema>, cwd: string) {
   const file = Bun.file(inside(cwd, args.path));
-  if (!(await file.exists())) return { before: "", result: { ok: false, error: `${args.path} does not exist` } as EditResult };
+  if (!(await file.exists())) return { before: "", result: { ok: false, error: `${args.path} does not exist` } as BatchResult, many: false };
   const before = await file.text();
-  return { before, result: applyEdit(before, args.old_string, args.new_string, args.replace_all) };
+  const changes = changesOf(args);
+  return { before, result: applyEdits(before, changes), many: changes.length > 1 };
 }
 
 export const editFile = defineTool({
   name: "edit_file",
   description:
-    "Replace old_string with new_string in a file. old_string must match exactly once; include surrounding lines to make it unique. Read the file first.",
+    "Replace old_string with new_string in a file. old_string must match exactly once; include surrounding lines to make it unique. Read the file first. For several changes to the same file (like fixing all its compile errors), pass edits: [{old_string, new_string}, ...] to make them all in one call.",
   schema,
   risk: "write",
   ruleKey: (a) => a.path,
@@ -120,12 +152,15 @@ export const editFile = defineTool({
     return result.text === before ? "(no change: the file already has this text)" : lineDiff(before, result.text);
   },
   async run(args, { cwd }) {
-    const { before, result } = await plan(args, cwd);
+    const { before, result, many } = await plan(args, cwd);
     if (!result.ok) return `error: ${result.error}`;
     const done = `Do not repeat this edit; go on with the next step.`;
-    if (result.how === "already") return `no change: ${args.path} already contains new_string, so this edit was made earlier. ${done}`;
-    if (result.text === before) return `no change: new_string is the same as the text it replaces in ${args.path}. ${done}`;
+    if (result.text === before) {
+      if (result.already) return `no change: ${args.path} already contains ${many ? "these changes" : "new_string"}, so this edit was made earlier. ${done}`;
+      return `no change: new_string is the same as the text it replaces in ${args.path}. ${done}`;
+    }
     await Bun.write(inside(cwd, args.path), result.text);
-    return `edited ${args.path}${result.how === "whitespace" ? " (matched ignoring whitespace)" : ""}. It now reads:\n${changedLines(before, result.text)}`;
+    const how = [many ? `${result.applied} changes` : "", result.already ? `${result.already} already made` : "", result.loose ? "matched ignoring whitespace" : ""].filter(Boolean).join(", ");
+    return `edited ${args.path}${how ? ` (${how})` : ""}. It now reads:\n${changedLines(before, result.text, 2, many ? 60 : 20)}`;
   },
 });

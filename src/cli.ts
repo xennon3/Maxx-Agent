@@ -89,6 +89,8 @@ options:
   --check <cmd>      build command Maxx runs after the model edits files (default: detected,
                      or a \`check:\` line in MAXX.md); --check off for syntax checks only
   --fix-tries <n>    times a failed check goes back to the model (default 3, 0 = off)
+  --steps <n>        model steps one turn starts with (default 50)
+  --max-steps <n>    most steps a turn may take while it keeps making progress (default 4 × --steps; 0 = stop at --steps)
   --no-plan          don't offer the plan checklist tool
   --no-alarm         don't check changed web pages for design crimes before finishing
   --no-timelapse     don't save a screenshot after each visible change (for timelapse GIFs)
@@ -167,6 +169,8 @@ const { values, positionals } = parseArgs({
     "vision-model": { type: "string" },
     check: { type: "string" },
     "fix-tries": { type: "string" },
+    steps: { type: "string" },
+    "max-steps": { type: "string" },
     "no-plan": { type: "boolean" },
     "no-alarm": { type: "boolean" },
     "no-timelapse": { type: "boolean" },
@@ -459,6 +463,9 @@ const toolsets = parseSets(values.with ?? (resumed?.toolsets.join(",") || proces
 const { vision, note: visionNote } = await pickVision(llm, { flag: values.vision, visionModel: values["vision-model"] ?? process.env.MAXX_VISION_MODEL });
 const check = values.check === undefined ? undefined : /^(off|none|false)$/i.test(values.check) ? false : values.check;
 const fixTries = values["fix-tries"] === undefined ? undefined : Number(values["fix-tries"]);
+const stepsFlag = (v: string | undefined, env?: string) => { const n = Number(v ?? env); return (v ?? env) !== undefined && Number.isFinite(n) && n >= 0 ? Math.floor(n) : undefined; };
+const maxSteps = stepsFlag(values.steps, process.env.MAXX_STEPS) || undefined;
+const keepGoing = stepsFlag(values["max-steps"], process.env.MAXX_MAX_STEPS);
 let helper: Helper | null = null;
 try {
   helper = await resolveHelper({ model: values.helper, url: values["helper-url"], kind: values["helper-kind"], after: values["helper-after"] });
@@ -485,7 +492,7 @@ const goalSettings = agentSettings(fit.context, {
 const crew = crewSettings({ ...(await loadCrewSettings()), ...cleanCrew({ workers: values.workers, slots: values.slots, models: values["crew-models"] }) });
 if (values["max-tasks"]) crew.maxTasks = goalSettings.maxTasks;
 const probed = new Map<string, number>();
-const agent = await new Agent({ llm, cwd, permissions, contextWindow: fit.context, toolsets, vision, check, fixTries, plan: !values["no-plan"], alarm: !values["no-alarm"] && process.env.MAXX_ALARM !== "0", timelapse: !values["no-timelapse"] && process.env.MAXX_TIMELAPSE !== "0", helper, network, brevity, thinking, palette, learn, mapTokens: goalSettings.mapTokens }, io).init();
+const agent = await new Agent({ llm, cwd, permissions, contextWindow: fit.context, toolsets, vision, check, fixTries, maxSteps, keepGoing, plan: !values["no-plan"], alarm: !values["no-alarm"] && process.env.MAXX_ALARM !== "0", timelapse: !values["no-timelapse"] && process.env.MAXX_TIMELAPSE !== "0", helper, network, brevity, thinking, palette, learn, mapTokens: goalSettings.mapTokens }, io).init();
 let created = new Date().toISOString();
 let title = "";
 if (resumed) await resumeInto(resumed);

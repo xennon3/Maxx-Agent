@@ -7,11 +7,12 @@
 import { formatPlan, type Step } from "./plan.ts";
 
 // Why the turn ended. Only "answered" means the model chose to stop.
-export type Ending = "answered" | "steps" | "repeats" | "badcalls" | "blocked" | "empty" | "checkfail";
+export type Ending = "answered" | "steps" | "stalled" | "repeats" | "badcalls" | "blocked" | "empty" | "checkfail";
 
 export const ENDING_SAY: Record<Ending, string> = {
   answered: "",
   steps: "it used all the steps one turn gets",
+  stalled: "it went 20 steps without changing anything",
   repeats: "the model kept repeating the same tool call",
   badcalls: "the model kept writing broken tool calls",
   blocked: "a program it needs is not installed",

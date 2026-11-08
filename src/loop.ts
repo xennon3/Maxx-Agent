@@ -29,6 +29,7 @@ import { mapBudget, projectMap, projectMapTool } from "./projectmap.ts";
 import type { Board } from "./agentmode.ts";
 import { closeOpen, doubtful, parseWrap, reportLine, REPORT_LINE, wrapPrompt, ENDING_SAY, type Ending } from "./wrapup.ts";
 import { afterRun, builtAlready, doneRecord, noteDone, planNudge, STEP_LIMIT, summaryChars, type Done } from "./redo.ts";
+import { digestNote, errorDigest, extendNote, moreSteps, onlyLooks, peekedFiles, peekNote, PEEK_WARN, progressSay, stepCap, WINDOW } from "./keepgoing.ts";
 import { findBrowser, isUiFile, judgeLLM, pickSurface, webPage, type SurfaceOptions } from "./judge.ts";
 import { crimeList, findCrimes } from "./crimes.ts";
 import { saveFrame } from "./timelapse.ts";
@@ -80,6 +81,8 @@ export type AgentOptions = {
   permissions: Permissions;
   contextWindow?: number;
   maxSteps?: number;
+  // The most steps one turn may take while it keeps making progress (default 4 × maxSteps; 0 = stop at maxSteps).
+  keepGoing?: number;
   tools?: Tool<any>[];
   toolsets?: string[];
   vision?: Vision;
@@ -139,6 +142,11 @@ const STOP_LOOKUPS = 3;
 // Once a tool turns out to be missing (no Java, no Android SDK), the model gets
 // this many more steps to tell the user before Maxx tells them instead.
 const BLOCKED_STEPS = 2;
+// A failed check's errors at a glance, when there are several.
+const digestOf = (output: string) => {
+  const d = errorDigest(output);
+  return d && d.count >= 3 ? digestNote(d) : "";
+};
 // Screenshots are big; only the most recent few stay in the conversation.
 // Removing one rewrites an older message, which costs the server its prompt
 // cache from that point on, so prune in batches: at 4 images, back down to 2.
@@ -546,7 +554,34 @@ export class Agent {
     let lastFailed = false;
     let failedInARow = 0;
 
-    for (let step = 0; step < (o.maxSteps ?? this.opts.maxSteps ?? 50); step++) {
+    // The step budget grows while the turn keeps changing things (see keepgoing.ts).
+    // Agent and Crew mode pass their own per-task budget and handle running out themselves.
+    let limit = o.maxSteps ?? this.opts.maxSteps ?? 50;
+    const cap = o.maxSteps ? limit : stepCap(limit, this.opts.keepGoing);
+    let lastProgress = -1;
+    const lately: { step: number; what: string }[] = [];
+    const progress = (step: number, what: string) => {
+      lastProgress = step;
+      lately.push({ step, what });
+    };
+    let errors: number | undefined;
+    const peeks = new Map<string, number>();
+    let ranOut = false;
+
+    for (let step = 0; ; step++) {
+      if (step >= limit) {
+        const next = moreSteps({ step, limit, cap, lastProgress });
+        if (!next) {
+          ranOut = true;
+          break;
+        }
+        const recent = new Map<string, number>();
+        for (const p of lately) if (step - p.step <= WINDOW) recent.set(p.what, (recent.get(p.what) ?? 0) + 1);
+        this.io.note(`(used ${step} steps and still making progress: ${progressSay(recent)} in the last ${WINDOW}. Keeping going, up to ${next} of ${cap})`);
+        limit = next;
+        pending = [pending, extendNote(step, limit, cap)].filter(Boolean).join("\n\n");
+      }
+      if (signal?.aborted) throw Object.assign(new Error("stopped"), { name: "AbortError" });
       await this.maybeCompact(signal);
       if (helping && !this.helper) handBack("the helper was turned off");
       const helper = helping && this.helper;
@@ -625,6 +660,7 @@ export class Agent {
       const seen: ContentPart[] = [];
       let stepFailed = false;
       let trigger = "";
+      const ticked = this.plan.filter((s) => s.done).length;
       for (const call of res.toolCalls) {
         // After Stop, the rest of the step's calls don't run, but each still gets a result so the history stays whole.
         let { result, bad, images, glance, args } = signal?.aborted ? { result: "error: not run, the user pressed Stop", bad: false } as Awaited<ReturnType<Agent["runTool"]>> : await this.runTool(call);
@@ -634,6 +670,32 @@ export class Agent {
         failures = fail ? failures + 1 : 0;
         stepFailed ||= fail;
         blocked ??= missingTool(result);
+        // Momentum: what counts as getting somewhere, and notes that save steps.
+        if (args) {
+          const risk = findTool(call.name, this.tools) ? riskOf(findTool(call.name, this.tools)!, args) : "read";
+          const command = call.name === "bash" ? String(args.command ?? "") : "";
+          if (risk === "write" && !fail && !/^no change/.test(result)) {
+            progress(step, typeof args.path === "string" ? "file changes" : "actions");
+            if (typeof args.path === "string") peeks.delete(peekedFiles(args.path)[0] ?? "");
+          } else if (risk === "exec" && !fail && !(command && onlyLooks(command))) progress(step, command ? "commands run" : "actions");
+          if (call.name === "bash") {
+            const d = fail ? errorDigest(result) : null;
+            if (d) {
+              if (errors !== undefined && d.count < errors) progress(step, "fewer build errors");
+              if (d.count >= 3) result += digestNote(d, errors);
+              errors = d.count;
+            } else if (!fail && errors !== undefined && !onlyLooks(command)) {
+              errors = undefined;
+              progress(step, "fewer build errors");
+            }
+          }
+          const looked = call.name === "read_file" && typeof args.path === "string" ? peekedFiles(args.path) : command && onlyLooks(command) ? peekedFiles(command) : [];
+          for (const f of looked) {
+            const n = (peeks.get(f) ?? 0) + 1;
+            peeks.set(f, n);
+            if (n === PEEK_WARN || n === PEEK_WARN * 2) result += peekNote(f, n);
+          }
+        }
         // Sending the same edit or write again is never progress, whatever it returned
         // (applied, then "not found", then applied...), so those count by the call alone.
         const writes = findTool(call.name, this.tools)?.risk === "write";
@@ -663,6 +725,7 @@ export class Agent {
         this.pruneImages();
       }
 
+      if (this.plan.filter((s) => s.done).length > ticked) progress(step, "plan steps ticked");
       lastFailed = stepFailed;
       failedInARow = stepFailed ? failedInARow + 1 : 0;
       // A missing program (Java, the Android SDK, adb) can't be fixed from here, not even by the helper.
@@ -709,7 +772,11 @@ export class Agent {
       }
     }
     if (helping) handBack("the turn hit its step limit");
-    this.ending = "steps";
+    // Out of steps while still changing things (the hard cap), or stalled: nothing changed for a while.
+    // At the first limit it is simply out of steps; after more were given, it stalled.
+    const stalled = ranOut && limit < cap && limit > (o.maxSteps ?? this.opts.maxSteps ?? 50);
+    this.ending = stalled ? "stalled" : "steps";
+    if (stalled) this.io.note(`(stopped after ${limit} steps: nothing changed in the last ${WINDOW})`);
     return STEP_LIMIT;
   }
 
@@ -749,7 +816,7 @@ export class Agent {
         }
         const c = coach("bash", {}, r.output, process.platform, this.network);
         const hint = c.hint ? `\nMaxx hint: ${c.hint}` : "";
-        const text = `Maxx checked your changes: ${r.what} failed (try ${fixes + 1} of ${tries}).\n${excerpt(r.output, c.first)}${hint}\nFix this, then reply when it works.`;
+        const text = `Maxx checked your changes: ${r.what} failed (try ${fixes + 1} of ${tries}).\n${excerpt(r.output, c.first)}${hint}${digestOf(r.output)}\nFix this, then reply when it works.`;
         // A parts array, so it reads as a report from Maxx rather than a new request (and the UI shows it as a note).
         this.history.push({ role: "user", content: [{ type: "text", text }] });
         return "fix";
