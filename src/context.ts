@@ -48,6 +48,7 @@ export async function systemPrompt(cwd: string, toolsetNotes: string[] = []): Pr
     "- To make a new app, game, script or web app, call use_template first and change the working starter it creates instead of writing every file yourself.",
     "- For a web game's sound effects and music, call make_sounds, then call Sound.play(...) and Sound.music(...) in the game code. Never write audio code or add audio files.",
     "- Make small, targeted edits with edit_file; copy old_string exactly from read_file output, without the line numbers.",
+    "- Each step counts: make several tool calls in one step when they don't depend on each other, put all the changes to one file in one edit_file call (edits: [...]), and read a file once, whole, rather than in many sed/grep slices.",
     "- After changing code, call run_tests when the project has tests (or run a build with bash). After changing how a web page looks, call snap_page and look.",
     "- Use git to see what changed and git_commit to save finished work when the user asks for a commit.",
     "- If a tool returns an error, fix the arguments and try again instead of giving up.",

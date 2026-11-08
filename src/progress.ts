@@ -143,7 +143,7 @@ export function describe(p: StreamProgress): Activity {
 }
 
 function previewOf(tool: string, a: Record<string, unknown>): string {
-  const pick = tool === "write_file" ? a.content : tool === "edit_file" ? (a.new_string ?? a.old_string) : tool === "bash" ? a.command : undefined;
+  const pick = tool === "write_file" ? a.content : tool === "edit_file" ? (a.new_string ?? a.old_string ?? (Array.isArray(a.edits) ? a.edits.map((e: any) => e?.new_string ?? "").join("\n") : undefined)) : tool === "bash" ? a.command : undefined;
   if (typeof pick === "string") return pick;
   // Unknown tools: the longest string argument is the interesting one.
   const strings = Object.values(a).filter((v): v is string => typeof v === "string");

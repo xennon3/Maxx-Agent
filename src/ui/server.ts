@@ -313,7 +313,7 @@ export async function startUI(opts: UIOptions) {
     const agent = await new Agent(
       chat
         ? { llm, cwd: dir, permissions, vision, network, brevity, thinking, palette, contextWindow: fit.context, chat: true, plan: false, memory: false, fixTries: 0 }
-        : { llm, cwd: dir, permissions, toolsets, vision, helper, network, brevity, thinking, palette, learn, contextWindow: fit.context, tools: [...TOOLS, ...stage!.tools()], mapTokens: agentSettings(contextWindow, goalSaved).mapTokens, alarm: process.env.MAXX_ALARM !== "0", timelapse: process.env.MAXX_TIMELAPSE !== "0" },
+        : { llm, cwd: dir, permissions, toolsets, vision, helper, network, brevity, thinking, palette, learn, contextWindow: fit.context, tools: [...TOOLS, ...stage!.tools()], mapTokens: agentSettings(contextWindow, goalSaved).mapTokens, alarm: process.env.MAXX_ALARM !== "0", timelapse: process.env.MAXX_TIMELAPSE !== "0", ...turnSteps() },
       io,
     ).init();
     // The alarm and the time-lapse look at the Preview panel's page, or the dev server it runs.
@@ -868,4 +868,10 @@ export function logError(where: string, e: Error) {
     mkdirSync(maxxHome(), { recursive: true });
     appendFileSync(join(maxxHome(), "errors.log"), `${new Date().toISOString()} [${where}] ${e.stack || e.message}\n\n`);
   } catch {}
+}
+
+// Steps per turn from MAXX_STEPS / MAXX_MAX_STEPS (unset: 50, growing to 200 while the turn makes progress).
+function turnSteps(): { maxSteps?: number; keepGoing?: number } {
+  const n = (v?: string) => (v !== undefined && v !== "" && Number.isFinite(Number(v)) && Number(v) >= 0 ? Math.floor(Number(v)) : undefined);
+  return { maxSteps: n(process.env.MAXX_STEPS) || undefined, keepGoing: n(process.env.MAXX_MAX_STEPS) };
 }
