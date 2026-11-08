@@ -462,6 +462,7 @@ ${SKIN_CSS}
     </div>
     <button class="hbtn gear projonly" id="modeCfg" title="Settings for this mode">⚙</button>
     <select id="model" title="Model"></select>
+    <button class="hbtn" id="reqBtn" hidden title="Maxx still has requests open on the model server, though it is not working on anything. The server will not unload the model until they end. Click to cancel them.">⏹<span class="lbl"> Cancel model requests</span> <span class="n" id="reqN"></span></button>
     <button class="hbtn gear" id="modelRefresh" title="Refresh the model list: ask the server again which models it has and which one is loaded">⟳</button>
     <button class="hbtn projonly" id="toolsBtn" popovertarget="toolsPop" title="Toolsets: extra tools Maxx can use in this project">🧰<span class="lbl"> Tools</span></button>
     <button class="hbtn" id="tuneBtn" popovertarget="tunePop" title="Settings: permissions, network, replies, thinking, colors, rules and the helper model">⚙<span class="lbl"> Settings</span><span class="ind" id="tuneInd"></span></button>
@@ -905,6 +906,7 @@ function on(m) {
       activity({ title: "Working" });
       return;
     case "note": return note(m.text);
+    case "requests": reqOpen = m.open; return drawReq();
     case "modelsRefreshed": {
       const b = $("modelRefresh"); b.disabled = false; b.classList.remove("spin");
       b.textContent = m.ok ? "✓" : "⚠";
@@ -944,7 +946,7 @@ function on(m) {
     case "question": return questionCard(m);
     case "questionDone": return questionDone(m);
     case "busy":
-      busy = m.busy; $("stopBtn").disabled = !busy; $("sendBtn").disabled = busy; if (busy) $("undoBtn").disabled = true;
+      busy = m.busy; $("stopBtn").disabled = !busy; $("sendBtn").disabled = busy; if (busy) $("undoBtn").disabled = true; drawReq();
       $("rgo").disabled = busy; $("rstop").disabled = !busy;
       if (!busy) { helperLive = null; $("activity").classList.remove("helper"); }
       if (!busy) { streaming = null; thinkCard = null; abandonWriting(); for (const id of [...askCards.keys()]) askClosed(id, "Stopped"); }
@@ -1225,6 +1227,7 @@ function render(s) {
     p.appendChild(box);
   }
   // Header
+  reqOpen = s.modelRequests || 0; drawReq();
   const sel = $("model"); sel.innerHTML = "";
   // The session's model (or $MAXX_MODEL before one is open) is shown even when the server lists it under another name.
   const want = cur ? cur.model : s.defaultModel;
@@ -1416,6 +1419,10 @@ $("newBtn").onclick = () => send({ type: "new" });
 $("chatBtn").onclick = () => send({ type: "chat" });
 // With no session open, the pick is saved and the next session starts on it.
 $("model").onchange = (e) => state && send({ type: "settings", model: e.target.value });
+// Requests still open on the model server while Maxx is idle (Stop covers them while it works).
+let reqOpen = 0;
+function drawReq() { const b = $("reqBtn"); b.hidden = !reqOpen || busy; $("reqN").textContent = reqOpen; }
+$("reqBtn").onclick = () => send({ type: "cancelRequests" });
 $("modelRefresh").onclick = () => { const b = $("modelRefresh"); b.disabled = true; b.classList.add("spin"); send({ type: "models" }); };
 $("mode").onchange = (e) => send({ type: "settings", mode: e.target.value });
 // ⚡ Auto next to the message box: the quick switch between asking and auto-run.
