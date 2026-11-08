@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { chooseModel, lastModel, listModels } from "./modelpick.ts";
 import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 import { Agent, type AgentIO } from "./loop.ts";
@@ -888,12 +889,9 @@ async function command(line: string) {
 }
 
 async function firstModel(url: string): Promise<string> {
-  try {
-    const res = await fetch(`${url.replace(/\/$/, "")}/models`);
-    const json = (await res.json()) as { data?: { id: string }[] };
-    const id = json.data?.find((m) => !/embed/i.test(m.id))?.id;
-    if (id) return id;
-  } catch {}
+  // The loaded model, else the last one picked, else the first listed (see modelpick.ts).
+  const id = chooseModel(await listModels(url), await lastModel());
+  if (id) return id;
   die(`no model found at ${url}. Start LM Studio's server (Developer tab) and load a model, or pass --model.`);
 }
 
