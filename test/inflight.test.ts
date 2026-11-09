@@ -102,3 +102,23 @@ test("the header's cancel button ends requests even when no turn is running", as
     srv.stop(true);
   }
 }, 15000);
+
+test("a stopped app leaves no timer that cancels other requests later", async () => {
+  process.env.MAXX_HOME = await mkdtemp(join(tmpdir(), "maxx-home-stopped-"));
+  process.env.MAXX_ORPHAN_MS = "100";
+  const ui = await startUI({ baseURL: "http://127.0.0.1:9/v1", port: 0, previewPort: 0, open: false, context: 16384 });
+  const ws = new WebSocket(`ws://127.0.0.1:${ui.server.port}/ws?t=${ui.token}`);
+  await new Promise((res) => (ws.onopen = res));
+  // stop() closes the window's socket itself; that close must not arm the orphan timer.
+  ui.stop();
+  await Bun.sleep(50);
+  const ctl = new AbortController();
+  const release = trackRequest(ctl, "someone else's");
+  try {
+    await Bun.sleep(300);
+    expect(ctl.signal.aborted).toBe(false);
+  } finally {
+    release();
+    delete process.env.MAXX_ORPHAN_MS;
+  }
+});
