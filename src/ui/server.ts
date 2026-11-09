@@ -69,6 +69,7 @@ export async function startUI(opts: UIOptions) {
   const token = crypto.randomUUID().replace(/-/g, "");
   const clients = new Set<Client>();
   let orphan: ReturnType<typeof setTimeout> | undefined;
+  let stopped = false;
   // What Stop does, for when nobody is there to press it.
   const stopAll = (why: string) => {
     const busy = !!state?.controller;
@@ -817,7 +818,9 @@ export async function startUI(opts: UIOptions) {
         clients.delete(ws);
         // The last window closed with Maxx still working: nobody can see or stop it, and it
         // keeps the model busy (Strata won't unload it). Stop after a grace for a reload.
-        if (!clients.size) orphan = setTimeout(() => !clients.size && stopAll("the Maxx window closed"), orphanMs());
+        // Not after stop(): server.stop() closes the sockets itself, and a timer armed then
+        // would cancel every request in the process 20 s later (another server's, in tests).
+        if (!clients.size && !stopped) orphan = setTimeout(() => !clients.size && !stopped && stopAll("the Maxx window closed"), orphanMs());
       },
       async message(ws, raw) {
         try {
@@ -873,6 +876,7 @@ export async function startUI(opts: UIOptions) {
     token,
     stage,
     stop: () => {
+      stopped = true;
       process.off("exit", quit);
       // Ctrl+C or closing the terminal ends here: the model server must not keep working for nobody.
       cancelAllRequests();
