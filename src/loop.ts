@@ -28,7 +28,7 @@ import { mentionedPalette, paletteNote, palettePrompt, type Palette } from "./pa
 import { brief, describeHelper, HELPER_DEFAULTS, helperLLM, type Helper } from "./escalate.ts";
 import { mapBudget, projectMap, projectMapTool } from "./projectmap.ts";
 import type { Board } from "./agentmode.ts";
-import { closeOpen, doubtful, parseWrap, reportLine, REPORT_LINE, wrapPrompt, ENDING_SAY, type Ending } from "./wrapup.ts";
+import { closeOpen, doubtful, dropRepeatedAnswers, parseWrap, reportLine, stripReport, withoutReports, wrapPrompt, ENDING_SAY, type Ending } from "./wrapup.ts";
 import { afterRun, builtAlready, doneRecord, noteDone, planNudge, STEP_LIMIT, summaryChars, type Done } from "./redo.ts";
 import { digestNote, errorDigest, extendNote, moreSteps, onlyLooks, peekedFiles, peekNote, PEEK_WARN, progressSay, stepCap, WINDOW } from "./keepgoing.ts";
 import { findBrowser, isUiFile, judgeLLM, pickSurface, webPage, type SurfaceOptions } from "./judge.ts";
@@ -203,6 +203,8 @@ export class Agent {
   private turnDid: string[] = [];
   private turnFiles = new Set<string>();
   private turnFrom = 0;
+  // Where this turn's messages start in history.
+  private turnAt = 0;
   private lastTurn: { did: string[]; files: Map<string, string>; start?: string; undone: boolean } | null = null;
   // What already worked this session, from Maxx's own records, so a compaction can't make the model forget it built the app.
   private done: Done[] = [];
@@ -450,7 +452,7 @@ export class Agent {
   // Continue a saved session: its turns, with today's system prompt.
   async restore(id: string, history: Message[]) {
     this.session = id;
-    this.history = history.filter((m) => m.role !== "system");
+    this.history = dropRepeatedAnswers(history.filter((m) => m.role !== "system"));
     this.setPlan(planFromHistory(this.history));
     this.marks = [];
     await this.refreshSystemPrompt();
@@ -470,6 +472,7 @@ export class Agent {
     // Agent mode's task prompts are reports from Maxx, not the user's words; the goal stays the ask.
     if (learning || !this.turnAsk) this.turnAsk = (typeof userText === "string" ? userText : userText.map((p) => (p.type === "text" ? p.text : "")).join("\n")).trim();
     this.turnFrom = this.checkpoints.count;
+    this.turnAt = this.history.length;
     await this.beforeTurn(typeof userText === "string" ? userText : userText.map((p) => (p.type === "text" ? p.text : "")).join("\n")).catch(() => {});
     let answer = "";
     try {
@@ -595,7 +598,8 @@ export class Agent {
       const llm = helper ? helperLLM(helper, this.opts.llm.baseURL) : { ...this.opts.llm, thinking };
       // The brief rides along with each helper request; it is not kept in history.
       const once: Message[] = pending ? [{ role: "user", content: [{ type: "text", text: pending }] }] : [];
-      const messages: Message[] = helper ? [...this.history, ...once, { role: "user", content: [{ type: "text", text: brief(helping!.reason, this.opts.llm.model) }] }] : once.length ? [...this.history, ...once] : this.history;
+      const seenHistory = withoutReports(this.history);
+      const messages: Message[] = helper ? [...seenHistory, ...once, { role: "user", content: [{ type: "text", text: brief(helping!.reason, this.opts.llm.model) }] }] : once.length ? [...seenHistory, ...once] : seenHistory;
       pending = "";
       const offer = answerNow ? [] : specs;
       answerNow = false;
@@ -853,6 +857,8 @@ export class Agent {
   private async wrapUp(answer: string, signal?: AbortSignal): Promise<string> {
     if (this.opts.chat || signal?.aborted) return answer;
     const ending = this.ending;
+    const mine = this.history.at(-1);
+    if (this.history.length > this.turnAt && mine?.role === "assistant" && !mine.tool_calls?.length && typeof mine.content === "string") mine.content = stripReport(mine.content);
     const planned = this.planTurn === this.turnNo && this.plan.length > 0;
     // A question answered without touching anything needs no report.
     if (ending === "answered" && !planned && !this.turnDid.length) return answer;
@@ -875,11 +881,14 @@ export class Agent {
     const streamed = ending === "answered" || ending === "checkfail";
     const last = this.history.at(-1);
     let full: string;
-    if (last?.role === "assistant" && !last.tool_calls?.length && typeof last.content === "string" && !REPORT_LINE.test(last.content.trim().split("\n").pop() ?? "")) {
-      full = `${last.content.trim()}\n\n${extra}`;
+    // The answer this turn wrote gets the line, once: a "✅ Done" the model wrote itself
+    // (copied from earlier answers) is taken off, not read as "already reported".
+    // Pushing a second message here is what made Maxx answer twice.
+    if (this.history.length > this.turnAt && last?.role === "assistant" && !last.tool_calls?.length && typeof last.content === "string") {
+      full = `${stripReport(last.content)}\n\n${extra}`.trim();
       last.content = full;
     } else {
-      full = [answer.trim(), extra].filter(Boolean).join("\n\n");
+      full = [stripReport(answer), extra].filter(Boolean).join("\n\n");
       this.history.push({ role: "assistant", content: full });
     }
     this.io.token(streamed ? `\n\n${extra}` : `${full}\n`);
@@ -889,7 +898,7 @@ export class Agent {
   // One request with no tools, on top of the conversation (so the server's cache has most of it), with almost no thinking.
   private async verdict(prompt: string, signal?: AbortSignal): Promise<string> {
     const llm = this.opts.llm.provider === "anthropic" ? this.opts.llm : { ...this.opts.llm, thinking: { tier: 0 as const, budget: 256, why: "the end-of-turn report" } };
-    const messages: Message[] = [...this.history, { role: "user", content: [{ type: "text", text: prompt }] }];
+    const messages: Message[] = [...withoutReports(this.history), { role: "user", content: [{ type: "text", text: prompt }] }];
     const promptTokens = estimateTokens(messages);
     const res = await complete(llm, messages, [], () => {}, signal, (p) => this.io.progress?.({ ...p, promptTokens }));
     return (res.content || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();

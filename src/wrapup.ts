@@ -4,6 +4,7 @@
 // same way: the Plan is reconciled (each open step marked done or not done,
 // with why), and the last line says plainly whether the task is done.
 
+import type { Message } from "./llm.ts";
 import { formatPlan, type Step } from "./plan.ts";
 
 // Why the turn ended. Only "answered" means the model chose to stop.
@@ -104,3 +105,42 @@ export function reportLine(r: Report): string {
 }
 
 export const REPORT_LINE = /^(✅ Done|⚠ Not finished)\b/;
+
+// A model that has seen "✅ Done" end every earlier answer starts ending its own
+// answers with it. Maxx writes that line, never the model: take off any it wrote
+// (with the "What I did:" line Maxx puts above a cut-short one).
+export function stripReport(text: string): string {
+  const lines = text.replace(/\s+$/, "").split("\n");
+  const bare = (l: string | undefined) => (l ?? "").replace(/^[\s>*_`]+|[\s*_`]+$/g, "");
+  const trim = () => { while (lines.length && !bare(lines.at(-1))) lines.pop(); };
+  while (lines.length && REPORT_LINE.test(bare(lines.at(-1)))) {
+    lines.pop();
+    trim();
+    if (/^What I did:/.test(bare(lines.at(-1)))) (lines.pop(), trim());
+  }
+  return lines.join("\n").replace(/\s+$/, "");
+}
+
+const hasReport = (text: string) => stripReport(text) !== text.replace(/\s+$/, "");
+
+// The conversation as the model sees it: earlier answers without Maxx's report
+// lines, so it has nothing to copy. The same every step, so the server's cache still holds.
+export const withoutReports = (history: Message[]): Message[] =>
+  history.some((m) => m.role === "assistant" && typeof m.content === "string" && hasReport(m.content))
+    ? history.map((m) => (m.role === "assistant" && typeof m.content === "string" && !m.tool_calls?.length && hasReport(m.content) ? { ...m, content: stripReport(m.content) } : m))
+    : history;
+
+// Sessions saved while the bug was in: an answer followed by a copy of itself
+// with the report line on twice. Keep one.
+export function dropRepeatedAnswers(history: Message[]): Message[] {
+  const out: Message[] = [];
+  for (const m of history) {
+    const prev = out.at(-1);
+    if (m.role === "assistant" && prev?.role === "assistant" && !m.tool_calls?.length && !prev.tool_calls?.length && typeof m.content === "string" && typeof prev.content === "string" && stripReport(m.content) === stripReport(prev.content)) {
+      out[out.length - 1] = { ...prev, content: m.content.length < prev.content.length ? m.content : prev.content };
+      continue;
+    }
+    out.push(m);
+  }
+  return out;
+}

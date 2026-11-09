@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent, type AgentIO } from "../src/loop.ts";
 import { Permissions } from "../src/permissions.ts";
-import { closeOpen, doubtful, parseWrap, reportLine, wrapPrompt } from "../src/wrapup.ts";
+import { closeOpen, doubtful, dropRepeatedAnswers, parseWrap, reportLine, stripReport, withoutReports, wrapPrompt } from "../src/wrapup.ts";
 import type { Step } from "../src/plan.ts";
 
 const plan = (...done: boolean[]): Step[] => done.map((d, i) => ({ text: `step ${i + 1}`, done: d }));
@@ -124,4 +124,37 @@ test("a plain question gets no report, and a finished plan gets a ✅ without as
   await a.send("write b.txt");
   expect(requests.length - m).toBe(4);
   expect((a.history.at(-1) as { content: string }).content).toBe("Wrote b.txt.\n\n✅ Done · plan 1 of 1 step done · changed 1 file");
+});
+
+test("a model that copies the ✅ Done line doesn't make Maxx answer twice", async () => {
+  const { a } = await agent();
+  // A question answered after a tool call: the turn gets a report.
+  script = [{ tool: { name: "bash", args: { command: "echo 30" } } }, { text: "There are 30 stations.\n\n✅ Done" }];
+  await a.send("how many Haitian stations?");
+  // Next turn: the model has seen "✅ Done" end its answers and writes it itself.
+  script = [{ tool: { name: "bash", args: { command: "echo 312" } } }, { text: "TuneIn has 312.\n\n✅ Done" }];
+  const answer = await a.send("how do the apps get more?");
+  const replies = a.history.filter((m) => m.role === "assistant" && !m.tool_calls?.length).map((m) => m.content);
+  expect(replies).toEqual(["There are 30 stations.\n\n✅ Done", "TuneIn has 312.\n\n✅ Done"]);
+  expect(answer).toBe("TuneIn has 312.\n\n✅ Done");
+  // The model never sees Maxx's report lines, so it has nothing to copy.
+  const sent = requests.at(-1).messages.filter((m: any) => m.role === "assistant" && typeof m.content === "string");
+  expect(sent.some((m: any) => m.content.includes("✅"))).toBe(false);
+});
+
+test("report lines come off the end of an answer, and repeated answers in old sessions fold into one", () => {
+  expect(stripReport("Hi.\n\n✅ Done\n\n✅ Done")).toBe("Hi.");
+  expect(stripReport("Hi.\n\nWhat I did: x\n\n⚠ Not finished · left: y")).toBe("Hi.");
+  expect(stripReport("What I did: x")).toBe("What I did: x");
+  expect(stripReport("✅ Done is a good word.\nOk")).toBe("✅ Done is a good word.\nOk");
+  const h = [
+    { role: "user" as const, content: "q" },
+    { role: "assistant" as const, content: "A.\n\n✅ Done" },
+    { role: "assistant" as const, content: "A.\n\n✅ Done\n\n✅ Done" },
+    { role: "user" as const, content: "q2" },
+  ];
+  expect(dropRepeatedAnswers(h).map((m) => m.content)).toEqual(["q", "A.\n\n✅ Done", "q2"]);
+  expect(withoutReports(h)[1]!.content).toBe("A.");
+  const clean = [{ role: "user" as const, content: "q" }];
+  expect(withoutReports(clean)).toBe(clean);
 });
