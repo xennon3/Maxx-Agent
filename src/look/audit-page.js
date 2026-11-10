@@ -56,7 +56,9 @@
       if (o.castShadow) out.castShadow++;
       const mats = Array.isArray(o.material) ? o.material : [o.material];
       const s = size(o);
-      const big = s ? Math.max(s.x, s.y, s.z) : 0;
+      // A merged mesh (LOOK.mergeStatic) spans the whole scene; judge it by its largest piece.
+      const part = o.geometry && o.geometry.userData && o.geometry.userData.lookPart;
+      const big = s ? (part ? Math.min(part, Math.max(s.x, s.y, s.z)) : Math.max(s.x, s.y, s.z)) : 0;
       if (s) {
         const p = o.getWorldPosition(new (o.position.constructor)());
         minX = Math.min(minX, p.x - s.x / 2); maxX = Math.max(maxX, p.x + s.x / 2); minZ = Math.min(minZ, p.z - s.z / 2); maxZ = Math.max(maxZ, p.z + s.z / 2);

@@ -88,18 +88,24 @@ export function mergeStatic(root) {
     if (o.userData.keep || o.userData.lookLamp || o.userData.lookGlow || o.userData.lookTraffic || o.isInstancedMesh || (o.isMesh && Array.isArray(o.material))) { keep.push(o); return; }
     if (!o.isMesh) return;
     const key = o.material.uuid + (o.geometry.index ? "i" : "n") + Object.keys(o.geometry.attributes).sort().join();
-    if (!byMat.has(key)) byMat.set(key, { mat: o.material, geos: [], cast: o.castShadow });
+    if (!byMat.has(key)) byMat.set(key, { mat: o.material, geos: [], cast: o.castShadow, part: 0 });
     const g = o.geometry.clone().applyMatrix4(new THREE.Matrix4().multiplyMatrices(inv, o.matrixWorld));
-    byMat.get(key).geos.push(g);
+    const e = byMat.get(key);
+    e.geos.push(g);
+    // Remember the largest piece, so a scene audit doesn't mistake 200 small lamps for one 300 m wall.
+    g.computeBoundingBox();
+    const b = g.boundingBox;
+    e.part = Math.max(e.part, b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z);
   });
   const out = new THREE.Group();
   out.name = root.name;
   out.userData = { ...root.userData };
   out.position.copy(root.position); out.quaternion.copy(root.quaternion); out.scale.copy(root.scale);
-  for (const { mat, geos, cast } of byMat.values()) {
+  for (const { mat, geos, cast, part } of byMat.values()) {
     const g = geos.length === 1 ? geos[0] : mergeGeometries(geos, false);
     if (!g) continue;
     g.userData.lookUV = true;
+    if (geos.length > 1) g.userData.lookPart = part;
     const m = mesh(g, mat, { cast });
     out.add(m);
   }
