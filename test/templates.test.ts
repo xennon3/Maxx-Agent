@@ -22,7 +22,8 @@ for (const t of TEMPLATES) {
     const files = await scaffold(t, dir);
     expect(files).toContain("MAXX.md");
     for (const f of files) expect((await stat(join(dir, f))).isFile()).toBe(true);
-    for (const f of files.filter((f) => !f.endsWith(".jar"))) {
+    // look/ is the bundled three.js + LOOK kit (minified vendor code), not template text.
+    for (const f of files.filter((f) => !f.endsWith(".jar") && !f.startsWith("look/"))) {
       const text = await readFile(join(dir, f), "utf8");
       expect(text).not.toContain("${"); // nothing left uninterpolated
       expect(text).not.toContain("[object");
