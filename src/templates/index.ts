@@ -3,6 +3,7 @@ import { chmod, mkdir, readdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { androidCompose } from "./android.ts";
 import { htmlGame } from "./game.ts";
+import { game3d } from "./game3d.ts";
 import { pythonScript } from "./python.ts";
 import { webApp } from "./webapp.ts";
 
@@ -28,7 +29,7 @@ export type Template = {
   files: (v: Vars) => Record<string, string | Uint8Array>;
 };
 
-export const TEMPLATES: Template[] = [androidCompose, htmlGame, pythonScript, webApp];
+export const TEMPLATES: Template[] = [androidCompose, htmlGame, game3d, pythonScript, webApp];
 
 export function findTemplate(id: string): Template {
   const t = TEMPLATES.find((t) => t.id === id);

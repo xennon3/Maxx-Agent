@@ -560,6 +560,40 @@ template ships with a starter set.
 - **Terminal:** `maxx sound deep crunchy explosion` and `maxx sound music boss 4` write .wav files.
 - The bank at the top of `sound.js` is plain JSON, one sound per line, so tweaks are easy to diff.
 
+## 3D games that look real: the 🎬 look tools and LOOK
+
+Local models build 3D scenes out of raw three.js parts: grey boxes for buildings, a capsule for the
+player, Lambert shading, no sky light, one canvas texture stretched over a 100 m wall. The 🎬 look
+toolset (it joins on its own when you ask for a 3D game, or when the project already uses three.js)
+gives them a realism kit instead.
+
+- **LOOK** (`game_look` writes it to `look/`): one script with three.js r180 and a kit on top.
+  `LOOK.stage({ preset: "neon-rain" })` sets up the renderer, a sky dome, the sun, image-based light
+  from a photographed sky (12 CC0 Poly Haven skies are bundled), filmic tone mapping, soft shadows,
+  ambient occlusion, bloom, a colour grade with grain and vignette, fog, rain and night lamps (light
+  pools, haze cones and long reflections on wet streets). Presets: neon-rain, cyberpunk, golden-hour,
+  clear-day, overcast, blue-hour, noir, misty-forest, desert, studio.
+- **PBR surfaces in metres**: asphalt (with puddles when wet), pavement, concrete, brick, plaster,
+  metal, grass, wood, car paint, glass... painted from noise in the page, so nothing is downloaded.
+  LOOK lays UVs out in metres on any mesh, so textures repeat instead of stretching.
+- **Facades**: windows, frames, grime under the sills and real-looking rooms behind each window
+  (interior mapping: floor, ceiling, furniture, lamps that switch on at night), on any box.
+- **Builders**: `LOOK.city()` (streets, kerbs, markings, crossings, mixed buildings that get taller
+  downtown, lamps, traffic lights, trees, parked cars, plus colliders and lanes for gameplay),
+  `LOOK.building`, `LOOK.car` (drives, wheels turn), `LOOK.human` (walks and runs), trees, neon signs.
+- **art_direction** writes ART.md before any code: the preset, mood, accent colours, signature
+  details, a real-world scale table and what's banned.
+- **look_check** opens the game headless, reads the live scene (materials, lighting, shadows, tone
+  mapping, flat or stretched surfaces, the player's height) and the screenshot (contrast, flat areas,
+  exposure), scores it out of 100 with numbered fixes, and asks the vision model for an art
+  director's critique. Maxx also runs a quick check on its own after it changes a 3D page.
+- **find_assets** searches and downloads CC0 models, textures and skies from Poly Haven (network on),
+  or from your own asset folder (`~/.maxx/assets`, or `MAXX_ASSETS`), credited in assets/CREDITS.md.
+- **`maxx new game-3d`**: an open-world starter (walk, run, get in a car and drive, traffic, P cycles
+  the look, R toggles rain) that already looks like a game.
+
+To change the kit itself, edit `src/look/runtime/*.js` and run `bun run build:look`.
+
 ## Engineer's tools: tests, git, eyes on the page
 
 Every project gets these as well as the file and shell tools. `/tools` (or the 🧰 chip) lists exactly

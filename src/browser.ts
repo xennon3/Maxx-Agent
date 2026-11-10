@@ -23,7 +23,7 @@ export async function openPage(browser: string, o: { width?: number; height?: nu
   const profile = await mkdtemp(join(tmpdir(), "maxx-shot-"));
   const args = [
     browser, ...(o.headed ? [] : ["--headless=new"]), "--remote-debugging-port=0", `--user-data-dir=${profile}`, `--window-size=${width},${height}`,
-    "--no-first-run", "--no-default-browser-check", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--hide-scrollbars", "--mute-audio",
+    "--no-first-run", "--no-default-browser-check", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--hide-scrollbars", "--mute-audio",
     ...(process.platform === "linux" && process.getuid?.() === 0 ? ["--no-sandbox"] : []),
     "about:blank",
   ];

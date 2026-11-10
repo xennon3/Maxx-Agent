@@ -25,6 +25,7 @@ import { ENGINEER_TOOLS, ENGINEER_PROMPT } from "./engineer.ts";
 import { DIRECTOR_TOOLS, DIRECTOR_PROMPT } from "./director.ts";
 import { REPO_TOOLS, REPO_PROMPT } from "./repo.ts";
 import { MUSIC_TOOLS, MUSIC_PROMPT } from "./music.ts";
+import { LOOK_TOOLS, LOOK_PROMPT } from "./look.ts";
 
 export const TOOLS: Tool<any>[] = [readFile, listFiles, grep, editFile, writeFile, bash, runTests, gitTool, gitCommit, snapPage, recipeTool, useTemplate, makeSounds];
 
@@ -54,6 +55,7 @@ export const TOOLSETS: Record<string, Toolset> = {
   },
   repo: { tools: REPO_TOOLS, prompt: REPO_PROMPT, about: "get repositories from GitHub or any git URL, branch, push, open pull requests, read issues and review comments" },
   music: { tools: MUSIC_TOOLS, prompt: MUSIC_PROMPT, about: "songs: compose multi-track music as text (WAV + MIDI), real songs with vocals from the local ACE-Step model, mixing" },
+  look: { tools: LOOK_TOOLS, prompt: LOOK_PROMPT, about: "🎬 3D games that look real: LOOK kit (sky light, PBR, shadows, bloom, rain, city/car/people builders), ART.md, look scores, CC0 assets" },
   director: { tools: DIRECTOR_TOOLS, prompt: DIRECTOR_PROMPT, about: "creative director: rival designs you pick from, sketch to app, one-line asset kits, persona testers, design-crime checks, build time-lapses" },
 };
 

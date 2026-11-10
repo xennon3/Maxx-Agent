@@ -2,6 +2,8 @@ import { complete, toWire, type ContentPart, type LLMConfig, type Message, type 
 import { TOOLS, TOOLSETS, toolSpecs, findTool, withToolsets } from "./tools/index.ts";
 import { wantsRepo } from "./tools/repo.ts";
 import { wantsMusic } from "./tools/music.ts";
+import { wantsLook, lookAlarm } from "./tools/look.ts";
+import { usesThree } from "./look/kit.ts";
 import type { Tool } from "./tools/types.ts";
 import { Permissions, isNo, whyNo, type Answer } from "./permissions.ts";
 import { Checkpoints } from "./checkpoint.ts";
@@ -156,6 +158,9 @@ const PRUNE_AT = 4;
 const FIX_TRIES = 3;
 // Rounds of the ugliness alarm per turn: one list of crimes, then the model's fix stands.
 const ALARM_ROUNDS = 1;
+// The look alarm: at most this many rounds a turn, and the score that passes.
+const LOOK_ROUNDS = 2;
+const LOOK_PASS = 70;
 
 function dataImage(url: string): Image | null {
   const m = /^data:(image\/(?:png|jpeg));base64,(.+)$/.exec(url);
@@ -196,6 +201,7 @@ export class Agent {
   // Screenshots for the time-lapse, taken one at a time in the background.
   private frames: Promise<void> = Promise.resolve();
   private alarmRounds = 0;
+  private lookRounds = 0;
   // Images the user attached to the latest message (sketch_to_app uses them).
   private attachedNow: Image[] = [];
   private turnSignal?: AbortSignal;
@@ -500,6 +506,11 @@ export class Agent {
       this.io.note("(added the 🎼 music tools for this: compose, make_song, mix_audio)");
       prompt = true;
     }
+    if (!this.opts.chat && TOOLSETS.look && !this.toolsets.includes("look") && (wantsLook(ask) || (await usesThree(this.opts.cwd).catch(() => false)))) {
+      this.useToolsets([...this.toolsets, "look"]);
+      this.io.note("(added the 🎬 look tools for this: art direction, the LOOK realism kit, look scores, CC0 assets)");
+      prompt = true;
+    }
     if (prompt) await this.refreshSystemPrompt();
   }
 
@@ -526,6 +537,7 @@ export class Agent {
     this.cleanRuns = [];
     this.asked = 0;
     this.alarmRounds = 0;
+    this.lookRounds = 0;
     this.turnSignal = signal;
     this.attachedNow = Array.isArray(userText) ? userText.flatMap((p) => (p.type === "image_url" ? [dataImage(p.image_url.url)].filter((x): x is Image => !!x) : [])) : [];
     if (Array.isArray(userText)) this.pruneImages();
@@ -841,6 +853,15 @@ export class Agent {
           return "fix";
         }
       }
+      if (this.opts.alarm && files.some((f) => isUiFile(f) || /\.m?js$/i.test(f)) && this.lookRounds < LOOK_ROUNDS && !signal?.aborted && (await usesThree(this.opts.cwd).catch(() => false))) {
+        this.lookRounds++;
+        const look = await this.lookAlarmCheck(files, signal);
+        if (look && look.score < LOOK_PASS) {
+          const text = `Maxx's look check opened the 3D scene and scored it ${look.score}/100:\n${look.text}\nFix the top items with the LOOK kit (look/README.md), then reply when done.`;
+          this.history.push({ role: "user", content: [{ type: "text", text }] });
+          return "fix";
+        }
+      }
     }
     const open = this.plan.map((s, i) => (s.done ? 0 : i + 1)).filter(Boolean);
     if (!nudged && this.planTurn === this.turnNo && open.length) {
@@ -1067,6 +1088,22 @@ export class Agent {
       return text;
     } catch (e) {
       this.io.toolEnd("ugly_check", `skipped: ${(e as Error).message}`);
+      return null;
+    }
+  }
+
+  // The look alarm: a quick scene audit of a 3D page that changed. Null: nothing to check.
+  async lookAlarmCheck(files: string[], signal?: AbortSignal): Promise<{ score: number; text: string } | null> {
+    const pages = files.filter((f) => /\.html?$/i.test(f));
+    const web = await webPage({ cwd: this.opts.cwd, changed: pages.length ? pages : ["index.html"], android: false, ...this.surfaces }).catch(() => null);
+    if (!web) return null;
+    this.io.toolStart("look_check", JSON.stringify({ page: web.label }));
+    try {
+      const r = await lookAlarm(this.opts.cwd, web.url, signal);
+      this.io.toolEnd("look_check", r ? r.text : "no 3D scene on the page");
+      return r;
+    } catch (e) {
+      this.io.toolEnd("look_check", `skipped: ${(e as Error).message}`);
       return null;
     }
   }
