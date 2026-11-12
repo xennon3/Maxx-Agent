@@ -70,7 +70,10 @@ test("attach a file, send it, delete the session and undo", async () => {
     ws.send(JSON.stringify({ type: "send", text: "why does this fail?", files: [{ id: up.id, mode: "attach" }] }));
     const after = await waitFor((m) => m.type === "state" && m.current?.history.length === 2);
     expect(JSON.stringify(seen[0].messages)).toContain("throw a;");
-    expect(after.current.history[0]).toEqual({ role: "user", text: "why does this fail?", files: ["app.ts"] });
+    expect(after.current.history[0]).toMatchObject({ role: "user", text: "why does this fail?", files: ["app.ts"] });
+    // ⏱ Each finished turn carries when it started and how long it took.
+    expect(Date.parse(after.current.history[0].at)).toBeGreaterThan(Date.now() - 60000);
+    expect(after.current.history[0].ms).toBeGreaterThanOrEqual(0);
     const session = after.current.session;
     expect(after.projects[0].sessions[0].id).toBe(session);
 

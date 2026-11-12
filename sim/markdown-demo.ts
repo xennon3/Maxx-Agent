@@ -89,5 +89,20 @@ for (const id of ONLY) {
   await p.evaluate(() => { const l = document.getElementById("log")!; l.scrollTop = 0; });
   await p.screenshot({ path: join(OUT, `${id}.png`) });
 }
+// ⏱ Timers: a finished request with its start and length, and one still running.
+await p.evaluate(() => (0, eval)("skinApply")("abduction"));
+await p.evaluate(() => {
+  const ev = (s: string) => (0, eval)(s);
+  document.getElementById("log")!.innerHTML = "";
+  const t0 = Date.now() - 9 * 60000;
+  ev("userMsg")("Make a tip calculator app and test it on my phone", [], t0);
+  ev("add")(ev("div")("msg", "Done: the app builds, installs and splits a bill three ways on the phone."));
+  ev("tookStamp")({ at: new Date(t0).toISOString(), ms: 252000 });
+  ev("userMsg")("Add a dark mode", [], Date.now() - 125000);
+  ev("busy = true; turnAt = Date.now() - 125000");
+  ev("activity")({ phase: "tool", title: "Edit app/src/main/res/values/themes.xml", elapsedMs: 4000 });
+});
+await p.waitForTimeout(400);
+await p.screenshot({ path: join(OUT, "timers.png"), clip: { x: 260, y: 0, width: 1020, height: 1500 } });
 console.log("shots in", OUT);
 await browser.close(); ui.stop(); lm.stop(); process.exit(0);
