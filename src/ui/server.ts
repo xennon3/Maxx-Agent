@@ -12,6 +12,7 @@ import { recordTo } from "../devices/run.ts";
 import { textOf, typedText } from "../context.ts";
 import { fitContext } from "../modelctx.ts";
 import { maxxHome } from "../sessions.ts";
+import { matchTimings, timingFor, type Timing } from "../timings.ts";
 import { deleteSession, listProjects, loadSession, newSessionId, restoreSession, saveSession, stripAttachments } from "../sessions.ts";
 import { buildTurn, imageLimits, type Upload } from "../attach.ts";
 import { PAGE } from "./page.ts";
@@ -93,6 +94,9 @@ export async function startUI(opts: UIOptions) {
     created: string;
     title: string;
     controller: AbortController | null;
+    // When the running turn started, and how long each finished turn took.
+    turnAt?: number;
+    timings: Timing[];
   } | null = null;
   const pending = new Map<string, { res: (a: Answer, stopped?: boolean, why?: string) => void; stillNeeded?: () => boolean }>();
   // Follow-up questions waiting for the user (ask_user, Agent mode's briefing).
@@ -220,7 +224,7 @@ export async function startUI(opts: UIOptions) {
   }
 
   // Each history entry the page draws, with the escalation banners in place.
-  function transcript(agent: Agent) {
+  function transcript(agent: Agent, timings: Timing[] = []) {
     const out: Record<string, unknown>[] = [];
     const marks = (i: number) => agent.marks.filter((m) => m.at === i).forEach((m) => out.push({ role: "mark", text: m.text, active: m.active, learned: m.learned, retracted: m.retracted }));
     agent.history.forEach((m, i) => {
@@ -233,6 +237,8 @@ export async function startUI(opts: UIOptions) {
       out.push({ role: m.role, text: textOf(m.content as any), tools: "tool_calls" in m ? m.tool_calls?.map((t) => ({ name: t.function.name, args: t.function.arguments })) : undefined });
     });
     agent.marks.filter((m) => m.at >= agent.history.length).forEach((m) => out.push({ role: "mark", text: m.text, active: m.active, learned: m.learned, retracted: m.retracted }));
+    const users = out.filter((h) => h.role === "user");
+    matchTimings(users.map((h) => String(h.text ?? "")), timings).forEach((t, i) => t && Object.assign(users[i], { at: t.start, ms: t.ms, stopped: t.stopped }));
     return out;
   }
 
@@ -273,7 +279,8 @@ export async function startUI(opts: UIOptions) {
         plan: s.agent.plan,
         board: s.agent.board,
         lab: s.agent.lab && { ...s.agent.lab, dir: undefined },
-        history: transcript(s.agent),
+        history: transcript(s.agent, s.timings),
+        turnAt: s.controller ? s.turnAt : undefined,
         helper: s.agent.helper && { model: s.agent.helper.model, kind: s.agent.helper.kind },
         rules: s.agent.chat ? [] : await loadRules(s.cwd),
         canUndo: s.agent.canUndo,
@@ -309,7 +316,7 @@ export async function startUI(opts: UIOptions) {
 
   async function save() {
     if (!state || state.agent.history.length < 2) return;
-    const s = await saveSession({ id: state.agent.session, cwd: state.cwd, created: state.created, model: state.llm.model, toolsets: state.agent.toolsets, history: state.agent.history, title: state.title });
+    const s = await saveSession({ id: state.agent.session, cwd: state.cwd, created: state.created, model: state.llm.model, toolsets: state.agent.toolsets, history: state.agent.history, title: state.title, timings: state.timings });
     state.title ||= s.title;
   }
 
@@ -344,7 +351,7 @@ export async function startUI(opts: UIOptions) {
     // The alarm and the time-lapse look at the Preview panel's page, or the dev server it runs.
     if (!chat) agent.surfaces = { previewUrl: (p) => stage!.preview.url(p), serverUrl: () => (stage!.runner?.list() ?? []).filter((p) => p.status === "running" && p.url).at(-1)?.url };
     if (saved) await agent.restore(saved.id, saved.history);
-    state = { cwd: dir, agent, permissions, llm, created: saved?.created ?? new Date().toISOString(), title: saved?.title ?? "", controller: null };
+    state = { cwd: dir, agent, permissions, llm, created: saved?.created ?? new Date().toISOString(), title: saved?.title ?? "", controller: null, timings: saved?.timings ?? [] };
     // A banner at the top, so it outlasts the redraw after each turn.
     if (moved) agent.marks.push({ at: agent.history.length, text: moved, active: false });
     if (fit.note) agent.marks.push({ at: agent.history.length, text: fit.note.replace(/^\(|\)$/g, ""), active: false });
@@ -361,6 +368,7 @@ export async function startUI(opts: UIOptions) {
     state.agent.session = newSessionId();
     state.created = new Date().toISOString();
     state.title = "";
+    state.timings = [];
     if (!state.agent.chat) recordTo(resolve(state.cwd, ".maxx", "replays", `${state.agent.session}.jsonl`));
   }
 
@@ -679,7 +687,8 @@ export async function startUI(opts: UIOptions) {
         if ((m.agent || m.crew) && s.agent.chat) throw new Error(`${m.crew ? "Crew" : "Agent"} mode works on a project; open a project folder first`);
         if ((m.agent || m.crew) && files.length) throw new Error(`${m.crew ? "Crew" : "Agent"} mode takes a goal in words; send attachments as a normal message`);
         const controller = (s.controller = new AbortController());
-        send({ type: "busy", busy: true });
+        const turnAt = (s.turnAt = Date.now());
+        send({ type: "busy", busy: true, at: turnAt });
         turn = [];
         try {
           if (m.crew) {
@@ -728,6 +737,7 @@ export async function startUI(opts: UIOptions) {
           send({ type: "error", text: err.name === "AbortError" ? "(stopped)" : err.message });
         } finally {
           s.controller = null;
+          if (String(m.text ?? "").trim()) s.timings.push(timingFor(String(m.text), turnAt, Date.now(), controller.signal.aborted));
           await save();
           send({ type: "busy", busy: false });
           send(await snapshot());

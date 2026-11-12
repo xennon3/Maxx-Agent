@@ -343,6 +343,7 @@ function skinApply(id) {
   const g = document.querySelector(".brand b"); if (g) g.textContent = t.glyph;
   if ($("skinBtn")) $("skinBtn").textContent = t.glyph + " " + t.name;
   try { localStorage.setItem("maxx.skin", t.id); } catch {}
+  dispatchEvent(new Event("maxx-skin"));
 }
 function skinGrid() {
   const grid = $("skinGrid"); grid.innerHTML = "";

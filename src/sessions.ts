@@ -3,6 +3,7 @@ import { basename, join, resolve } from "node:path";
 import { mkdir, readdir, rename, stat, unlink, utimes } from "node:fs/promises";
 import type { Message } from "./llm.ts";
 import { textOf, typedText } from "./context.ts";
+import type { Timing } from "./timings.ts";
 
 // Saved sessions, grouped by project directory:
 //   ~/.maxx/projects/<name>-<hash>/sessions/<id>.json
@@ -19,6 +20,8 @@ export type Session = {
   toolsets: string[];
   turns: number;
   history: Message[];
+  // How long each turn took (see timings.ts).
+  timings?: Timing[];
 };
 
 export type SessionInfo = Omit<Session, "history">;

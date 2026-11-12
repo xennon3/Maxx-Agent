@@ -1,5 +1,6 @@
 import { STAGE_CSS, STAGE_HTML, STAGE_JS } from "./stage-page.ts";
 import { VIS_CSS, VIS_JS } from "./visuals-page.ts";
+import { MD_CSS, MD_JS } from "./markdown.ts";
 import { SOUND_CSS, SOUND_JS } from "./sound-page.ts";
 import { MUSIC_CSS, MUSIC_JS } from "./music-page.ts";
 import { BREVITY_LABEL } from "../brevity.ts";
@@ -156,6 +157,10 @@ main:has(#okdock.on) .composer textarea { height: 40px; }
 .activity .spin { color: var(--accent); font-family: var(--mono); width: 1ch; flex: none; }
 .activity .what { font-weight: 600; flex: none; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .activity .meta { color: var(--mute); flex: none; font-variant-numeric: tabular-nums; }
+.activity .total { margin-left: auto; flex: none; color: var(--accent); font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; padding-left: 8px; }
+.msg.user .when { display: block; text-align: right; font-size: 11px; opacity: .6; margin-top: 2px; white-space: nowrap; }
+.took { align-self: flex-start; font-size: 12px; color: var(--mute); font-family: var(--mono); padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); }
+.took.stopped { color: var(--bad); }
 .activity .tail { color: var(--mute); font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .tool.live { border-color: var(--accent); }
 .tool.live summary::after { content: ""; }
@@ -344,6 +349,7 @@ ${STAGE_CSS}
 ${VOICE_CSS}
 ${LAB_CSS}
 ${VIS_CSS}
+${MD_CSS}
 ${SOUND_CSS}
 ${MUSIC_CSS}
 ${ALIEN_CSS}
@@ -505,7 +511,7 @@ ${SKIN_CSS}
   ${LAB_VIEW}
   <div id="log"></div>
   <div id="okdock"></div>
-  <div class="activity" id="activity"><span class="buddy" id="actBuddy"></span><span class="spin" id="actSpin">⠋</span><span class="what" id="actWhat"></span><span class="meta" id="actMeta"></span><span class="tail" id="actTail"></span></div>
+  <div class="activity" id="activity"><span class="buddy" id="actBuddy"></span><span class="spin" id="actSpin">⠋</span><span class="what" id="actWhat"></span><span class="meta" id="actMeta"></span><span class="tail" id="actTail"></span><span class="total" id="actTotal" title="How long Maxx has been working on this request"></span></div>
   ${VOICE_HINT}
   <div class="composer">
     <div class="files" id="files"></div>
@@ -614,7 +620,7 @@ const $ = (id) => document.getElementById(id);
 const token = new URLSearchParams(location.search).get("t");
 let ws, state = null, busy = false, live = null, streaming = null;
 // While the model streams: tool cards being written (by call index, not run yet), the thinking block, the status bar.
-let writing = [], thinkCard = null, act = null;
+let writing = [], thinkCard = null, act = null, turnAt = 0;
 // The helper model's id while it has the wheel.
 let helperLive = null;
 
@@ -706,12 +712,6 @@ function label(name, args) {
     (a.element !== undefined ? "element " + a.element : a.x !== undefined ? a.x + "," + a.y : a.crashes ? "crashes" : a.project_dir ?? a.apk ?? "");
   return [VERBS[name] || name, String(main)];
 }
-function md(text) {
-  return esc(text)
-    .replace(/\`\`\`[\\w-]*\\n([\\s\\S]*?)\`\`\`/g, (_, c) => "<pre>" + c + "</pre>")
-    .replace(/\`([^\`\\n]+)\`/g, "<code>$1</code>")
-    .replace(/\\*\\*([^*\\n]+)\\*\\*/g, "<b>$1</b>");
-}
 // What the user folded away (the task board, the Plan, the live code preview), remembered in this browser.
 const fold = { board: false, plan: false, live: false };
 for (const k in fold) try { fold[k] = localStorage.getItem("maxx.fold." + k) === "1"; } catch {}
@@ -801,7 +801,9 @@ function toolCard(name, args, result) {
 // The status bar under the transcript, Claude Code style: what, how much, how long.
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 let spinFrame = 0;
-const clock = (ms) => { const s = Math.floor(ms / 1000); return s < 60 ? s + "s" : Math.floor(s / 60) + "m" + String(s % 60).padStart(2, "0") + "s"; };
+const clock = (ms) => { const s = Math.floor(ms / 1000); return s < 60 ? s + "s" : s < 3600 ? Math.floor(s / 60) + "m" + String(s % 60).padStart(2, "0") + "s" : Math.floor(s / 3600) + "h" + String(Math.floor(s / 60) % 60).padStart(2, "0") + "m"; };
+// Wall-clock time for stamps: 22:14 today, "Nov 3, 22:14" on another day.
+const hhmm = (t) => { const d = new Date(t); const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); return d.toDateString() === new Date().toDateString() ? time : d.toLocaleDateString([], { month: "short", day: "numeric" }) + ", " + time; };
 function activity(a) { act = a && Object.assign({ at: Date.now(), elapsedMs: 0 }, a); drawActivity(); }
 function drawActivity() {
   const bar = $("activity");
@@ -817,6 +819,8 @@ function drawActivity() {
   $("actWhat").textContent = act.title || "Working";
   $("actMeta").textContent = meta.join(" · ");
   $("actTail").textContent = act.tail || "";
+  // The whole request so far, not just this step.
+  $("actTotal").textContent = turnAt ? "⏱ " + clock(Date.now() - turnAt) + " so far" : "";
 }
 setInterval(drawActivity, 100);
 
@@ -951,6 +955,7 @@ function on(m) {
       if (!busy) { helperLive = null; $("activity").classList.remove("helper"); }
       if (!busy) { streaming = null; thinkCard = null; abandonWriting(); for (const id of [...askCards.keys()]) askClosed(id, "Stopped"); }
       if (busy) alienTurn();
+      turnAt = busy ? m.at || Date.now() : 0;
       activity(busy ? { title: "Starting" } : null);
       return;
     case "done": streaming = null; return;
@@ -1070,10 +1075,16 @@ function attachedNames(names) {
   for (const n of names) { const s = document.createElement("span"); s.textContent = "📎 " + n; a.appendChild(s); }
   return a;
 }
-function userMsg(text, names) {
+function userMsg(text, names, at) {
   const d = add(div("msg user", text));
   const a = attachedNames(names); if (a) d.appendChild(a);
+  const w = d.appendChild(div("when", hhmm(at || Date.now()))); w.title = new Date(at || Date.now()).toLocaleString();
   return d;
+}
+// Under a finished request: how long it took and when it ended.
+function tookStamp(h) {
+  const t = add(div("took" + (h.stopped ? " stopped" : ""), "⏱ " + (h.stopped ? "Stopped after " : "Took ") + clock(h.ms) + " · " + hhmm(Date.parse(h.at) + h.ms)));
+  t.title = "Started " + new Date(h.at).toLocaleString() + ", finished " + new Date(Date.parse(h.at) + h.ms).toLocaleString();
 }
 
 // A follow-up question: click a choice, or type an answer. Skip lets Maxx go with its guess.
@@ -1199,6 +1210,7 @@ document.addEventListener("keydown", (e) => {
 
 ${STAGE_JS}
 ${VOICE_JS}
+${MD_JS}
 ${VIS_JS}
 ${SOUND_JS}
 ${MUSIC_JS}
@@ -1209,6 +1221,7 @@ ${CONNECT_JS}
 function render(s) {
   state = s;
   const cur = s.current;
+  if (cur && cur.busy && cur.turnAt) turnAt = cur.turnAt;
   $("pickRow").style.display = s.platform === "win32" ? "flex" : "none";
   // Sidebar
   document.body.classList.toggle("chat", !!(cur && cur.chat));
@@ -1303,11 +1316,13 @@ function render(s) {
     else if (!cur.history.length) log.innerHTML = '<div class="empty"><h2>' + esc(cur.cwd.split(/[\\\\/]/).filter(Boolean).pop() || "") + '</h2>Ask for something: "make a tip calculator app and test it on my phone", "why does the build fail?"</div>';
     if (!cur.history.length && !cur.chat && !cur.research && s.templates) $("log").querySelector(".empty").appendChild(starters(s.templates));
     const results = cur.history.filter((h) => h.role === "tool").map((h) => h.text);
-    let ri = 0;
+    let ri = 0, timed = null;
+    const stampTurn = () => { if (timed) tookStamp(timed); timed = null; };
     for (const h of cur.history) {
+      if (h.role === "user") stampTurn();
       if (h.role === "mark" && h.retracted) add(retracted(h.retracted.why, h.retracted.text));
       else if (h.role === "mark") add(h.learned ? div("msg learned", h.text) : div("mark" + (h.active ? " up" : ""), (h.active ? "🧠 " : "↩ ") + h.text));
-      else if (h.role === "user") userMsg(h.text, h.files);
+      else if (h.role === "user") { userMsg(h.text, h.files, h.at && Date.parse(h.at)); if (h.at && h.ms !== undefined) timed = h; }
       else if (h.role === "note") note(h.text.split("\\n")[0]);
       else if (h.role === "assistant") {
         if (h.text) paintReply(add(div("msg")), h.text, cur.chat);
@@ -1319,6 +1334,7 @@ function render(s) {
         }
       }
     }
+    stampTurn();
     $("log").scrollTop = $("log").scrollHeight;
   }
 }
