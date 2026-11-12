@@ -53,6 +53,7 @@ export async function systemPrompt(cwd: string, toolsetNotes: string[] = []): Pr
     "- Use git to see what changed and git_commit to save finished work when the user asks for a commit.",
     "- If a tool returns an error, fix the arguments and try again instead of giving up.",
     "- When you are done, reply in plain text with a short summary of what changed. Do not call tools in that final reply.",
+    "- Your replies are shown as Markdown: headings, lists and | tables | all render. For a diagram (architecture, data flow, steps), write a ```mermaid block (flowchart LR/TD, sequenceDiagram, stateDiagram-v2) and the app draws it; don't draw boxes with ASCII art.",
     "- If the user denies a tool call, respect it and ask how they want to proceed.",
     ...toolsetNotes.map((n) => "\n" + n),
     ...memory.notes.map((m) => `\nProject notes from ${m.file}:\n${m.text}`),

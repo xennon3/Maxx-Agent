@@ -1,5 +1,6 @@
 import { STAGE_CSS, STAGE_HTML, STAGE_JS } from "./stage-page.ts";
 import { VIS_CSS, VIS_JS } from "./visuals-page.ts";
+import { MD_CSS, MD_JS } from "./markdown.ts";
 import { SOUND_CSS, SOUND_JS } from "./sound-page.ts";
 import { MUSIC_CSS, MUSIC_JS } from "./music-page.ts";
 import { BREVITY_LABEL } from "../brevity.ts";
@@ -344,6 +345,7 @@ ${STAGE_CSS}
 ${VOICE_CSS}
 ${LAB_CSS}
 ${VIS_CSS}
+${MD_CSS}
 ${SOUND_CSS}
 ${MUSIC_CSS}
 ${ALIEN_CSS}
@@ -705,12 +707,6 @@ function label(name, args) {
   const main = a.template ?? a.path ?? a.query ?? a.url ?? a.libraryName ?? a.question ?? a.command ?? a.pattern ?? a.keys ?? a.key ?? a.target ?? a.direction ?? (a.text !== undefined ? JSON.stringify(a.text) : undefined) ??
     (a.element !== undefined ? "element " + a.element : a.x !== undefined ? a.x + "," + a.y : a.crashes ? "crashes" : a.project_dir ?? a.apk ?? "");
   return [VERBS[name] || name, String(main)];
-}
-function md(text) {
-  return esc(text)
-    .replace(/\`\`\`[\\w-]*\\n([\\s\\S]*?)\`\`\`/g, (_, c) => "<pre>" + c + "</pre>")
-    .replace(/\`([^\`\\n]+)\`/g, "<code>$1</code>")
-    .replace(/\\*\\*([^*\\n]+)\\*\\*/g, "<b>$1</b>");
 }
 // What the user folded away (the task board, the Plan, the live code preview), remembered in this browser.
 const fold = { board: false, plan: false, live: false };
@@ -1199,6 +1195,7 @@ document.addEventListener("keydown", (e) => {
 
 ${STAGE_JS}
 ${VOICE_JS}
+${MD_JS}
 ${VIS_JS}
 ${SOUND_JS}
 ${MUSIC_JS}

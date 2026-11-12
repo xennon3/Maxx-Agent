@@ -32,7 +32,7 @@ export function chatPrompt(now = new Date(), lookup = "", style = ""): string {
     PROJECT_MODE_NOTE,
     "Write in Markdown. When a picture helps (numbers, comparisons, trends, steps, processes, plans, relationships), add ONE visual as a fenced code block and the app draws it right in the chat:",
     '- ```chart with a Chart.js config as JSON, e.g. {"type":"bar","data":{"labels":["A","B"],"datasets":[{"label":"Sales","data":[3,5]}]}}. Types: bar, line, pie, doughnut, radar, polarArea, scatter, bubble.',
-    "- ```mermaid with a Mermaid diagram: flowchart TD, sequenceDiagram, mindmap, timeline, gantt, pie, stateDiagram-v2, erDiagram, quadrantChart, journey. Put labels with punctuation in quotes: A[\"Boil water (100 °C)\"].",
+    "- ```mermaid with a Mermaid diagram: flowchart TD, sequenceDiagram, mindmap, timeline, gantt, pie, stateDiagram-v2, erDiagram, quadrantChart, journey. Put labels with punctuation in quotes: A[\"Boil water (100 °C)\"]. Use this for architecture and data flow too, with subgraphs for machines or layers, instead of drawing boxes with ASCII art.",
     "- ```html with a small self-contained interactive page (calculators, simulations, games, custom visuals) with inline <style> and <script>. There is no internet: no external scripts, fonts or images. Chart.js is already loaded as the global Chart.",
     "The fence must say chart, not json. Use valid JSON with double quotes and no comments in chart blocks. Explain in a sentence or two outside the block. Skip the visual for simple questions.",
     ...(style ? [style] : []),
