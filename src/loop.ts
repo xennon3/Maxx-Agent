@@ -3,6 +3,7 @@ import { TOOLS, TOOLSETS, toolSpecs, findTool, withToolsets } from "./tools/inde
 import { wantsRepo } from "./tools/repo.ts";
 import { wantsMusic } from "./tools/music.ts";
 import { wantsLook, lookAlarm } from "./tools/look.ts";
+import { wantsBlender, hasBlendFiles } from "./tools/blender.ts";
 import { usesThree } from "./look/kit.ts";
 import type { Tool } from "./tools/types.ts";
 import { Permissions, isNo, whyNo, type Answer } from "./permissions.ts";
@@ -506,7 +507,15 @@ export class Agent {
       this.io.note("(added the 🎼 music tools for this: compose, make_song, mix_audio)");
       prompt = true;
     }
-    if (!this.opts.chat && TOOLSETS.look && !this.toolsets.includes("look") && (wantsLook(ask) || (await usesThree(this.opts.cwd).catch(() => false)))) {
+    const blender = !this.opts.chat && TOOLSETS.blender && (wantsBlender(ask) || hasBlendFiles(this.opts.cwd));
+    if (blender && !this.toolsets.includes("blender")) {
+      this.useToolsets([...this.toolsets, "blender"]);
+      this.io.note("(added the 🧊 Blender tools for this: realistic scenes, renders, turntables, scanned assets)");
+      prompt = true;
+    }
+    // A Blender scene isn't a three.js game: leave the look tools out unless the ask is about a game.
+    const gameAsk = /\bgame|three\.?js|webgl/i.test(ask);
+    if (!this.opts.chat && TOOLSETS.look && !this.toolsets.includes("look") && (!blender || gameAsk) && (wantsLook(ask) || (await usesThree(this.opts.cwd).catch(() => false)))) {
       this.useToolsets([...this.toolsets, "look"]);
       this.io.note("(added the 🎬 look tools for this: art direction, the LOOK realism kit, look scores, CC0 assets)");
       prompt = true;
