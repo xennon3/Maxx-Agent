@@ -3,6 +3,7 @@ import { VIS_CSS, VIS_JS } from "./visuals-page.ts";
 import { MD_CSS, MD_JS } from "./markdown.ts";
 import { SOUND_CSS, SOUND_JS } from "./sound-page.ts";
 import { MUSIC_CSS, MUSIC_JS } from "./music-page.ts";
+import { LIB_CSS, LIB_JS } from "./library-page.ts";
 import { BREVITY_LABEL } from "../brevity.ts";
 import { THINKING_LABEL, THINKING_SAY } from "../thinking.ts";
 import { VOICE_CSS, VOICE_HINT, VOICE_HTML, VOICE_JS } from "./voice-page.ts";
@@ -352,6 +353,7 @@ ${VIS_CSS}
 ${MD_CSS}
 ${SOUND_CSS}
 ${MUSIC_CSS}
+${LIB_CSS}
 ${ALIEN_CSS}
 ${CONNECT_CSS}
 /* Layout (batch 4): one calm header row, grouped menus, a centered reading column and one message box with its tools inside. */
@@ -871,6 +873,7 @@ function on(m) {
   connectUI.on(m);
   soundLab.on(m);
   musicTab.on(m);
+  libraryTab.on(m);
   switch (m.type) {
     case "state": return render(m);
     case "progress": return progress(m);
@@ -1214,6 +1217,7 @@ ${MD_JS}
 ${VIS_JS}
 ${SOUND_JS}
 ${MUSIC_JS}
+${LIB_JS}
 ${ALIEN_JS}
 ${SKIN_JS}
 ${CONNECT_JS}

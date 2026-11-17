@@ -48,6 +48,9 @@ export type Tool<S extends z.ZodObject = z.ZodObject> = {
   preview?: (args: z.infer<S>, ctx: ToolContext) => Promise<string> | string;
   // A short key used for "always allow" rules, e.g. the command for bash.
   ruleKey?: (args: z.infer<S>) => string;
+  // What the call acts on, for the repeat check: a call that re-runs a file
+  // (blender_scene with just a name) is a new call once the file changed.
+  repeatKey?: (args: z.infer<S>, cwd: string) => string;
   // When the risk depends on the call (github: reading a PR is free, opening one is not).
   riskOf?: (args: z.infer<S>) => Risk;
   // The safety net for tools other than bash: why ⚡ auto-run should still ask

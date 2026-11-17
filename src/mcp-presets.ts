@@ -94,9 +94,9 @@ export const PRESETS: Record<string, Preset> = {
     about: "turn PDF, Word, Excel, PowerPoint, images and audio into Markdown the model can read",
   },
   blender: {
-    icon: "🧊", title: "Blender", kind: "make", requires: ["uv"],
-    command: "uvx", args: ["blender-mcp"],
-    about: "build 3D scenes and game assets in Blender (install the blender-mcp add-on in Blender and click Connect)",
+    icon: "🧊", title: "Blender (live window)", kind: "make", requires: ["uv"],
+    command: "uvx", args: ["mcp-for-blender"], env: { DISABLE_TELEMETRY: "true" },
+    about: "drive the Blender window you have open, live: you watch objects appear. One-time setup: run  uvx mcp-for-blender install-addon , open Blender, press N, MCP for Blender tab, Start MCP Server. (Maxx's own 🧊 blender tools need none of this.)",
   },
   github: {
     icon: "🐙", title: "GitHub", kind: "code", url: "https://api.githubcopilot.com/mcp/",

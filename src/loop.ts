@@ -3,6 +3,7 @@ import { TOOLS, TOOLSETS, toolSpecs, findTool, withToolsets } from "./tools/inde
 import { wantsRepo } from "./tools/repo.ts";
 import { wantsMusic } from "./tools/music.ts";
 import { wantsLook, lookAlarm } from "./tools/look.ts";
+import { wantsBlender, hasBlendFiles } from "./tools/blender.ts";
 import { usesThree } from "./look/kit.ts";
 import type { Tool } from "./tools/types.ts";
 import { Permissions, isNo, whyNo, type Answer } from "./permissions.ts";
@@ -21,7 +22,9 @@ import { bash } from "./tools/bash.ts";
 import { NETWORK_PROMPT } from "./network.ts";
 import { BREVITY_PROMPT, DEFAULT_BREVITY, type Brevity } from "./brevity.ts";
 import { BUDGET, DEFAULT_THINKING, planFor, sizeAsk, THINKING_PROMPT, type Thinking, type ThinkPlan } from "./thinking.ts";
-import { lookupPrompt, WEB_TOOLS } from "./web.ts";
+import { librarySearch, lookupPrompt, offlineTools, WEB_TOOLS } from "./web.ts";
+import { addLesson as addNote, getPage, lessonMessages, loadSettings as librarySettings, markLessonsUsed, notebookNote, parseLessons, relevantLessons, researched, verifyLesson, type WebCall } from "./library/index.ts";
+import { useEmbedServer } from "./library/embed.ts";
 import { contextFromError } from "./modelctx.ts";
 import { finishNote, finishWarning, FINISH_TRIES, unfinished, type Unfinished } from "./unfinished.ts";
 import { mcpHub } from "./mcp.ts";
@@ -127,7 +130,8 @@ export type Online = { tools: Tool<any>[]; notes: string[]; servers: string[] };
 // servers that run on this machine and don't need the internet.
 async function defaultOnline(network: boolean, cwd: string): Promise<Online> {
   const m = await mcpHub.tools({ network, cwd });
-  return { tools: [...(network ? WEB_TOOLS : []), ...m.tools], notes: m.notes, servers: m.servers };
+  // Offline, the 📚 library still has what was read before.
+  return { tools: [...(network ? WEB_TOOLS : await offlineTools()), ...m.tools], notes: m.notes, servers: m.servers };
 }
 
 const MAX_BAD_CALLS = 3;
@@ -139,7 +143,7 @@ const STOP_REPEATS = 5;
 // The same web search or fetch again only brings back what is already above,
 // so lookups count by the call alone: the second gets the nudge, and from the
 // third the model answers with what it found, with no tools for that step.
-const LOOKUPS = new Set(WEB_TOOLS.map((t) => t.name));
+const LOOKUPS = new Set([...WEB_TOOLS, librarySearch].map((t) => t.name));
 const WARN_LOOKUPS = 2;
 const STOP_LOOKUPS = 3;
 // Once a tool turns out to be missing (no Java, no Android SDK), the model gets
@@ -224,9 +228,13 @@ export class Agent {
   // when one is Maxx's own build check, running the check again would only build the app twice.
   private cleanRuns: string[] = [];
   private corrections: Correction[] = [];
+  // This turn's web searches and page reads, for the lessons notebook.
+  private turnWeb: WebCall[] = [];
 
   constructor(private opts: AgentOptions, readonly io: AgentIO) {
     this.tools = this.baseTools();
+    // The library looks for an embedding model on the same server, for search by meaning.
+    if (opts.llm.provider !== "anthropic") useEmbedServer({ baseURL: opts.llm.baseURL, apiKey: opts.llm.apiKey });
     this.session = opts.session ?? newSessionId();
     this.checkpoints = new Checkpoints(opts.cwd, this.session);
     if (opts.toolsets?.length) this.useToolsets(opts.toolsets);
@@ -474,6 +482,7 @@ export class Agent {
     if (learning) await this.noticeCorrection(userText).catch(() => {});
     this.turnDid = [];
     this.turnFiles = new Set();
+    this.turnWeb = [];
     this.turnNo++;
     // Agent mode's task prompts are reports from Maxx, not the user's words; the goal stays the ask.
     if (learning || !this.turnAsk) this.turnAsk = (typeof userText === "string" ? userText : userText.map((p) => (p.type === "text" ? p.text : "")).join("\n")).trim();
@@ -506,7 +515,15 @@ export class Agent {
       this.io.note("(added the 🎼 music tools for this: compose, make_song, mix_audio)");
       prompt = true;
     }
-    if (!this.opts.chat && TOOLSETS.look && !this.toolsets.includes("look") && (wantsLook(ask) || (await usesThree(this.opts.cwd).catch(() => false)))) {
+    const blender = !this.opts.chat && TOOLSETS.blender && (wantsBlender(ask) || hasBlendFiles(this.opts.cwd));
+    if (blender && !this.toolsets.includes("blender")) {
+      this.useToolsets([...this.toolsets, "blender"]);
+      this.io.note("(added the 🧊 Blender tools for this: realistic scenes, renders, turntables, scanned assets)");
+      prompt = true;
+    }
+    // A Blender scene isn't a three.js game: leave the look tools out unless the ask is about a game.
+    const gameAsk = /\bgame|three\.?js|webgl/i.test(ask);
+    if (!this.opts.chat && TOOLSETS.look && !this.toolsets.includes("look") && (!blender || gameAsk) && (wantsLook(ask) || (await usesThree(this.opts.cwd).catch(() => false)))) {
       this.useToolsets([...this.toolsets, "look"]);
       this.io.note("(added the 🎬 look tools for this: art direction, the LOOK realism kit, look scores, CC0 assets)");
       prompt = true;
@@ -529,7 +546,8 @@ export class Agent {
 
   private async turn(userText: string | ContentPart[], signal: AbortSignal | undefined, o: { maxSteps?: number }): Promise<string> {
     dropThinking(this.history);
-    this.history.push({ role: "user", content: withPalette(userText, this.palette) });
+    const notebook = await this.notebookFor(userText).catch(() => "");
+    this.history.push({ role: "user", content: withNote(withPalette(userText, this.palette), notebook) });
     this.lastCheck = null;
     this.ending = "answered";
     // Steps the last turn left not done are open again: this turn may be the one that finishes them.
@@ -722,7 +740,13 @@ export class Agent {
         // (applied, then "not found", then applied...), so those count by the call alone.
         const writes = findTool(call.name, this.tools)?.risk === "write";
         const lookup = LOOKUPS.has(call.name);
-        const key = `${call.name}|${canonicalArgs(call.arguments)}${writes || lookup ? "" : `|${result}`}`;
+        if (lookup && args) this.turnWeb.push({ name: call.name, args, result: result.slice(0, 6000) });
+        let what = "";
+        try {
+          const t = findTool(call.name, this.tools);
+          if (t?.repeatKey && args) what = `|${t.repeatKey(args as never, this.opts.cwd)}`;
+        } catch {}
+        const key = `${call.name}|${canonicalArgs(call.arguments)}${what}${writes || lookup ? "" : `|${result}`}`;
         const n = (repeats.get(key) ?? 0) + 1;
         repeats.set(key, n);
         if (lookup && n >= WARN_LOOKUPS) {
@@ -1224,10 +1248,43 @@ export class Agent {
     }
     const did = [...this.turnDid.slice(-12), ...(answer ? [`answered: ${answer.replace(/\s+/g, " ").slice(0, 240)}`] : [])];
     this.lastTurn = { did, files, start: this.checkpoints.shaAt(this.turnFrom), undone: false };
+    if (answer && !signal?.aborted) await this.writeLessons(answer, signal).catch(() => {});
     if (!learning || !this.corrections.length) return;
     const todo = this.corrections.splice(0);
     // After Stop no model call: learnFrom falls back to a plain rule, so the UI frees up at once.
     for (const c of todo.slice(-2)) await this.learnFrom(c, signal);
+  }
+
+  // Lessons from the notebook that fit this request ride along with it (see library/lessons.ts).
+  private async notebookFor(userText: string | ContentPart[]): Promise<string> {
+    if (this.opts.memory === false || !(await librarySettings()).lessons) return "";
+    const typed = typeof userText === "string" ? userText : userText.map((p) => (p.type === "text" ? p.text : "")).join("\n");
+    const lessons = await relevantLessons(typed.slice(0, 2000), 4);
+    if (!lessons.length) return "";
+    await markLessonsUsed(lessons.map((l) => l.id));
+    this.io.note(`(📚 ${lessons.length} lesson${lessons.length > 1 ? "s" : ""} from Maxx's notebook went along with this: ${lessons.map((l) => `"${l.text.slice(0, 60)}${l.text.length > 60 ? "…" : ""}"`).join(", ")})`);
+    return notebookNote(lessons);
+  }
+
+  // After a turn that researched something: the model writes down what is worth
+  // keeping, and each lesson is checked against the page it cites.
+  async writeLessons(answer: string, signal?: AbortSignal): Promise<{ text: string; status: string }[]> {
+    const calls = this.turnWeb;
+    this.turnWeb = [];
+    if (this.opts.memory === false || !researched(calls) || !(await librarySettings()).lessons) return [];
+    const known = await relevantLessons(`${this.turnAsk} ${calls.map((c) => String(c.args.query ?? c.args.find ?? "")).join(" ")}`, 6, { all: true });
+    const llm = this.opts.llm.provider === "anthropic" ? this.opts.llm : { ...this.opts.llm, thinking: { tier: 0 as const, budget: 512, why: "writing down lessons" } };
+    const found = parseLessons(await this.think(lessonMessages(this.turnAsk, calls, answer, known), signal, llm));
+    const out: { text: string; status: string }[] = [];
+    for (const f of found) {
+      // The page as saved, or as the tool returned it this turn.
+      const page = f.url ? ((await getPage(f.url).catch(() => undefined))?.text ?? calls.find((c) => c.name === "web_fetch" && String(c.args.url ?? "").replace(/\/$/, "") === f.url!.replace(/\/$/, ""))?.result) : undefined;
+      const status = verifyLesson(f.text, page ?? calls.map((c) => c.result).join("\n"));
+      const r = await addNote({ text: f.text, url: f.url, status, topic: this.turnAsk.slice(0, 120) });
+      if (r?.isNew) out.push({ text: r.lesson.text, status });
+    }
+    if (out.length) this.io.note(`(📚 Wrote ${out.length} lesson${out.length > 1 ? "s" : ""} in the notebook: ${out.map((l) => `${l.status === "verified" ? "✔" : "⚠"} ${l.text}`).join(" · ")}${out.some((l) => l.status !== "verified") ? ". ⚠ ones aren't confirmed by their page and stay out of prompts until you approve them in the 📚 Library tab." : ""})`);
+    return out;
   }
 
   // One correction, one rule (or none, when it was only a change of mind).
@@ -1322,6 +1379,15 @@ function canonicalArgs(args: string): string {
   } catch {
     return args;
   }
+}
+
+// Text added to the end of a message (the notebook's lessons), whatever shape the message is.
+export function withNote<T extends string | ContentPart[]>(text: T, note: string): T {
+  if (!note) return text;
+  if (typeof text === "string") return (text + note) as T;
+  const i = text.findIndex((x) => x.type === "text");
+  if (i < 0) return [...text, { type: "text", text: note.trim() }] as T;
+  return text.map((x, k) => (k === i && x.type === "text" ? { ...x, text: x.text + note } : x)) as T;
 }
 
 // A message that names a palette ("make it in synthwave colors") gets that

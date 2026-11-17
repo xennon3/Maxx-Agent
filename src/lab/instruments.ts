@@ -87,7 +87,7 @@ export function webInstrument(network: boolean): Instrument {
       // The two best pages, cut to the passages about the search words.
       for (const h of r.hits.slice(0, 2)) {
         try {
-          const page = await readPage(h.url);
+          const page = await readPage(h.url, { source: "research" });
           const text = passages(page.text, q, 1600) ?? page.text.slice(0, 1600);
           parts.push(`\nFrom ${page.title || h.title} <${h.url}>:\n${text}`);
           urls.push(h.url);

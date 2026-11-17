@@ -23,10 +23,17 @@ export const ATTACHED_IMAGE = "[attached image: ";
 // message is not a typed turn (screenshots that follow tool results).
 export function typedText(m: Message): string | null {
   if (m.role !== "user") return null;
-  if (typeof m.content === "string") return m.content;
+  if (typeof m.content === "string") return stripNotebook(m.content);
   const first = m.content[0];
-  return first?.type === "text" && first.text.includes(ATTACHED_IMAGE) ? first.text : null;
+  return first?.type === "text" && first.text.includes(ATTACHED_IMAGE) ? stripNotebook(first.text) : null;
 }
+
+// Lessons from the 📚 notebook that rode along with a message (library/lessons.ts): not what the user typed.
+export const NOTEBOOK_MARK = "\n\n[📚 From Maxx's notebook";
+export const stripNotebook = (text: string) => {
+  const at = text.indexOf(NOTEBOOK_MARK);
+  return at < 0 ? text : text.slice(0, at);
+};
 
 // Big tool outputs are cut when they are produced, so they never bloat history.
 export function truncate(text: string, head = 100, tail = 100): string {

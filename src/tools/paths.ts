@@ -1,3 +1,4 @@
+import { readFileSync, statSync } from "node:fs";
 import { resolve, relative, isAbsolute } from "node:path";
 
 // Models on Windows copy the Git Bash style from shell output (/c/Users/...);
@@ -15,4 +16,15 @@ export function inside(cwd: string, p: string): string {
     throw new Error(`path ${p} is outside the workspace ${cwd}; use a path relative to it`);
   }
   return abs;
+}
+
+// A short fingerprint of a file's contents (for the repeat check: re-running a
+// file the model just changed is not a repeat).
+export function fileKey(path: string): string {
+  try {
+    const st = statSync(path);
+    return `${st.size}:${Bun.hash(readFileSync(path)).toString(36)}`;
+  } catch {
+    return "none";
+  }
 }

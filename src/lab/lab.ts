@@ -6,6 +6,7 @@ import type { Image } from "../image.ts";
 import { imagePart } from "../vision.ts";
 import { judgeLLM } from "../judge.ts";
 import { maxxHome } from "../sessions.ts";
+import { addLesson as addNotebook } from "../library/lessons.ts";
 import { toCSV, series } from "./data.ts";
 import { ICON, menu, parseArgs, type Instrument, type Kind } from "./instruments.ts";
 import { extractCode, runTest, runtimes, type Runtime, type TestRun } from "./sandbox.ts";
@@ -476,6 +477,10 @@ export async function runStudy(agent: Agent, question: string, events: StudyEven
     }
     s.state = "done";
     s.finished = new Date().toISOString();
+    // Claims that held up across independent sources go in the 📚 notebook, for every session after this one.
+    let kept = 0;
+    for (const c of s.claims.filter((c) => c.status === "corroborated" && c.text.length <= 240).slice(0, 5)) if ((await addNotebook({ text: c.text, url: c.url, status: "study", topic: s.question.slice(0, 120) }).catch(() => null))?.isNew) kept++;
+    if (kept) agent.note(`(📚 ${kept} corroborated finding${kept > 1 ? "s" : ""} from this study went into Maxx's notebook)`);
     s.note = `Study done: ${s.evidence.filter((e) => !e.error).length} readings, ${s.claims.length} claims checked, ${s.hypotheses.length} hypotheses tested${s.confidence !== undefined ? `, ${s.confidence}% confident` : ""}.${s.audit && !s.audit.ok ? " The fact check still flags parts of the conclusion (see the notebook)." : ""}`;
   } catch (e) {
     if ((e as Error).name !== "AbortError") {
