@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { maxxHome } from "./sessions.ts";
 import { defineTool } from "./tools/types.ts";
+import { bump, cachedSearch, cacheSearch, DEFAULT_SETTINGS, formatRecall, getPage, isFresh, loadSettings, markLessonsUsed, markUsed, recall, relevantLessons, savePage, ago, listPages } from "./library/index.ts";
 
 export type Hit = { title: string; url: string; snippet: string };
 
@@ -124,10 +125,16 @@ const ENGINES: { name: string; search: (q: string) => Promise<Hit[]> }[] = [
 // "no results" is never a mystery.
 export async function search(query: string): Promise<{ engine: string; hits: Hit[]; failed: string[] }> {
   const failed: string[] = [];
+  const t0 = Date.now();
   for (const e of ENGINES) {
     try {
       const hits = (await e.search(query)).slice(0, MAX_RESULTS);
-      if (hits.length) return { engine: e.name, hits, failed };
+      if (hits.length) {
+        // How long a search takes on this PC, for the library's "time saved".
+        await bump({ searches: 1, searchMs: Date.now() - t0 }).catch(() => {});
+        await cacheSearch(query, { engine: e.name, hits }).catch(() => {});
+        return { engine: e.name, hits, failed };
+      }
     } catch (err) {
       failed.push(`${e.name} (${(err as Error).message})`);
     }
@@ -197,10 +204,14 @@ export function passages(text: string, find: string, budget = PAGE_CHARS): strin
 // Pages read this run, so a second look with a different `find` costs no download.
 const pages = new Map<string, { title: string; text: string; at: number }>();
 const PAGE_TTL = 10 * 60_000;
+export const forgetRecentPages = () => pages.clear();
 
-export async function readPage(url: string): Promise<{ title: string; text: string }> {
+// Every page read is also kept in the 📚 library (src/library), for next time.
+// `source` says what read it (web_fetch, the research lab, maxx lookup).
+export async function readPage(url: string, o: { fresh?: boolean; source?: string } = {}): Promise<{ title: string; text: string }> {
   const hit = pages.get(url);
-  if (hit && Date.now() - hit.at < PAGE_TTL) return hit;
+  if (hit && !o.fresh && Date.now() - hit.at < PAGE_TTL) return hit;
+  const t0 = Date.now();
   const res = await get(url, { headers: { Accept: "text/html,application/xhtml+xml,text/plain,application/json;q=0.9,*/*;q=0.5" } });
   const type = res.headers.get("content-type") ?? "";
   if (/pdf|image\/|audio\/|video\/|zip|octet-stream/.test(type)) throw new Error(`that is a ${type.split(";")[0]} file, not a page Maxx can read`);
@@ -208,6 +219,9 @@ export async function readPage(url: string): Promise<{ title: string; text: stri
   const page = /html|xml/.test(type) || /^\s*<(!doctype|html)/i.test(raw) ? htmlToText(raw) : { title: "", text: raw.trim() };
   if (pages.size > 30) pages.delete(pages.keys().next().value!);
   pages.set(url, { ...page, at: Date.now() });
+  await bump({ fetches: 1, fetchMs: Date.now() - t0 }).catch(() => {});
+  await savePage({ url: res.url || url, title: page.title, text: page.text, source: o.source ?? "web_fetch" }).catch(() => null);
+  if (res.url && res.url !== url) await savePage({ url, title: page.title, text: page.text, source: o.source ?? "web_fetch" }).catch(() => null);
   return page;
 }
 
@@ -224,28 +238,108 @@ export function formatPage(url: string, page: { title: string; text: string }, f
   return head + page.text.slice(start, end) + more;
 }
 
+const FRESH_HINT = "pass fresh: true to go online instead";
+
+// The library first: a question it already answers well (and recently enough)
+// costs no search at all. Otherwise the web, and when the web is down, the
+// saved copies anyway, marked as possibly old.
+export async function searchFirstInLibrary(query: string, fresh = false): Promise<string> {
+  const s = await loadSettings().catch(() => DEFAULT_SETTINGS);
+  const mine = s.recallFirst ? await recall(query).catch(() => ({ hits: [], strong: false })) : { hits: [], strong: false };
+  const lessons = s.recallFirst ? await relevantLessons(query, 3).catch(() => []) : [];
+  if (!fresh && mine.strong) {
+    const hits = mine.hits.filter((h) => h.fresh).slice(0, 3);
+    await markUsed(hits.map((h) => h.page.id)).catch(() => {});
+    await markLessonsUsed(lessons.map((l) => l.id)).catch(() => {});
+    await bump({ servedSearches: 1 }).catch(() => {});
+    return `📚 From your library: pages you read before answer this, so no web search was needed.\n\n${formatRecall(hits, lessons)}\n\n(Saved copies. web_fetch on one of these URLs reads the rest of it instantly. If they don't answer the question, or it may have changed, call web_search again with fresh: true.)`;
+  }
+  const cached = fresh ? null : await cachedSearch(query).catch(() => null);
+  const r = cached ? { engine: `${cached.engine}, same search ${ago(cached.at)}`, hits: cached.hits, failed: [] as string[] } : await search(query);
+  if (cached) await bump({ cachedSearches: 1 }).catch(() => {});
+  if (!r.hits.length && mine.hits.length) {
+    await bump({ offline: 1 }).catch(() => {});
+    await markUsed(mine.hits.map((h) => h.page.id)).catch(() => {});
+    return `📚 The web search found nothing${r.failed.length ? ` (failed: ${r.failed.join(", ")})` : ""}, so here is what your library has. These are saved copies and may be out of date.\n\n${formatRecall(mine.hits.slice(0, 3), lessons)}`;
+  }
+  let out = formatHits(query, r);
+  const near = mine.hits.filter((h) => !r.hits.some((x) => x.url === h.page.url)).slice(0, 2);
+  if (r.hits.length && near.length) out += `\n\nAlso in your 📚 library (web_fetch reads these from disk, instantly):\n${near.map((h) => `- ${h.page.title.slice(0, 100)} ${h.page.url} (saved ${ago(h.page.savedAt)})`).join("\n")}`;
+  if (lessons.length) {
+    out += `\n\nLessons in your notebook:\n${lessons.map((l) => `- ${l.text}${l.url ? ` <${l.url}>` : ""}`).join("\n")}`;
+    await markLessonsUsed(lessons.map((l) => l.id)).catch(() => {});
+  }
+  return out;
+}
+
+export async function fetchFirstFromLibrary(url: string, find?: string, start?: number, fresh = false): Promise<string> {
+  const s = await loadSettings().catch(() => DEFAULT_SETTINGS);
+  const saved = s.recallFirst ? await getPage(url).catch(() => undefined) : undefined;
+  if (saved && !fresh && isFresh(saved, find ?? "")) {
+    await markUsed([saved.id]).catch(() => {});
+    await bump({ servedFetches: 1 }).catch(() => {});
+    return `📚 ${formatPage(url, saved, find, start)}\n\n(saved copy from your library, read ${ago(saved.savedAt)}; ${FRESH_HINT})`;
+  }
+  try {
+    return formatPage(url, await readPage(url, { fresh }), find, start);
+  } catch (e) {
+    if (!saved) throw e;
+    await bump({ offline: 1 }).catch(() => {});
+    return `📚 Couldn't download it (${(e as Error).message}), so this is the saved copy from ${ago(saved.savedAt)}; it may be out of date.\n\n${formatPage(url, saved, find, start)}`;
+  }
+}
+
 export const webSearch = defineTool({
   name: "web_search",
-  description: "Search the web. Use it when you are unsure, or the answer depends on versions, releases, prices, news, dates or anything that may have changed since you were trained. Returns titles, URLs and snippets.",
-  schema: z.object({ query: z.string().min(1).describe("a few keywords, e.g. 'bun latest version' or 'react 19 useActionState'") }),
+  description: "Search the web. Use it when you are unsure, or the answer depends on versions, releases, prices, news, dates or anything that may have changed since you were trained. Checks your 📚 library of pages you read before first. Returns titles, URLs and snippets.",
+  schema: z.object({
+    query: z.string().min(1).describe("a few keywords, e.g. 'bun latest version' or 'react 19 useActionState'"),
+    fresh: z.boolean().optional().describe("true: skip the library and search online"),
+  }),
   risk: "read",
   checkpoint: false,
-  run: async ({ query }) => formatHits(query, await search(query)),
+  run: async ({ query, fresh }) => searchFirstInLibrary(query, fresh),
 });
 
 export const webFetch = defineTool({
   name: "web_fetch",
-  description: "Read a web page as text. Set find to the words you need (e.g. 'install command' or 'release date') to get only the passages that mention them.",
+  description: "Read a web page as text. Set find to the words you need (e.g. 'install command' or 'release date') to get only the passages that mention them. Pages you read before come from your 📚 library.",
   schema: z.object({
     url: z.string().describe("the full http(s) URL, usually from web_search"),
     find: z.string().optional().describe("words to look for; returns only the matching passages"),
     start: z.number().int().min(0).optional().describe("character offset to continue reading from"),
+    fresh: z.boolean().optional().describe("true: download it again even if a saved copy exists"),
   }),
   risk: "read",
   checkpoint: false,
   refuse: ({ url }) => (/^https?:\/\//i.test(url) ? undefined : `error: web_fetch needs a full http(s) URL, not "${url.slice(0, 80)}"`),
-  run: async ({ url, find, start }) => formatPage(url, await readPage(url), find, start),
+  run: async ({ url, find, start, fresh }) => fetchFirstFromLibrary(url, find, start, fresh),
 });
+
+// With the network off: what Maxx read before is still there.
+export const librarySearch = defineTool({
+  name: "library_search",
+  description: "Search your 📚 library: web pages you read in earlier sessions and the lessons you wrote down from them. Works offline. Returns the passages that match.",
+  schema: z.object({ query: z.string().min(1).describe("a few keywords, e.g. 'gradle agp version'") }),
+  risk: "read",
+  checkpoint: false,
+  async run({ query }) {
+    const r = await recall(query, { k: 4 });
+    const lessons = await relevantLessons(query, 4);
+    if (!r.hits.length && !lessons.length) return `Nothing in your library about "${query}". Try other words, or turn network access on to search the web.`;
+    await markUsed(r.hits.map((h) => h.page.id)).catch(() => {});
+    await markLessonsUsed(lessons.map((l) => l.id)).catch(() => {});
+    await bump({ offline: 1 }).catch(() => {});
+    return `📚 ${formatRecall(r.hits, lessons)}\n\n(Saved copies from your library; the network is off, so they can't be checked for changes.)`;
+  },
+});
+
+// Offered while the network is off, once there is something in the library.
+export async function offlineTools() {
+  const s = await loadSettings().catch(() => DEFAULT_SETTINGS);
+  if (!s.recallFirst) return [];
+  return (await listPages().catch(() => [])).length ? [librarySearch] : [];
+}
 
 export const WEB_TOOLS = [webSearch, webFetch];
 
@@ -254,6 +348,7 @@ export function lookupPrompt(now = new Date(), extra: string[] = []): string {
   return [
     `Today is ${now.toDateString()}. Your training data is older than that, so facts that change (latest versions, APIs, prices, news, who holds a job, release dates) may be out of date.`,
     `When you are not sure, or the question depends on something recent, look it up first with web_search${extra.length ? `, ${extra.join(", ")}` : ""} and web_fetch (set find to what you need). Don't search for things that never change (math, basic syntax, definitions).`,
+    "Both check your 📚 library of pages you read before; results marked 📚 come from saved copies (pass fresh: true only when they are not enough or may be out of date).",
     "When you used the web, say so and end your answer with a Sources: line listing the URLs you used. If sources disagree with what you remember, trust the newer source.",
   ].join(" ");
 }

@@ -138,7 +138,7 @@ export async function doctorWeb(log = console.log): Promise<boolean> {
   for (const f of r.hits.length ? r.failed : []) log(`  (skipped ${f})`);
   if (r.hits[0]) {
     try {
-      const page = await readPage(r.hits[0].url);
+      const page = await readPage(r.hits[0].url, { source: "maxx lookup" });
       log(`  ok  read the first result: ${page.text.length} characters of text`);
     } catch (e) {
       log(`  warn  could not read the first result: ${(e as Error).message}`);

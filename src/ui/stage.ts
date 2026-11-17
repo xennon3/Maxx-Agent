@@ -14,6 +14,7 @@ import { EXAMPLE_SCORE, findMusicFiles } from "../music/index.ts";
 import { compose, makeSongTool } from "../tools/music.ts";
 import { findSongServer, loadSongConfig } from "../music/acestep.ts";
 import { readFile } from "node:fs/promises";
+import { isLibraryMessage, libraryMessage } from "./library.ts";
 
 // The app window's right-hand "stage": Preview (the project's web pages, or a
 // dev server), Run (project commands with live output) and Phone (a live
@@ -80,6 +81,11 @@ export class Stage {
   // Messages from the page; returns false for ones that aren't ours.
   async handle(m: any): Promise<boolean> {
     const r = this.runner;
+    // The 📚 library is the same for every project, so it answers with or without one open.
+    if (typeof m.type === "string" && isLibraryMessage(m.type)) {
+      this.send(await libraryMessage(m));
+      return true;
+    }
     switch (m.type) {
       case "stageInfo":
         this.send(await this.info());
