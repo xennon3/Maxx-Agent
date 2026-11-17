@@ -143,3 +143,34 @@ test("resending an edit that already landed is stopped even when results alterna
   expect(tools.at(-1)).toContain("this exact edit_file call 5 times");
   script = [];
 });
+
+test("edit then re-run the same file is progress, not a repeat (Blender/compose style loops)", async () => {
+  const dir = await workspace();
+  await Bun.write(join(dir, "music", "t.score"), "bpm: 100\nlead: c4 d4 e4 f4\n");
+  const steps: Reply[] = [];
+  const notes = ["c4", "d4", "e4", "f4", "g4", "a4", "b4"];
+  for (let i = 1; i < notes.length; i++) {
+    steps.push({ tool: { name: "edit_file", args: { path: "music/t.score", old_string: `lead: ${notes[i - 1]}`, new_string: `lead: ${notes[i]}` } } });
+    steps.push({ tool: { name: "compose", args: { file: "music/t.score" } } });
+  }
+  script = [...steps, { text: "Tuned it." }];
+  const { io } = fakeIO(["always", "always"]);
+  const llm = { baseURL: `http://localhost:${server.port}/v1`, model: "fake" };
+  const agent = await new Agent({ llm, cwd: dir, toolsets: ["music"], permissions: await new Permissions(dir, "yolo").load() }, io).init();
+  expect(await agent.send("tune the song")).toBe("Tuned it.");
+  const tools = agent.history.filter((m) => m.role === "tool").map((m) => m.content as string);
+  expect(tools.some((t) => t.includes("Note from Maxx: you have made this exact"))).toBe(false);
+  script = [];
+});
+
+test("re-running an unchanged file still counts as a repeat", async () => {
+  const dir = await workspace();
+  await Bun.write(join(dir, "music", "t.score"), "bpm: 100\nlead: c4 d4 e4 f4\n");
+  const run = { tool: { name: "compose", args: { file: "music/t.score" } } };
+  script = [run, run, run, run, run, run, { text: "should not get here" }];
+  const { io } = fakeIO(["always"]);
+  const llm = { baseURL: `http://localhost:${server.port}/v1`, model: "fake" };
+  const agent = await new Agent({ llm, cwd: dir, toolsets: ["music"], permissions: await new Permissions(dir, "yolo").load() }, io).init();
+  expect(await agent.send("render it")).toStartWith("Stopped: the model kept repeating the same tool call");
+  script = [];
+});

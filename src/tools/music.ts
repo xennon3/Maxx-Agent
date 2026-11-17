@@ -4,7 +4,7 @@ import { dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { z } from "zod";
 import { defineTool } from "./types.ts";
-import { inside } from "./paths.ts";
+import { fileKey, inside } from "./paths.ts";
 import { music, type Analysis } from "../music/index.ts";
 import { INSTALL_HELP, download, findSongServer, loadSongConfig, makeSong } from "../music/acestep.ts";
 
@@ -80,6 +80,7 @@ export const compose = defineTool({
   }),
   risk: "write",
   ruleKey: () => "compose",
+  repeatKey: (a, cwd) => (a.file && !a.score ? fileKey(inside(cwd, a.file)) : ""),
   preview: (a) => {
     const t = a.score ? /^\s*title:\s*(.+)$/im.exec(a.score)?.[1] : undefined;
     return `compose ${a.file ?? `music/${slugOf(t ?? "song")}.score`} → ${(a.formats ?? ["wav", "mid"]).join(", ")}${a.score ? `\n${a.score.split("\n").slice(0, 12).join("\n")}` : ""}`;

@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { INSTALL_HELP, KIT_SOURCE, KIT_VERSION, blenderCandidates, ensureKit, findBlender, kitDir, oldVersion } from "../src/blender/find.ts";
-import { API, BLENDER_TOOLS, blenderAssets, blenderRender, blenderScene, crashText, hasBlendFiles, parseResult, pixelIssues, scoreOf, wantsBlender } from "../src/tools/blender.ts";
+import { API, BLENDER_TOOLS, PREVIEW_LIMIT, resetRounds, roundNote, blenderAssets, blenderRender, blenderScene, crashText, hasBlendFiles, parseResult, pixelIssues, scoreOf, wantsBlender } from "../src/tools/blender.ts";
 import { TOOLSETS } from "../src/tools/index.ts";
 import { PRESETS } from "../src/mcp-presets.ts";
 
@@ -65,7 +65,7 @@ test("with no Blender the tools say how to get it", async () => {
     else process.env.MAXX_BLENDER = before;
     await findBlender(true);
   }
-});
+}, 60_000);
 
 test("the kit is written once per version into ~/.maxx/blender-kit", async () => {
   const home = await tmp();
@@ -145,3 +145,41 @@ test("builds a scene, renders it and reports realism", async () => {
   const fin = text(await blenderRender.run({ file: "desk", quality: "draft", size: "320x180" }, ctx));
   expect(fin).toContain("renders/desk-draft.png");
 }, 300_000);
+
+test("round notes steer toward finishing instead of polishing forever", () => {
+  expect(roundNote({ n: 1, scores: [70] }, 70, 3)).toContain('"edits"');
+  expect(roundNote({ n: 2, scores: [70, 80] }, 80, 2)).toContain("up from 70");
+  expect(roundNote({ n: 2, scores: [80, 70] }, 70, 2)).toContain("made it worse");
+  expect(roundNote({ n: 3, scores: [80, 80, 80] }, 80, 1)).toContain("hasn't moved in 3 previews");
+  expect(roundNote({ n: 2, scores: [80, 92] }, 92, 0)).toContain('render quality "final" now');
+  expect(roundNote({ n: PREVIEW_LIMIT, scores: [] }, 60, 4)).toContain("stop polishing");
+});
+
+test("the repeat key follows the script, so a changed script is a new call", async () => {
+  const cwd = await tmp();
+  await mkdir(join(cwd, "scenes"));
+  await writeFile(join(cwd, "scenes", "a.py"), "S.stage('studio')\n");
+  const k1 = blenderScene.repeatKey!({ name: "a" } as any, cwd);
+  expect(blenderScene.repeatKey!({ name: "a" } as any, cwd)).toBe(k1);
+  await writeFile(join(cwd, "scenes", "a.py"), "S.stage('night')\n");
+  expect(blenderScene.repeatKey!({ name: "a" } as any, cwd)).not.toBe(k1);
+});
+
+test("edits change the script and render in one call", async () => {
+  const cwd = await tmp();
+  const ctx = { cwd } as any;
+  await mkdir(join(cwd, "scenes"));
+  await writeFile(join(cwd, "scenes", "e.py"), "S.stage('studio')\nS.sphere(0.2, mat='gold')\n");
+  const miss = text(await blenderScene.run({ name: "e", edits: [{ old: "mat='silver'", new: "mat='chrome'" }] }, ctx));
+  expect(miss).toContain("Nothing was rendered");
+  const same = text(await blenderScene.run({ name: "e", edits: [{ old: "mat='gold'", new: "mat='gold'" }] }, ctx));
+  expect(same).toContain("change nothing");
+  const found = await findBlender(true);
+  if (!found?.ok) return;
+  resetRounds();
+  const r = text(await blenderScene.run({ name: "e", quality: "draft", size: "160x90", edits: [{ old: "mat='gold'", new: "mat='chrome'" }] }, ctx));
+  expect(r).toContain("Changed scenes/e.py");
+  expect(r).toContain("Preview 1 of this scene");
+  expect(await readFile(join(cwd, "scenes", "e.py"), "utf8")).toContain("mat='chrome'");
+  expect(text(await blenderScene.run({ name: "e", quality: "draft", size: "160x90" }, ctx))).toContain("Preview 2 of this scene");
+}, 120_000);

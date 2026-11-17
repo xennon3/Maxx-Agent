@@ -741,7 +741,12 @@ export class Agent {
         const writes = findTool(call.name, this.tools)?.risk === "write";
         const lookup = LOOKUPS.has(call.name);
         if (lookup && args) this.turnWeb.push({ name: call.name, args, result: result.slice(0, 6000) });
-        const key = `${call.name}|${canonicalArgs(call.arguments)}${writes || lookup ? "" : `|${result}`}`;
+        let what = "";
+        try {
+          const t = findTool(call.name, this.tools);
+          if (t?.repeatKey && args) what = `|${t.repeatKey(args as never, this.opts.cwd)}`;
+        } catch {}
+        const key = `${call.name}|${canonicalArgs(call.arguments)}${what}${writes || lookup ? "" : `|${result}`}`;
         const n = (repeats.get(key) ?? 0) + 1;
         repeats.set(key, n);
         if (lookup && n >= WARN_LOOKUPS) {

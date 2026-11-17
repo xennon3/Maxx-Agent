@@ -4,11 +4,12 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { z } from "zod";
 import { defineTool, type Tool, type ToolContext, type ToolResult } from "./types.ts";
-import { inside } from "./paths.ts";
+import { fileKey, inside } from "./paths.ts";
 import { decodePng, toShot } from "../image.ts";
 import { pixelStats, type Issue, type Pixels } from "../look/score.ts";
 import { INSTALL_HELP, ensureKit, findBlender } from "../blender/find.ts";
 import { findAssets } from "./look.ts";
+import { applyEdits, changedLines } from "./edit.ts";
 
 // 🧊 Blender tools: Maxx writes a scene as a short Python script on top of its
 // realism kit (maxx_scene.py: sky presets, real materials, bevelled shapes,
@@ -117,7 +118,7 @@ export function scoreOf(issues: Issue[]): number {
   return Math.max(0, Math.min(100, 100 - issues.reduce((s, i) => s + i.cost, 0)));
 }
 
-function readable(r: RunResult, rel: (p: string) => string, px: Pixels | null): string {
+function readable(r: RunResult, rel: (p: string) => string, px: Pixels | null): { text: string; score: number; issues: number } {
   const f = r.facts;
   const lines: string[] = [];
   const what = r.video ? `rendered ${rel(r.video)}` : r.frames_dir ? `rendered frames into ${rel(r.frames_dir)}/` : r.image ? `rendered ${rel(r.image)}` : "";
@@ -134,7 +135,7 @@ function readable(r: RunResult, rel: (p: string) => string, px: Pixels | null): 
   const n = scoreOf(issues);
   lines.push(`Realism ${n}/100${n >= 85 ? " (looks real)" : n >= 70 ? " (close)" : n >= 50 ? " (looks CG)" : " (looks unfinished)"}`);
   issues.slice(0, 8).forEach((i, k) => lines.push(`${k + 1}. ${i.what} (−${i.cost})\n   Fix: ${i.fix}`));
-  return lines.join("\n");
+  return { text: lines.join("\n"), score: n, issues: issues.length };
 }
 
 async function picture(path: string | undefined): Promise<{ images: ReturnType<typeof toShot>[]; px: Pixels | null }> {
@@ -154,7 +155,7 @@ function errorText(r: RunResult, scriptRel?: string): string {
   if (/has no attribute/.test(e.message) && /'maxx_scene'/.test(e.message)) hints.push("That S.* function doesn't exist; the kit's functions are listed in the blender_scene description.");
   if (/unknown material/.test(e.message)) hints.push("Use one of the material kinds named in the message, or a folder of photo textures.");
   if (/unexpected keyword argument/.test(e.message)) hints.push("Check that function's arguments in the blender_scene description.");
-  return [`error in ${where}: ${e.type}: ${e.message}`, ...e.near, ...(e.inside_kit.length ? [`(inside the kit: ${e.inside_kit.join(" → ")})`] : []), ...hints, scriptRel ? `Fix ${scriptRel} with edit_file, then call blender_scene again with just the name.` : ""].filter(Boolean).join("\n");
+  return [`error in ${where}: ${e.type}: ${e.message}`, ...e.near, ...(e.inside_kit.length ? [`(inside the kit: ${e.inside_kit.join(" → ")})`] : []), ...hints, scriptRel ? `Fix it in one call: blender_scene with the name and edits [{ old, new }] for ${scriptRel}.` : ""].filter(Boolean).join("\n");
 }
 
 const sizeSchema = z.string().regex(/^\d{2,5}\s*[x×]\s*\d{2,5}$/).optional();
@@ -174,37 +175,82 @@ Models: S.model("assets/x.glb", at, height=metres) for glb/gltf/fbx/obj/stl/blen
 Camera: S.camera(at, look, lens=35-50, fstop=2.8 for blur). Leave it out and Maxx frames everything. S.frame(w, h) sets the shape. S.orbit(seconds) makes a turntable; S.key(obj, frame, at=, rot=) animates.
 Real sizes: door 2.0×0.9, table top 0.75 high, chair seat 0.45, person 1.75, car 4.5×1.8×1.45, storey 3.0, kerb 0.15.`;
 
+// Each scene's previews in this session: how many, and the score each got. A
+// weak model can polish forever; after a while Maxx says to finish.
+type Rounds = { n: number; scores: number[] };
+const rounds = new Map<string, Rounds>();
+export const PREVIEW_LIMIT = 8;
+export function resetRounds() {
+  rounds.clear();
+}
+
+// Where the scene stands after this preview, in one line the model can act on.
+export function roundNote(r: Rounds, score: number, issues: number): string {
+  const s = r.scores;
+  const prev = s.length >= 2 ? s[s.length - 2]! : null;
+  const trend = prev === null ? "" : score > prev ? ` (up from ${prev})` : score < prev ? ` (down from ${prev}: the last change made it worse; undo it or try another way)` : ` (same as last time)`;
+  const flat = s.length >= 3 && s.slice(-3).every((x) => x === score);
+  const head = `Preview ${r.n} of this scene: realism ${score}/100${trend}.`;
+  if (r.n >= PREVIEW_LIMIT) return `${head} That's ${r.n} previews: stop polishing. Render it now with quality "final" and tell the user what could still be better.`;
+  if (score >= 85 && issues === 0) return `${head} Nothing left on the list. If the picture matches what the user asked for, render quality "final" now.`;
+  if (flat) return `${head} The score hasn't moved in 3 previews. Make one bigger change to the top item (or the thing that looks most wrong in the picture), or render "final" if it's close enough.`;
+  return `${head} Fix the top items in ONE call: blender_scene with name and "edits" (each old → new text from the script) changes the script and renders again.`;
+}
+
 export const blenderScene = defineTool({
   name: "blender_scene",
   description:
     "Build a realistic 3D scene in Blender from a Python script and render it: Maxx saves scenes/<name>.py and scenes/<name>.blend, renders renders/<name>.png and shows it, with a realism score and fixes. " +
-    "To change a scene, edit scenes/<name>.py and call again with just the name. Work in quick previews, then render the final with quality \"final\".\n" + API,
+    "To change a scene, pass edits (old → new text in scenes/<name>.py): the script is changed and rendered in one call, no edit_file needed. With just the name it re-runs the script as it is. Work in quick previews, then render the final with quality \"final\".\n" + API,
   schema: z.object({
     name: z.string().describe("Short scene name, e.g. 'cabin' (files go in scenes/ and renders/)"),
-    script: z.string().optional().describe("The whole scene script using S. Leave out to run scenes/<name>.py as it is"),
+    script: z.string().optional().describe("The whole scene script using S (for a new scene or a rewrite)"),
+    edits: z.array(z.object({ old: z.string().describe("Exact text now in the script"), new: z.string().describe("What to put instead") })).optional().describe("Changes to scenes/<name>.py, applied before rendering"),
     quality: z.enum(QUALITIES).optional().describe("draft (fast, small), preview (default), final (1920×1080, clean), 4k"),
     size: sizeSchema.describe("Picture size like 1920x1080 or 1080x1350 (portrait)"),
     samples: z.number().int().min(1).max(8192).optional(),
   }),
   risk: "write",
   ruleKey: () => "blender",
-  preview: (a) => `blender: build scenes/${slugOf(a.name)}.py → scenes/${slugOf(a.name)}.blend + renders/${slugOf(a.name)}.png (${a.quality ?? "preview"})${a.script ? `\n${a.script.split("\n").slice(0, 14).join("\n")}` : ""}`,
+  // The same call is new work once the script changed.
+  repeatKey: (a, cwd) => fileKey(join(cwd, "scenes", `${slugOf(a.name)}.py`)),
+  preview: (a) => `blender: build scenes/${slugOf(a.name)}.py → scenes/${slugOf(a.name)}.blend + renders/${slugOf(a.name)}.png (${a.quality ?? "preview"})${a.edits?.length ? `\n${a.edits.map((e) => `- ${e.old.split("\n")[0]}\n+ ${e.new.split("\n")[0]}`).join("\n")}` : ""}${a.script ? `\n${a.script.split("\n").slice(0, 14).join("\n")}` : ""}`,
   async run(a, ctx) {
     const slug = slugOf(a.name);
     const rel = `scenes/${slug}.py`;
     const file = inside(ctx.cwd, rel);
+    const notes: string[] = [];
     if (a.script) {
       await mkdir(dirname(file), { recursive: true });
       await writeFile(file, a.script.replace(/^```\w*\n|```\s*$/g, "").replace(/^\s*import maxx_scene as S\s*$/m, ""));
     } else if (!existsSync(file)) return `error: ${rel} doesn't exist yet. Pass the scene in "script".\n${API}`;
+    if (a.edits?.length) {
+      const before = await readFile(file, "utf8");
+      const r = applyEdits(before, a.edits.map((e) => ({ old_string: e.old, new_string: e.new })));
+      if (!r.ok) return `error: ${r.error}\nNothing was rendered. Copy "old" exactly from ${rel} (read_file shows it).`;
+      if (r.text === before) return `error: those edits change nothing in ${rel} (it already says that). Nothing was rendered; change something else.`;
+      await writeFile(file, r.text);
+      notes.push(`Changed ${rel}:\n${changedLines(before, r.text, 0, 12)}`);
+    }
     const quality = a.quality ?? "preview";
     const out = join(ctx.cwd, "renders", quality === "final" || quality === "4k" ? `${slug}-${quality}.png` : `${slug}.png`);
     const r = await runBlender({ kit: "", mode: "build", cwd: ctx.cwd, script: file, save: join(ctx.cwd, "scenes", `${slug}.blend`), out, quality, samples: a.samples, ...parseSize(a.size) }, ctx, TIMEOUT[quality]);
-    if (typeof r === "string") return r;
-    if (!r.ok) return errorText(r, rel);
+    if (typeof r === "string") return [...notes, r].join("\n");
+    if (!r.ok) return [...notes, errorText(r, rel)].join("\n");
     const relp = (p: string) => posix(relative(ctx.cwd, p));
     const { images, px } = await picture(r.image);
-    const text = readable(r, relp, px) + (quality === "final" || quality === "4k" ? "" : "\nNext: look at the render and fix the top items (edit the script, call again). When it looks right, render it with quality \"final\".");
+    const { text: body, score, issues } = readable(r, relp, px);
+    const key = `${ctx.cwd}|${slug}`;
+    let tail = "";
+    if (quality === "final" || quality === "4k") rounds.delete(key);
+    else {
+      const rd = rounds.get(key) ?? { n: 0, scores: [] };
+      rd.n++;
+      rd.scores.push(score);
+      rounds.set(key, rd);
+      tail = "\n" + roundNote(rd, score, issues);
+    }
+    const text = [...notes, body].join("\n") + tail;
     return images.length ? { text, images } : text;
   },
 });
@@ -225,6 +271,7 @@ export const blenderRender = defineTool({
   }),
   risk: "write",
   ruleKey: () => "blender",
+  repeatKey: (a, cwd) => fileKey(join(cwd, /\.blend$/i.test(a.file) ? a.file : `scenes/${slugOf(a.file)}.blend`)),
   preview: (a) => `blender: render ${a.file}${a.frames ? ` frames ${a.frames}` : ""} (${a.quality ?? "final"})`,
   async run(a, ctx) {
     const blendRel = /\.blend$/i.test(a.file) ? a.file : `scenes/${slugOf(a.file)}.blend`;
@@ -242,7 +289,7 @@ export const blenderRender = defineTool({
     if (typeof r === "string") return r;
     if (!r.ok) return errorText(r);
     const { images, px } = await picture(r.image);
-    const text = readable(r, (p) => posix(relative(ctx.cwd, p)), px);
+    const text = readable(r, (p) => posix(relative(ctx.cwd, p)), px).text;
     return images.length ? { text, images } : text;
   },
 });
@@ -266,7 +313,7 @@ export const blenderInspect = defineTool({
     const { images, px } = await picture(r.image);
     if (out) await rm(out, { force: true });
     const f = r.facts!;
-    const text = [readable({ ...r, image: undefined, saved: undefined }, (p) => p, px).replace(/^✓ done/, `${blendRel}:`), `Materials: ${f.materials.join(", ") || "none"}`, `Frames ${f.frames[0]}-${f.frames[1]}, engine ${f.engine}`].join("\n");
+    const text = [readable({ ...r, image: undefined, saved: undefined }, (p) => p, px).text.replace(/^✓ done/, `${blendRel}:`), `Materials: ${f.materials.join(", ") || "none"}`, `Frames ${f.frames[0]}-${f.frames[1]}, engine ${f.engine}`].join("\n");
     return images.length ? { text, images } : text;
   },
 });
@@ -311,7 +358,7 @@ export const BLENDER_TOOLS: Tool<any>[] = [blenderScene, blenderRender, blenderI
 export const BLENDER_PROMPT = [
   "Blender tools, for realistic 3D scenes, stills and turntables: write the scene as a script with blender_scene (Maxx's kit S does the realism; never build from bare bpy cubes).",
   "Work like a photographer: S.stage(preset) first, real-world sizes in metres, real materials (S.mat kinds or blender_assets photo textures), bevelled edges, a ground, and a camera at eye height (1.6 m) with a 35-50 mm lens or lower for drama.",
-  "Look at every render and fix the realism notes, then render quality \"final\". Fill the frame: small props, scattered rocks or grass, wear. blender_open shows the result in Blender's window.",
+  "Change a scene with blender_scene edits (old → new), which edits and renders in one call; don't edit_file then re-run. Fix the top realism notes and what looks wrong in the picture, a few at a time, then render quality \"final\". Fill the frame: small props, scattered rocks or grass, wear. blender_open shows the result in Blender's window.",
 ].join("\n");
 
 export function wantsBlender(text: string): boolean {
